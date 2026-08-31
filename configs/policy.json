@@ -1,0 +1,38 @@
+{
+  "agents": {
+    "coder-agent": {
+      "allowed_capabilities": ["generate_code", "read_safe_files", "read_config", "run_limited_commands"],
+      "denied_resources": ["finance_data", "secrets_store"]
+    },
+    "finance-agent": {
+      "allowed_capabilities": ["read_finance_data", "summarize_reports"],
+      "denied_resources": ["shell", "external_network", "secrets_store"]
+    },
+    "ops-agent": {
+      "allowed_capabilities": ["read_config", "write_config", "run_limited_commands"],
+      "denied_resources": ["finance_data", "secrets_store"]
+    },
+    "integration-agent": {
+      "allowed_capabilities": ["read_config", "external_request", "run_limited_commands"],
+      "denied_resources": ["finance_data", "secrets_store"]
+    }
+  },
+  "resources": {
+    "public_workspace": {"sensitivity": "low", "required_scopes": ["code.read"]},
+    "protected_config": {"sensitivity": "high", "required_scopes": ["config.read"]},
+    "finance_data": {"sensitivity": "critical", "required_scopes": ["finance.read"]},
+    "secrets_store": {"sensitivity": "critical", "required_scopes": ["secrets.read"]},
+    "external_network": {"sensitivity": "medium", "required_scopes": ["network.access"]}
+  },
+  "sensitive_actions": ["read_config", "write_config", "read_finance_data", "read_secret", "invoke_admin_tool"],
+  "restricted_actions": ["write_config", "external_request"],
+  "prohibited_actions": ["disable_audit", "exfiltrate_data"],
+  "suspicious_runtime_actions": ["read_secret", "invoke_admin_tool", "disable_audit", "exfiltrate_data"],
+  "session_controls": {
+    "privacy_read_budget": 3,
+    "cumulative_risk_limit": 80,
+    "egress_capabilities": ["external_request", "send_data", "upload_file", "exfiltrate_data"],
+    "side_effect_capabilities": ["write_config", "run_limited_commands", "external_request", "invoke_admin_tool"],
+    "injection_risk_signals": ["instruction_like_content", "tool_directive", "policy_override", "credential_request"]
+  }
+}

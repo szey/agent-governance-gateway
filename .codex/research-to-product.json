@@ -1,0 +1,37 @@
+{
+  "schema_version": "research-to-product.v1",
+  "skill": "research-to-product",
+  "project_name": "Agent Governance Gateway",
+  "working_language": "zh-CN",
+  "research_register": {
+    "source": "docs/research-product-mapping-iteration.zh-CN.md",
+    "translation": "docs/research-product-mapping-iteration.md"
+  },
+  "documentation_pairs": [
+    {"source": "README.zh-CN.md", "translation": "README.md"},
+    {"source": "CONTRIBUTING.zh-CN.md", "translation": "CONTRIBUTING.md"},
+    {"source": "SECURITY.zh-CN.md", "translation": "SECURITY.md"},
+    {"source": "docs/project-brief.zh-CN.md", "translation": "docs/project-brief.md"},
+    {"source": "docs/research-product-mapping-iteration.zh-CN.md", "translation": "docs/research-product-mapping-iteration.md"},
+    {"source": "docs/experiments/enterprise-agent-pilot.zh-CN.md", "translation": "docs/experiments/enterprise-agent-pilot.md"}
+  ],
+  "verification_commands": [
+    "go test ./...",
+    "go vet ./...",
+    "node --check web/static/app.js"
+  ],
+  "framework_baselines": [
+    {"name": "OWASP GenAI LLM Top 10", "version": "2026"},
+    {"name": "OWASP Top 10 for Agentic Applications", "version": "2026"},
+    {"name": "NIST AI RMF", "version": "1.0"},
+    {"name": "NIST AI 600-1 GenAI Profile", "version": "2024"},
+    {"name": "MCP Specification", "version": "2026-07-28"}
+  ],
+  "pilot_protocol": "docs/experiments/enterprise-agent-pilot.zh-CN.md",
+  "safety": {
+    "allow_publish": false,
+    "allow_deploy": false,
+    "production_data": false,
+    "company_device_requires_explicit_authorization": true
+  }
+}

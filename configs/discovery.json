@@ -1,0 +1,42 @@
+{
+  "max_file_bytes": 2097152,
+  "skip_directories": [".git", ".idea", ".venv", "bin", "data", "node_modules", "vendor"],
+  "registered_agents": [],
+  "signatures": [
+    {
+      "agent_type": "mcp",
+      "display_name": "MCP integration",
+      "file_names": ["mcp.json", ".mcp.json", "mcp-config.json", "claude_desktop_config.json"],
+      "content_files": ["package.json", "pyproject.toml", "requirements.txt", "docker-compose.yml", "compose.yaml"],
+      "content_indicators": ["@modelcontextprotocol/sdk", "mcpservers", "fastmcp"]
+    },
+    {
+      "agent_type": "langchain",
+      "display_name": "LangChain or LangGraph agent",
+      "file_names": ["langgraph.json"],
+      "content_files": ["pyproject.toml", "requirements.txt", "package.json"],
+      "content_indicators": ["langchain", "langgraph"]
+    },
+    {
+      "agent_type": "crewai",
+      "display_name": "CrewAI agent",
+      "file_names": ["crewai.yaml", "agents.yaml", "tasks.yaml"],
+      "content_files": ["pyproject.toml", "requirements.txt"],
+      "content_indicators": ["crewai"]
+    },
+    {
+      "agent_type": "autogen",
+      "display_name": "AutoGen agent",
+      "file_names": ["autogen.json"],
+      "content_files": ["pyproject.toml", "requirements.txt", "package.json"],
+      "content_indicators": ["autogen", "@microsoft/autogen"]
+    },
+    {
+      "agent_type": "openai-agents",
+      "display_name": "OpenAI Agents SDK workload",
+      "file_names": [],
+      "content_files": ["pyproject.toml", "requirements.txt", "package.json"],
+      "content_indicators": ["openai-agents", "@openai/agents"]
+    }
+  ]
+}

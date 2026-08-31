@@ -1,0 +1,25 @@
+{
+  "id": "sensitive-file-read",
+  "title": "Protected file read",
+  "description": "A protected read is isolated and audited with path class, byte count, sensitivity, and privacy budget—never file contents or the full path.",
+  "expected_route": "sandbox",
+  "request": {
+    "request_id": "evt-sensitive-read-001",
+    "session_id": "demo-cross-tool",
+    "user_id": "user-04",
+    "agent_id": "integration-agent",
+    "token_scopes": ["config.read"],
+    "requested_action": "Read the approved test configuration",
+    "claimed_intent": "configuration_review",
+    "requested_capability": "read_config",
+    "target_resource": "protected_config",
+    "planned_actions": ["read_config"],
+    "data_access": {
+      "operation": "read",
+      "path_class": "protected_company_config",
+      "protected": true,
+      "sensitivity": "high",
+      "bytes": 2048
+    }
+  }
+}

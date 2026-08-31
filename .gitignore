@@ -1,0 +1,15 @@
+# Runtime state
+data/
+
+# Build output
+bin/
+dist/
+agent-governance-gateway
+agent-governance-gateway.exe
+coverage.out
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
