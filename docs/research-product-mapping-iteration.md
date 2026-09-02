@@ -2,7 +2,7 @@
 
 English | [简体中文](research-product-mapping-iteration.zh-CN.md)
 
-Last reviewed: 2026-08-30
+Last reviewed: 2026-09-02
 
 This is Agent Governance Gateway's single register for research, risk-framework mappings, community pain points, mitigation advice, open-source lessons, and product iteration. Chinese is the working source; update this English pair in the same change.
 
@@ -60,6 +60,20 @@ Always cite a year/version because identifiers can change meaning between releas
 
 - OWASP GenAI LLM Top 10 remains on the 2026 edition. No weekly change requiring a new identifier/version baseline was found for the OWASP Agentic Top 10, NIST AI RMF / NIST AI 600-1, or MITRE ATLAS.
 - MCP `2026-07-28` is now the protocol baseline. Authorization changes include authorization-response `iss` validation, credential isolation, scope step-up, and DCR/TLS migration requirements. These are acceptance conditions for a real MCP adapter/gateway; internal Router policy alone cannot claim conformance.
+
+### 2026-09-02 company-endpoint trial feedback and product decisions
+
+This register retains only sanitized facts, not the raw company logs, username, hostname, or absolute paths supplied during the trial. One exploratory company-endpoint run is not a completed authorized pilot and does not establish runtime or performance claims.
+
+| `research_id` | Observation and root cause | Source / validation | Falsifiable hypothesis and baseline | Decision | Product change and remaining boundary |
+|---|---|---|---|---|---|
+| `FIELD-2026-001` | The CLI found new evidence while the UI retained the repository sample because the Server held only a startup snapshot | Direct system output `S1` + operator feedback `S4`; local Manager/API regression `V2` | Save or rescan must change `GET /api/discoveries` without restart | `implement` | Discovery Manager and rescan limited to startup roots; no external sensor stream yet |
+| `FIELD-2026-002` | An overly broad scan stopped at an unreadable system directory; whole-drive scanning also violates least-scope guidance | Direct error output `S1` + operator feedback `S4`; simulated denied-directory regression `V2` | One denied child must not discard other results and must create a coverage gap | `implement` | Retain up to 50 relative-path gaps and continue; explicit approved roots remain mandatory |
+| `FIELD-2026-003` | Marketplace, plugin-cache, and temporary content became Shadow findings because available evidence and deployed Agents shared one class | Direct scan output `S1` + operator feedback `S4`; marketplace fixture `V2` | A marketplace/cache-only fixture must have zero Shadow findings and be `available/unassessed` | `implement` | Add `available/installed/configured/observed`; path heuristics remain and process evidence is still planned |
+| `FIELD-2026-004` | The approved registry existed only in JSON, leaving operators unable to reconcile Shadow findings | Product feedback `S4`; registry persistence, HTTP, and browser interaction regression `V2` | UI add/edit/suspend/remove must persist and trigger reconciliation | `implement` | Local `data/approved-agents.json` plus bilingual UI; no enterprise RBAC or central sync |
+| `FIELD-2026-005` | Approved Agent could be misread as blanket approval for every behavior | Product requirement `S4`; Allow + Deny audit regression `V2` | Asset matching must not change Router policy; valid Allow, Deny, and Escalate requests must remain auditable | `implement` | Asset admission stays separate from per-action policy; coverage is limited to Router, Observer, and connected sensors |
+
+All five changes have synthetic and local UI/API validation, but the formal enterprise pilot is paused by user decision and none is promoted to `V3 pilot_verified`.
 
 ## 4. OWASP GenAI LLM Top 10 2026 mapping
 
@@ -156,7 +170,12 @@ Agent Governance Gateway is not an MCP-only firewall. Its differentiator is the 
 
 ### P0 — Prove the real behavior trail
 
-Authorized company Agent pilot; correlate Agent/wrapper/process/file/network without a vendor-specific schema; add identity/delegation/provenance/parent event; show trust levels; surface schema/coverage gaps; add default-deny boundaries and safe-exit fixtures for open internet, inter-Agent communication, and real-world actions.
+- [x] Fix stale UI discovery, denied-directory aborts, catalog/cache false Shadow results, and the missing registry workflow exposed by the endpoint trial.
+- [x] State “asset approval ≠ action approval” and regress that both Allow and Deny reach audit.
+- [ ] After renewed authorization, complete a lightweight real-Agent pilot and resource measurements.
+- [ ] Correlate Agent/wrapper/process/file/network evidence without a vendor-specific schema.
+- [ ] Show self-report versus independent evidence while keeping unknown schemas and coverage gaps visible.
+- [ ] Add default-deny boundaries and safe-exit fixtures for open internet, inter-Agent communication, and real-world actions.
 
 ### P1 — Turn visibility into control
 

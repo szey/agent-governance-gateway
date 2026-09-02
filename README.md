@@ -8,9 +8,11 @@ Agent Governance Gateway is an open-source security control plane for AI agents.
 
 It is designed around one distinction:
 
-> **Discovery tells you an agent exists. Enforcement controls what an agent is allowed to do.**
+> **Discovery tells you an Agent exists. Asset approval decides whether it may exist. Enforcement and audit decide whether each action may occur and what evidence remains afterward.**
 
-The current repository is a runnable MVP and reference architecture—not yet a production security boundary. The policy router and first configuration-based Shadow Agent scanner are implemented. An experimental session observer records child-process lifecycle and privacy-preserving Agent JSONL evidence, but the authorized enterprise Agent endpoint pilot has not been run yet. Live network, identity, and endpoint sensors remain planned work.
+The approved registry is not a behavior allowlist. Even an approved Agent is evaluated on every routed action, and `allow`, `restrict`, `sandbox`, `deny`, and `escalate` decisions are all audited.
+
+The current repository is a runnable MVP and reference architecture—not yet a production security boundary. The policy router, first configuration-based Shadow Agent scanner, and local approved registry are implemented. An experimental session observer records child-process lifecycle and privacy-preserving Agent JSONL evidence. The project has received sanitized feedback from one company-endpoint trial, but independent-sensor validation and resource measurement under the controlled pilot protocol are not complete. Live network, identity, and endpoint sensors remain planned work.
 
 ## Why this project exists
 
@@ -75,13 +77,14 @@ Solid lines represent implemented paths. Dotted sensor paths are the enterprise 
 
 | Capability | Status | Notes |
 |---|---:|---|
-| Config/dependency Shadow Agent discovery | Implemented | Read-only scan of explicitly selected directories |
+| Config/dependency Shadow Agent discovery | Implemented | Read-only scan of explicit roots; unreadable children become coverage gaps and scanning continues |
 | Evidence, confidence, fingerprinting, deduplication | Implemented | Findings are grouped by project and agent type |
-| Registry reconciliation | Implemented | Registered findings are separated from Shadow Agents |
+| Deployment-state classification | Implemented | Separates `available`, `installed`, and `configured`; marketplace/cache evidence is not automatically Shadow |
+| Approved Agent registry and reconciliation | Implemented | Add, edit, suspend, or remove entries in the UI; save or rescan reconciles immediately |
 | Capability and token-scope enforcement | Implemented | Unknown identities, resources, and scopes fail closed |
 | Explainable risk-based routing | Implemented | `allow`, `restrict`, `sandbox`, `deny`, `escalate` |
 | Planned-versus-observed action comparison | Implemented | Demonstrated with safe simulated executor actions |
-| Append-only audit records | Implemented | Local JSONL persistence |
+| Append-only audit records | Implemented | Every valid Router request is recorded locally, whether allowed, denied, or escalated |
 | Session causality and cross-tool sequence detection | Implemented | Parent events, provenance, accumulated risk; blocks sensitive-read-to-egress chains |
 | Indirect prompt-injection metadata rule | Implemented | Deterministic untrusted-retrieval signal checks without retaining retrieved content |
 | Protected-read audit and privacy budget | Implemented | Open/read class, byte count, and budget without full paths or contents |
@@ -133,10 +136,10 @@ go run ./cmd/discover --path ./examples/shadow-agent-sample
 Expected result:
 
 ```text
-STATUS  RISK     CONFIDENCE  TYPE  NAME                                   EVIDENCE
-shadow  high/85  95%         mcp   shadow-agent-sample / MCP integration  2
+STATUS  DEPLOYMENT  RISK     CONFIDENCE  TYPE  NAME                                   EVIDENCE
+shadow  configured  high/85  95%         mcp   shadow-agent-sample / MCP integration  2
 
-Total: 1  Registered: 0  Shadow: 1
+Total: 1  Approved: 0  Shadow: 1  Available only: 0  Coverage gaps: 0
 ```
 
 Use JSON output for automation:
@@ -145,14 +148,28 @@ Use JSON output for automation:
 go run ./cmd/discover --path ./examples/shadow-agent-sample --format json
 ```
 
-Discovery signatures and the approved registry live in [`configs/discovery.json`](configs/discovery.json). The scanner:
+Discovery signatures and approved-registry seeds live in [`configs/discovery.json`](configs/discovery.json). Registry entries managed in the UI persist to the Git-ignored `data/approved-agents.json`, so a company inventory is not committed to the public repository. The scanner:
 
 - reads only roots explicitly passed with `--path`;
 - skips `.git`, dependencies, build output, and runtime data by default;
 - stores evidence metadata and relative paths, not file contents;
 - limits candidate file size;
 - groups evidence using a stable fingerprint;
-- labels unmatched findings as `shadow`.
+- labels marketplace, catalog, cache, or temporary evidence as `available/unassessed` instead of immediately calling it Shadow;
+- labels installed, configured, or observed findings that do not match the approved registry as `shadow`;
+- records unreadable child directories as coverage gaps and continues instead of aborting the whole scan.
+
+### Configure approved Agents in the control desk
+
+Start the server with one authorized scan root:
+
+```powershell
+.\dist\agent-governance-gateway.exe `
+  --addr "127.0.0.1:8080" `
+  --discovery-root "C:\approved-agent-scan-root"
+```
+
+In the control desk, prepare an entry from a Shadow finding to retain its discovery fingerprint, then set the name, type, evidence-path fragment, accountable owner, approval reference, expiry date, and state. The fingerprint prevents a path-only rule from matching too broadly. Saving immediately rescans and reconciles without editing JSON or restarting the server. Approval changes asset identity only; every tool call and resource access still passes through independent action policy and audit.
 
 ## From a dashboard to real behavior evidence
 
@@ -171,7 +188,8 @@ The first part of that path now exists as `cmd/observe`. It records the child pr
 The low-footprint deployment plan, authorization boundary, Agent compatibility profiles, deterministic cases, and success criteria are in [`docs/experiments/enterprise-agent-pilot.md`](docs/experiments/enterprise-agent-pilot.md). The pilot sequence is intentionally:
 
 ```text
-Private GitHub repository → company approval → isolated endpoint deployment
+Public GitHub source → company and device approval → company-approved transfer/build path
+→ isolated endpoint deployment
 → controlled company Agent run → inspect audit evidence → fix gaps → repeat
 ```
 
@@ -232,12 +250,16 @@ Endpoints:
 
 - `GET /api/health` — service health
 - `GET /api/scenarios` — bundled routing demonstrations
-- `GET /api/discoveries` — discovery inventory loaded at server start
+- `GET /api/discoveries` — current discovery inventory
+- `POST /api/discoveries/rescan` — rescan only the roots authorized at server start; accepts local-control-desk admin requests
+- `GET /api/approved-agents` — local registry and configured Agent types
+- `POST /api/approved-agents` — add or update an approval and reconcile immediately
+- `DELETE /api/approved-agents/{id}` — remove an approval and reconcile immediately
 - `GET /api/session-events?limit=30` — normalized local Agent session evidence and explicit coverage limits
 - `POST /api/route` — evaluate, route, observe, and audit a request
 - `GET /api/audits?limit=20` — recent audit records
 
-The discovery prototype currently uses the local `cmd/discover` CLI. A sensor-ingestion API and persistent enterprise inventory are roadmap items.
+Local registry management and scoped rescanning are now connected to the control desk. Administrative writes require a dedicated same-origin UI header, but this is not enterprise authentication or RBAC; do not expose the admin UI directly to an untrusted network. Cross-endpoint sensor ingestion and a central enterprise inventory remain roadmap items.
 
 ## Research and product mapping
 
@@ -272,7 +294,7 @@ Every explanatory document is maintained in English and Simplified Chinese. Chin
 │   ├── observe/            Experimental local session observer
 │   └── server/             Policy router and control desk
 ├── configs/
-│   ├── discovery.json      Signatures and approved-agent registry
+│   ├── discovery.json      Signatures and approved-registry seeds
 │   └── policy.json         Capability and resource policy
 ├── docs/                   Product rationale and research notes
 ├── examples/               Routing scenarios and a Shadow Agent fixture
@@ -285,12 +307,20 @@ Every explanatory document is maintained in English and Simplified Chinese. Chin
 │   ├── risk/               Explainable routing risk
 │   ├── router/             End-to-end decision orchestration
 │   └── sessionaudit/        Privacy-preserving session event normalization
-└── web/                    Embedded control desk
+├── web/
+│   ├── src/                TypeScript UI source
+│   └── static/             esbuild output, HTML, and CSS embedded in the Go binary
+└── package.json            TypeScript and esbuild development tools
 ```
 
 ## Development
 
+Node.js is needed only when changing the TypeScript UI. The compiled `web/static/app.js` is committed, so ordinary Go builds and endpoint execution do not require Node.js.
+
 ```bash
+npm install
+npm run check:web
+npm run build:web
 go test ./...
 go test -race ./...
 go vet ./...
@@ -305,12 +335,14 @@ This repository is an MVP and reference implementation.
 
 - Discovery is passive, local, explicitly scoped, and currently configuration-based.
 - Discovery signatures are heuristic evidence and may produce false positives or miss custom agents.
+- `available` means only that catalog, marketplace, cache, or temporary evidence exists; it is not proof that an Agent is installed or running.
+- An approved Agent still requires per-action authorization and continuous audit; registry membership never bypasses execution policy.
 - The router protects only requests that pass through it.
 - Executor actions are simulated through `simulated_actions`; no real host command is executed.
 - `sandbox-executor` is a routing decision, not Docker/gVisor/Firecracker isolation.
 - Audit logs are append-only files, not yet tamper-evident or centrally durable.
 - Session-observer JSONL is Agent self-reporting; only wrapper lifecycle is independently recorded at this stage. Company pilots require explicit authorization and an approved data boundary.
-- Authentication, signed agent identities, multi-tenancy, durable inventory, policy distribution, and enterprise sensors are not implemented.
+- The approved registry is durable only in a local JSON file. Enterprise authentication, RBAC, signed Agent identities, multi-tenancy, central inventory, policy distribution, and enterprise sensors are not implemented.
 
 Do not place this MVP in front of production credentials or treat a discovery result as definitive without corroborating evidence and an independent security review.
 
@@ -319,12 +351,13 @@ Do not place this MVP in front of production credentials or treat a discovery re
 ### Discovery and visibility
 
 - [x] Scoped config and dependency scanner
-- [x] Evidence, confidence, fingerprinting, registry reconciliation
+- [x] Evidence, confidence, fingerprinting, deployment state, and approved-registry reconciliation
+- [x] Local approved-registry management, persistence, and scoped rescan
 - [ ] Cross-platform process scanner
 - [ ] GitHub organization and CI/CD scanner
 - [ ] Network/API/LLM egress telemetry ingestion
 - [ ] OAuth, service-principal, and non-human identity reconciliation
-- [ ] Persistent inventory with ownership and lifecycle state
+- [ ] Central enterprise inventory with RBAC, cross-endpoint sync, and full lifecycle state
 
 ### Enforcement and runtime
 

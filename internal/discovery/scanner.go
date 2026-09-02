@@ -13,12 +13,21 @@ import (
 )
 
 type Scanner struct {
-	config Config
-	clock  func() time.Time
+	config    Config
+	clock     func() time.Time
+	walkDir   func(string, fs.WalkDirFunc) error
+	truncated bool
+	gapCount  int
 }
 
 func NewScanner(cfg Config) *Scanner {
-	return &Scanner{config: cfg, clock: time.Now}
+	if cfg.MaxFileBytes <= 0 {
+		cfg.MaxFileBytes = 2 << 20
+	}
+	if cfg.MaxFindings <= 0 {
+		cfg.MaxFindings = 500
+	}
+	return &Scanner{config: cfg, clock: time.Now, walkDir: filepath.WalkDir}
 }
 
 func (s *Scanner) Scan(roots []string) (Report, error) {
@@ -26,7 +35,12 @@ func (s *Scanner) Scan(roots []string) (Report, error) {
 		return Report{}, fmt.Errorf("at least one scan root is required")
 	}
 
-	report := Report{ScannedAt: s.clock().UTC(), Roots: make([]string, 0, len(roots)), Agents: []DiscoveredAgent{}}
+	report := Report{
+		ScannedAt: s.clock().UTC(), Roots: make([]string, 0, len(roots)),
+		Agents: []DiscoveredAgent{}, Gaps: []CoverageGap{},
+	}
+	s.truncated = false
+	s.gapCount = 0
 	findings := map[string]*DiscoveredAgent{}
 	for _, root := range roots {
 		absolute, err := filepath.Abs(root)
@@ -41,7 +55,7 @@ func (s *Scanner) Scan(roots []string) (Report, error) {
 			return Report{}, fmt.Errorf("scan root %q is not a directory", root)
 		}
 		report.Roots = append(report.Roots, absolute)
-		if err := s.scanRoot(absolute, findings); err != nil {
+		if err := s.scanRoot(absolute, findings, &report); err != nil {
 			return Report{}, err
 		}
 	}
@@ -57,20 +71,26 @@ func (s *Scanner) Scan(roots []string) (Report, error) {
 		agent.Risk = scoreRisk(*agent)
 		sort.Slice(agent.Evidence, func(i, j int) bool { return agent.Evidence[i].Source < agent.Evidence[j].Source })
 		report.Agents = append(report.Agents, *agent)
-		if agent.Status == StatusRegistered {
-			report.Summary.Registered++
-		} else {
+		switch agent.Status {
+		case StatusApproved:
+			report.Summary.Approved++
+		case StatusShadow:
 			report.Summary.Shadow++
+		case StatusUnassessed:
+			report.Summary.Available++
 		}
 	}
 	report.Summary.Total = len(report.Agents)
+	report.Summary.CoverageGaps = s.gapCount
+	report.Summary.Truncated = s.truncated
 	return report, nil
 }
 
-func (s *Scanner) scanRoot(root string, findings map[string]*DiscoveredAgent) error {
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+func (s *Scanner) scanRoot(root string, findings map[string]*DiscoveredAgent, report *Report) error {
+	return s.walkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return fmt.Errorf("walk %s: %w", path, walkErr)
+			s.addCoverageGap(root, path, walkErr, report)
+			return nil
 		}
 		if entry.IsDir() {
 			if path != root && containsFold(s.config.SkipDirectories, entry.Name()) {
@@ -81,7 +101,8 @@ func (s *Scanner) scanRoot(root string, findings map[string]*DiscoveredAgent) er
 
 		info, err := entry.Info()
 		if err != nil {
-			return fmt.Errorf("inspect %s: %w", path, err)
+			s.addCoverageGap(root, path, err, report)
+			return nil
 		}
 		for _, signature := range s.config.Signatures {
 			if containsFold(signature.FileNames, entry.Name()) {
@@ -90,7 +111,8 @@ func (s *Scanner) scanRoot(root string, findings map[string]*DiscoveredAgent) er
 			if info.Size() <= s.config.MaxFileBytes && containsFold(signature.ContentFiles, entry.Name()) {
 				data, err := os.ReadFile(path)
 				if err != nil {
-					return fmt.Errorf("read candidate %s: %w", path, err)
+					s.addCoverageGap(root, path, err, report)
+					continue
 				}
 				lower := strings.ToLower(string(data))
 				for _, indicator := range signature.ContentIndicators {
@@ -113,14 +135,19 @@ func (s *Scanner) addEvidence(root, path string, signature Signature, basis, ind
 	key := projectRoot + "\x00" + signature.AgentType
 	agent, ok := findings[key]
 	if !ok {
+		if len(findings) >= s.config.MaxFindings {
+			s.truncated = true
+			return
+		}
+		state := deploymentState(root, relative, basis)
 		agent = &DiscoveredAgent{
-			Fingerprint: fingerprint(key),
-			Name:        filepath.Base(projectRoot) + " / " + signature.DisplayName,
-			AgentType:   signature.AgentType,
-			Status:      StatusShadow,
-			Evidence:    []Evidence{},
+			Fingerprint: fingerprint(key), Name: filepath.Base(projectRoot) + " / " + signature.DisplayName,
+			AgentType: signature.AgentType, DeploymentState: state, Status: governanceStatus(state), Evidence: []Evidence{},
 		}
 		findings[key] = agent
+	} else if deploymentRank(deploymentState(root, relative, basis)) > deploymentRank(agent.DeploymentState) {
+		agent.DeploymentState = deploymentState(root, relative, basis)
+		agent.Status = governanceStatus(agent.DeploymentState)
 	}
 	agent.Evidence = append(agent.Evidence, Evidence{
 		Scanner: "config", Basis: basis, Source: filepath.ToSlash(relative), Indicator: indicator, Confidence: confidence,
@@ -131,8 +158,18 @@ func (s *Scanner) addEvidence(root, path string, signature Signature, basis, ind
 }
 
 func (s *Scanner) reconcile(agent *DiscoveredAgent) {
-	for _, registered := range s.config.RegisteredAgents {
+	if agent.DeploymentState == DeploymentAvailable {
+		agent.Status = StatusUnassessed
+		return
+	}
+	for _, registered := range s.config.ApprovedAgents {
+		if !approvalIsActive(registered, s.clock()) {
+			continue
+		}
 		if !strings.EqualFold(registered.AgentType, agent.AgentType) {
+			continue
+		}
+		if registered.Fingerprint != "" && !strings.EqualFold(registered.Fingerprint, agent.Fingerprint) {
 			continue
 		}
 		if registered.PathContains != "" {
@@ -147,7 +184,8 @@ func (s *Scanner) reconcile(agent *DiscoveredAgent) {
 				continue
 			}
 		}
-		agent.Status = StatusRegistered
+		agent.Status = StatusApproved
+		agent.ApprovalID = registered.ID
 		agent.Name = registered.Name
 		agent.Owner = registered.Owner
 		return
@@ -157,9 +195,15 @@ func (s *Scanner) reconcile(agent *DiscoveredAgent) {
 func scoreRisk(agent DiscoveredAgent) RiskAssessment {
 	score := 0
 	var factors []string
+	if agent.DeploymentState == DeploymentAvailable {
+		return RiskAssessment{
+			Score: 5, Level: "low",
+			Factors: []string{"catalog, marketplace, cache, or temporary evidence only; not counted as a deployed Agent"},
+		}
+	}
 	if agent.Status == StatusShadow {
 		score += 45
-		factors = append(factors, "not present in the registered agent inventory (+45)")
+		factors = append(factors, "not present in the approved Agent registry (+45)")
 	}
 	if agent.Owner == "" {
 		score += 15
@@ -183,9 +227,70 @@ func scoreRisk(agent DiscoveredAgent) RiskAssessment {
 		level = "medium"
 	}
 	if len(factors) == 0 {
-		factors = []string{"registered agent with an accountable owner"}
+		factors = []string{"approved Agent with an accountable owner"}
 	}
 	return RiskAssessment{Score: score, Level: level, Factors: factors}
+}
+
+func deploymentState(root, relative, basis string) DeploymentState {
+	context := filepath.ToSlash(filepath.Join(filepath.Base(root), relative))
+	for _, segment := range strings.Split(strings.ToLower(context), "/") {
+		segment = strings.Trim(segment, ". ")
+		if strings.Contains(segment, "marketplace") || segment == "catalog" || segment == "cache" || segment == "temp" {
+			return DeploymentAvailable
+		}
+	}
+	if basis == "configuration_file" {
+		return DeploymentConfigured
+	}
+	return DeploymentInstalled
+}
+
+func deploymentRank(state DeploymentState) int {
+	return map[DeploymentState]int{
+		DeploymentAvailable: 1, DeploymentInstalled: 2, DeploymentConfigured: 3, DeploymentObserved: 4,
+	}[state]
+}
+
+func governanceStatus(state DeploymentState) Status {
+	if state == DeploymentAvailable {
+		return StatusUnassessed
+	}
+	return StatusShadow
+}
+
+func approvalIsActive(entry RegistryEntry, now time.Time) bool {
+	if entry.State != "" && !strings.EqualFold(entry.State, "active") {
+		return false
+	}
+	if entry.ExpiresOn == "" {
+		return true
+	}
+	expires, err := time.Parse("2006-01-02", entry.ExpiresOn)
+	return err == nil && !expires.Before(now.UTC().Truncate(24*time.Hour))
+}
+
+func (s *Scanner) addCoverageGap(root, path string, err error, report *Report) {
+	s.gapCount++
+	if len(report.Gaps) >= 50 {
+		return
+	}
+	relative, relErr := filepath.Rel(root, path)
+	if relErr != nil || relative == "." {
+		relative = filepath.Base(path)
+	}
+	report.Gaps = append(report.Gaps, CoverageGap{Source: filepath.ToSlash(relative), Reason: compactError(err)})
+}
+
+func compactError(err error) string {
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "cannot find") || strings.Contains(lower, "no such file") || strings.Contains(lower, "not exist") {
+		return "not_found"
+	}
+	if strings.Contains(lower, "access is denied") || strings.Contains(lower, "permission denied") {
+		return "permission_denied"
+	}
+	return "unreadable"
 }
 
 func fingerprint(value string) string {

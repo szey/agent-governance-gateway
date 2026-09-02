@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"testing/fstest"
@@ -56,6 +57,76 @@ func TestRouteEndpointRejectsUnknownFields(t *testing.T) {
 	handler.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+}
+
+func TestApprovedAgentRegistryRequiresAdminHeader(t *testing.T) {
+	handler := testHandler(t)
+	body := bytes.NewBufferString(`{"name":"WorkBuddy","agent_type":"mcp","path_contains":".mcp.json","owner":"security"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/approved-agents", body)
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", response.Code)
+	}
+}
+
+func TestApprovedAgentRegistryCanBeManagedFromLocalUI(t *testing.T) {
+	handler := testHandler(t)
+	body := bytes.NewBufferString(`{"name":"WorkBuddy","agent_type":"mcp","path_contains":".mcp.json","owner":"security"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/approved-agents", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Governance-Admin", "local-ui")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Approved discovery.RegistryEntry `json:"approved_agent"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Approved.ID == "" || result.Approved.Name != "WorkBuddy" {
+		t.Fatalf("approved entry = %#v", result.Approved)
+	}
+}
+
+func TestAllowAndDenyDecisionsAreBothAudited(t *testing.T) {
+	handler := testHandler(t)
+	requests := []models.Request{
+		{
+			UserID: "user-01", AgentID: "coder-agent", TokenScopes: []string{"code.read"},
+			RequestedAction: "Generate code", ClaimedIntent: "code_generation", RequestedCapability: "generate_code",
+			TargetResource: "public_workspace", PlannedActions: []string{"generate_code"},
+		},
+		{
+			UserID: "user-01", AgentID: "coder-agent", TokenScopes: []string{"code.read"},
+			RequestedAction: "Read finance", ClaimedIntent: "report_summary", RequestedCapability: "read_finance_data",
+			TargetResource: "finance_data", PlannedActions: []string{"read_finance_data"},
+		},
+	}
+	for _, input := range requests {
+		body, _ := json.Marshal(input)
+		req := httptest.NewRequest(http.MethodPost, "/api/route", bytes.NewReader(body))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("route status = %d, body = %s", response.Code, response.Body.String())
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/audits?limit=10", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	var records []models.AuditRecord
+	if err := json.NewDecoder(response.Body).Decode(&records); err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || records[0].PolicyDecision.Route != models.RouteDeny || records[1].PolicyDecision.Route != models.RouteAllow {
+		t.Fatalf("audits = %#v, want deny and allow", records)
 	}
 }
 
@@ -121,5 +192,15 @@ func testHandlerWithSessionAudit(t *testing.T, sessionAuditPath string) http.Han
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-	return httpapi.New(router.New(cfg, store), store, nil, discovery.Report{}, sessionAuditPath, static, logger).Handler()
+	discoveryConfig := filepath.Join(t.TempDir(), "discovery.json")
+	if err := os.WriteFile(discoveryConfig, []byte(`{
+		"signatures":[{"agent_type":"mcp","display_name":"MCP","file_names":["mcp.json"]}]
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := discovery.NewManager(discoveryConfig, filepath.Join(t.TempDir(), "approved-agents.json"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return httpapi.New(router.New(cfg, store), store, nil, manager, sessionAuditPath, static, logger).Handler()
 }

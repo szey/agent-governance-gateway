@@ -2,7 +2,7 @@
 
 English | [简体中文](enterprise-agent-pilot.zh-CN.md)
 
-Status: **designed, not executed**. The target is a modestly provisioned company computer running an Agent already approved by the company. Obtain explicit approval from the device owner, IT/security, and relevant data owners before execution.
+Status: **paused after an exploratory trial; the formal controlled pilot is incomplete**. One company-endpoint trial verified service startup and scoped configuration discovery, while exposing scan interruption, marketplace/cache noise, stale UI data, and a missing registry workflow. This iteration converts those findings into synthetic fixtures and local fixes. No raw company logs, usernames, hostnames, or absolute paths are retained in the repository. Renew explicit authorization from the device owner, IT/security, and relevant data owners before any further execution.
 
 ## Objective
 
@@ -19,6 +19,19 @@ The pilot must establish:
 7. whether CPU, memory, disk, and latency overhead are acceptable on the target device.
 
 A hand-authored UI record does not pass. Configuration evidence proves only possible installation/configuration, not execution.
+
+## Trial feedback received
+
+| Observation | Conclusion | Product response in this iteration |
+|---|---|---|
+| Health check passed and a scoped scan found Agent/MCP evidence | Configuration discovery runs, but does not prove runtime behavior | Preserve evidence trust and coverage limits |
+| A whole-drive scan stopped at an unreadable directory | Whole-drive scanning is neither authorized nor reliable | Keep explicit roots; record denied children as coverage gaps and continue |
+| Marketplace, plugin-cache, and temporary content produced many hits | Available does not mean installed or used | Add `available/installed/configured/observed`; only deployed states enter Shadow reconciliation |
+| CLI results did not reach the running UI | A startup snapshot is not an operational workflow | Add scoped rescan in the UI and reconcile after registry changes |
+| No visible approved-registry workflow existed | Operators could not explain why a result was Shadow | Add a local registry with owner, reference, expiry, and suspended state |
+| Approved could be mistaken for blanket action permission | Asset admission and action authorization must be separate | State `Approved Agent ≠ approved behavior`; continue auditing every valid Router action |
+
+The trial did not complete real GUI/IDE behavior observation, independent OS/network corroboration, or performance measurement, so it is not `V3 pilot_verified`.
 
 ## Authorization boundary
 
@@ -92,12 +105,12 @@ Initial acceptance targets—not verified promises:
 
 Record actual measurements. If a target is missed, reduce scope, event volume, and retention before adding heavier endpoint sensors.
 
-## Private Pilot workflow
+## Authorized pilot workflow
 
 ### 0. Repository and transfer boundary
 
-- Keep the GitHub repository Private.
-- Secret-scan before transfer and confirm whether company policy allows pulling from personal GitHub.
+- The GitHub source repository may be Public, but public availability does not mean company approval to execute it.
+- Secret-scan before transfer and confirm whether company policy allows pulling public source from personal GitHub.
 - Prefer a company-approved internal mirror, archive, or source-hosting channel.
 - Never push company-generated `data/`, logs, hostnames, usernames, or paths to personal GitHub.
 - Bring back only a redacted minimal reproduction or synthetic fixture.

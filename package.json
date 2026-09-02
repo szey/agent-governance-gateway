@@ -1,0 +1,12 @@
+{
+  "name": "agent-governance-gateway-ui",
+  "private": true,
+  "scripts": {
+    "build:web": "esbuild web/src/app.ts --bundle --target=es2022 --format=iife --outfile=web/static/app.js",
+    "check:web": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}

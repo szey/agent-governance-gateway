@@ -2,7 +2,7 @@
 
 [English](research-product-mapping-iteration.md) | 简体中文
 
-最近复核：2026-08-30
+最近复核：2026-09-02
 
 本文是 Agent Governance Gateway 唯一的调研、风险框架映射、社区痛点、处置建议、开源项目借鉴和产品迭代登记文档。中文是工作源版本；中文内容变化后，在同一次改动中同步英文版。
 
@@ -79,6 +79,20 @@
 
 - OWASP GenAI LLM Top 10 仍采用 2026 版；OWASP Agentic Applications Top 10、NIST AI RMF / NIST AI 600-1 和 MITRE ATLAS 本周未发现需要改变现有编号或版本基线的更新。
 - MCP `2026-07-28` 已成为新的协议基线。授权相关变化包括 authorization response `iss` 校验、凭据隔离、Scope step-up，以及 DCR/TLS 迁移要求；它们属于真实 MCP Adapter/Gateway 的验收条件，不能只靠 Router 内部策略声称符合。
+
+### 2026-09-02 公司端点试用反馈与产品决定
+
+本轮只保留脱敏事实，不保存用户提供的原始公司日志、用户名、主机名或绝对路径。一次公司端点探索性试用不是完整授权试点，也不能证明运行时行为或性能指标已经通过。
+
+| `research_id` | 观察与根因 | 来源 / 验证 | 可证伪假设与基线 | 决定 | 产品落地与剩余边界 |
+|---|---|---|---|---|---|
+| `FIELD-2026-001` | CLI 扫描得到新结果，但网页仍显示仓库示例；根因是 Server 只在启动时保存发现快照 | 用户提供的直接系统输出 `S1` + 操作者反馈 `S4`；本地 Manager/API 回归 `V2` | 保存批准记录或点击 rescan 后，`GET /api/discoveries` 应立即改变，无需重启 | `implement` | 新增 Discovery Manager 和限定启动目录的 rescan；仍未接入外部传感器流 |
+| `FIELD-2026-002` | 过宽扫描在无权限系统目录处中止；全盘扫描本身也超出最小授权原则 | 直接错误输出 `S1` + 操作者反馈 `S4`；模拟拒绝访问回归 `V2` | 一个子目录拒绝访问不应丢失其他结果，应形成 coverage gap | `implement` | 记录最多 50 个脱敏相对路径缺口并继续；仍要求只扫描明确批准目录 |
+| `FIELD-2026-003` | marketplace、插件 cache 和临时内容被大量标成 Shadow；根因是“可获得线索”和“已部署 Agent”混为一类 | 直接扫描输出 `S1` + 操作者反馈 `S4`；marketplace synthetic fixture `V2` | marketplace/cache-only fixture 的 Shadow 数必须为 0，状态必须为 `available/unassessed` | `implement` | 新增 `available/installed/configured/observed`；当前仍是路径启发式，进程证据待实现 |
+| `FIELD-2026-004` | 批准清单只藏在 JSON，操作者看不到如何核对 Shadow | 产品使用反馈 `S4`；Registry 持久化、HTTP 和浏览器交互回归 `V2` | UI 新增、编辑、暂停或移除记录后，清单持久化且发现结果自动核对 | `implement` | 新增本地 `data/approved-agents.json` 和双语管理界面；企业 RBAC/中央同步未实现 |
+| `FIELD-2026-005` | “已批准 Agent”可能被误解为“所有行为已批准” | 产品需求 `S4`；Allow + Deny 审计回归 `V2` | 资产匹配不得改变 Router 策略；Allow、Deny、Escalate 等有效请求均应审计 | `implement` | 资产准入与逐次行为授权保持独立；只保证经过 Router/Observer/已接入传感器的可观察行为，不声称全机覆盖 |
+
+这五项改变经过 synthetic fixture 和本地 UI/API 验证，但正式企业试点已按用户决定暂停，因此状态不升级到 `V3 pilot_verified`。
 
 ## 4. OWASP GenAI LLM Top 10 2026 产品映射
 
@@ -177,12 +191,12 @@ Agent Governance Gateway 不定位为 MCP-only Firewall。差异应来自发现�
 
 ### P0——证明真实行为链
 
-1. 在获准公司端点上使用真实 Agent 完成轻量试点；
-2. 关联 Agent/wrapper、进程、文件和网络证据，不绑定单一厂商 Schema；
-3. 增加身份/委托、输入来源和父事件；
-4. 展示自报与独立证据的会话时间线；
-5. 未知 Schema 和覆盖缺口必须可见。
-6. 为开放互联网、跨 Agent 通信和现实对象动作增加默认拒绝边界与安全退出 fixture。
+1. [x] 修复端点试用暴露的网页刷新、无权限目录、catalog/cache 误报和批准清单入口；
+2. [x] 明确“资产批准 ≠ 行为批准”，并回归 Allow 与 Deny 都进入审计；
+3. [ ] 在重新获得授权后完成真实 Agent 轻量试点和资源测量；
+4. [ ] 关联 Agent/wrapper、进程、文件和网络证据，不绑定单一厂商 Schema；
+5. [ ] 展示自报与独立证据的会话时间线，并保持未知 Schema 和覆盖缺口可见；
+6. [ ] 为开放互联网、跨 Agent 通信和现实对象动作增加默认拒绝边界与安全退出 fixture。
 
 ### P1——把可见性变成控制
 

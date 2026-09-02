@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Agent Governance Gateway — a policy-driven security router for AI agents.">
+  <meta name="description" content="Agent Governance Gateway — discover Agents, authorize actions, and retain an audit trail.">
   <title>Agent Governance Gateway · Control desk</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -11,153 +11,135 @@
   <header class="masthead">
     <div class="brand-block">
       <div class="brand-mark" aria-hidden="true">AG</div>
-      <div>
-        <p class="eyebrow">Agent security control plane</p>
-        <h1>Agent Governance Gateway</h1>
-      </div>
+      <div><p class="eyebrow" data-i18n="brandEyebrow">Agent 安全控制平面</p><h1>Agent Governance Gateway</h1></div>
     </div>
-    <p class="thesis">Decide what an agent may do<br>before the action becomes an incident.</p>
-    <div class="system-state"><span></span> policy engine online</div>
+    <p class="thesis" data-i18n="thesis">先判断 Agent 可以做什么，<br>再让动作真正发生。</p>
+    <div class="header-actions">
+      <button id="language-toggle" class="language-toggle" type="button">EN</button>
+      <div class="system-state"><span></span><b data-i18n="online">策略引擎在线</b></div>
+    </div>
   </header>
 
   <main>
+    <section class="governance-contract" aria-labelledby="contract-title">
+      <div class="contract-lead"><p class="eyebrow" data-i18n="contractEyebrow">治理边界</p><h2 id="contract-title" data-i18n="contractTitle">批准 Agent，不等于批准它的行为</h2></div>
+      <div class="contract-step"><span>01</span><strong data-i18n="contractAsset">资产准入</strong><small data-i18n="contractAssetCopy">决定 Agent 是否可存在</small></div>
+      <div class="contract-arrow" aria-hidden="true">≠</div>
+      <div class="contract-step"><span>02</span><strong data-i18n="contractAction">逐次授权</strong><small data-i18n="contractActionCopy">每次行为重新判断</small></div>
+      <div class="contract-arrow" aria-hidden="true">→</div>
+      <div class="contract-step audit-seal"><span>03</span><strong data-i18n="contractAudit">持续审计</strong><small data-i18n="contractAuditCopy">所有可观察结果留痕</small></div>
+    </section>
+
     <section class="route-board" aria-labelledby="route-title">
       <div class="board-heading">
-        <div>
-          <p class="eyebrow">Live decision path</p>
-          <h2 id="route-title">Security checkpoint rail</h2>
-        </div>
-        <p id="request-id" class="request-id">No request routed</p>
+        <div><p class="eyebrow" data-i18n="decisionEyebrow">实时决策路径</p><h2 id="route-title" data-i18n="decisionTitle">行为安全检查轨</h2></div>
+        <p id="request-id" class="request-id" data-i18n="noRequest">尚未路由请求</p>
       </div>
       <div class="rail" id="decision-rail">
-        <div class="packet" aria-hidden="true"></div>
-        <div class="rail-line" aria-hidden="true"></div>
-        <div class="checkpoint" data-stage="identity"><b>I</b><span>Identity</span><small>Agent + token</small></div>
-        <div class="checkpoint" data-stage="policy"><b>P</b><span>Policy</span><small>Capability</small></div>
-        <div class="checkpoint" data-stage="risk"><b>R</b><span>Risk</span><small>Signals</small></div>
-        <div class="checkpoint" data-stage="dispatch"><b>D</b><span>Dispatch</span><small>Executor</small></div>
-        <div class="checkpoint" data-stage="observe"><b>O</b><span>Observe</span><small>Drift</small></div>
-        <div class="checkpoint" data-stage="audit"><b>A</b><span>Audit</span><small>Verdict</small></div>
+        <div class="packet" aria-hidden="true"></div><div class="rail-line" aria-hidden="true"></div>
+        <div class="checkpoint" data-stage="identity"><b>I</b><span data-i18n="identity">身份</span><small>Agent + token</small></div>
+        <div class="checkpoint" data-stage="policy"><b>P</b><span data-i18n="policy">策略</span><small data-i18n="capability">能力</small></div>
+        <div class="checkpoint" data-stage="risk"><b>R</b><span data-i18n="risk">风险</span><small data-i18n="signals">信号</small></div>
+        <div class="checkpoint" data-stage="dispatch"><b>D</b><span data-i18n="dispatch">分派</span><small data-i18n="executor">执行器</small></div>
+        <div class="checkpoint" data-stage="observe"><b>O</b><span data-i18n="observe">观察</span><small data-i18n="drift">偏移</small></div>
+        <div class="checkpoint" data-stage="audit"><b>A</b><span data-i18n="audit">审计</span><small data-i18n="verdict">结论</small></div>
       </div>
     </section>
 
     <section class="discovery-board" aria-labelledby="discovery-title">
       <div class="discovery-heading">
-        <div>
-          <p class="eyebrow">Discovery / visibility plane</p>
-          <h2 id="discovery-title">Shadow Agent inventory</h2>
+        <div><p class="eyebrow" data-i18n="discoveryEyebrow">发现与资产准入</p><h2 id="discovery-title" data-i18n="discoveryTitle">Agent 资产核对台账</h2></div>
+        <div class="heading-actions">
+          <p class="discovery-note" data-i18n="discoveryNote">批准只改变资产身份，不绕过行为策略或审计。</p>
+          <button id="rescan-discoveries" class="secondary-button" type="button" data-i18n="rescan">重新扫描已配置目录</button>
         </div>
-        <p class="discovery-note">Evidence is not a verdict. Reconcile before enforcement.</p>
       </div>
-      <div class="discovery-content">
-        <div class="inventory-metrics" aria-label="Discovery summary">
-          <div><span>Total</span><strong id="inventory-total">—</strong></div>
-          <div><span>Registered</span><strong id="inventory-registered">—</strong></div>
-          <div class="shadow-metric"><span>Shadow</span><strong id="inventory-shadow">—</strong></div>
+      <div class="inventory-metrics" aria-label="Discovery summary">
+        <div><span data-i18n="totalEvidence">全部线索</span><strong id="inventory-total">—</strong></div>
+        <div class="approved-metric"><span data-i18n="approved">已批准</span><strong id="inventory-approved">—</strong></div>
+        <div class="shadow-metric"><span>Shadow</span><strong id="inventory-shadow">—</strong></div>
+        <div><span data-i18n="availableOnly">仅可用</span><strong id="inventory-available">—</strong></div>
+        <div class="gap-metric"><span data-i18n="coverageGaps">覆盖缺口</span><strong id="inventory-gaps">—</strong></div>
+      </div>
+      <div class="governance-workspace">
+        <div class="inventory-pane">
+          <div class="pane-heading"><div><h3 data-i18n="discoveredEvidence">发现的 Agent 线索</h3><p id="scan-roots" data-i18n="loadingRoots">正在读取扫描范围…</p></div><time id="scanned-at"></time></div>
+          <div id="coverage-gap-list" class="coverage-gap-list" hidden></div>
+          <div id="discovery-list" class="discovery-list" aria-live="polite"><p class="empty-state" data-i18n="loadingInventory">正在加载发现清单…</p></div>
         </div>
-        <div id="discovery-list" class="discovery-list" aria-live="polite">
-          <p class="empty-state">Loading discovery inventory…</p>
-        </div>
+
+        <aside class="registry-pane" aria-labelledby="registry-title">
+          <div class="registry-intro">
+            <p class="eyebrow" data-i18n="approvalRegistryEyebrow">本地治理数据</p>
+            <h3 id="registry-title" data-i18n="approvalRegistryTitle">已批准 Agent 清单</h3>
+            <p data-i18n="approvalRegistryCopy">没有条目时，所有已安装、已配置或已观察到但未匹配的 Agent 都属于 Shadow Agent。</p>
+          </div>
+          <form id="approval-form" class="approval-form">
+            <input id="approval-id" name="id" type="hidden">
+            <label><span data-i18n="agentName">Agent 名称</span><input id="approval-name" name="name" maxlength="160" required placeholder="WorkBuddy"></label>
+            <label><span data-i18n="agentType">Agent 类型</span><select id="approval-type" name="agent_type" required></select></label>
+            <label class="wide-field"><span data-i18n="pathEvidence">证据路径片段</span><input id="approval-path" name="path_contains" maxlength="160" required placeholder=".workbuddy/.mcp.json"><small data-i18n="pathEvidenceHelp">填写相对于扫描根目录的稳定片段，不要填写整块磁盘或用户名。</small></label>
+            <label class="wide-field"><span data-i18n="fingerprint">发现指纹（推荐）</span><input id="approval-fingerprint" name="fingerprint" maxlength="31" placeholder="sha256:…"><small data-i18n="fingerprintHelp">从 Shadow 线索生成批准记录时自动填写，用于避免只凭路径造成过宽匹配。</small></label>
+            <label><span data-i18n="owner">负责人</span><input id="approval-owner" name="owner" maxlength="160" required placeholder="Security team"></label>
+            <label><span data-i18n="approvalRef">批准单号</span><input id="approval-ref" name="approval_ref" maxlength="160" placeholder="CHG-2026-001"></label>
+            <label><span data-i18n="expiresOn">到期日</span><input id="approval-expiry" name="expires_on" type="date"></label>
+            <label><span data-i18n="approvalState">清单状态</span><select id="approval-state" name="state"><option value="active" data-i18n="active">生效</option><option value="suspended" data-i18n="suspended">暂停</option></select></label>
+            <div class="form-actions wide-field">
+              <button id="save-approval" class="primary-button" type="submit" data-i18n="saveApproval">保存并重新核对</button>
+              <button id="cancel-approval" class="text-button" type="button" data-i18n="clearForm">清空</button>
+            </div>
+            <p id="approval-feedback" class="form-feedback wide-field" role="status"></p>
+          </form>
+          <div id="approval-list" class="approval-list" aria-live="polite"></div>
+        </aside>
       </div>
     </section>
 
     <section class="session-board" aria-labelledby="session-title">
       <div class="session-heading">
-        <div>
-          <p class="eyebrow">Real Agent evidence / experimental</p>
-          <h2 id="session-title">Local session audit</h2>
-        </div>
+        <div><p class="eyebrow" data-i18n="evidenceEyebrow">真实 Agent 证据 / 实验性</p><h2 id="session-title" data-i18n="sessionTitle">本地会话审计</h2></div>
         <button id="refresh-session-events" class="icon-button" type="button" aria-label="Refresh session evidence">↻</button>
       </div>
       <div class="session-summary">
-        <div><span>Events</span><strong id="session-total">0</strong></div>
+        <div><span data-i18n="events">事件</span><strong id="session-total">0</strong></div>
         <div><span>Observer</span><strong id="session-observer">0</strong></div>
-        <div><span>Agent self-report</span><strong id="session-self-reported">0</strong></div>
-        <div class="coverage-cell"><span>Coverage</span><strong id="session-coverage">No session data</strong></div>
+        <div><span data-i18n="selfReport">Agent 自报</span><strong id="session-self-reported">0</strong></div>
+        <div class="coverage-cell"><span data-i18n="coverage">覆盖范围</span><strong id="session-coverage">No session data</strong></div>
       </div>
-      <p id="session-limitation" class="session-limitation">No real Agent session has been recorded. The authorized enterprise Agent pilot has not been run.</p>
+      <div class="audit-coverage-strip"><strong data-i18n="auditCoverageTitle">所有经过网关的决策都会审计</strong><span data-i18n="auditCoverageCopy">Observer 记录进程生命周期；结构化 Agent 输出明确标为自报；尚未接入的 OS 与网络行为不会被虚构为已观察。</span></div>
+      <p id="session-limitation" class="session-limitation" data-i18n="noSession">尚未记录真实 Agent 会话。</p>
       <div id="session-event-list" class="session-event-list" aria-live="polite"></div>
     </section>
 
     <div class="workspace-grid">
       <aside class="scenario-panel" aria-labelledby="scenario-title">
-        <div class="panel-title">
-          <p class="eyebrow">Input manifest</p>
-          <h2 id="scenario-title">Demo scenarios</h2>
-        </div>
+        <div class="panel-title"><p class="eyebrow" data-i18n="manifestEyebrow">输入清单</p><h2 id="scenario-title" data-i18n="scenarios">演示场景</h2></div>
         <div id="scenario-list" class="scenario-list" aria-live="polite"></div>
-        <details class="manifest-editor">
-          <summary>Edit request JSON</summary>
-          <label for="request-json">Request manifest</label>
-          <textarea id="request-json" spellcheck="false"></textarea>
-        </details>
-        <button id="route-button" class="route-button" type="button">Route this request <span>→</span></button>
+        <details class="manifest-editor"><summary data-i18n="editJSON">编辑请求 JSON</summary><label for="request-json" data-i18n="requestManifest">请求清单</label><textarea id="request-json" spellcheck="false"></textarea></details>
+        <button id="route-button" class="route-button" type="button"><span data-i18n="routeRequest">路由这个请求</span><b>→</b></button>
         <p id="form-error" class="form-error" role="alert"></p>
       </aside>
 
       <section class="decision-panel" aria-labelledby="decision-title">
-        <div class="decision-head">
-          <div>
-            <p class="eyebrow">Decision sheet</p>
-            <h2 id="decision-title">Awaiting request</h2>
-          </div>
-          <div id="verdict-stamp" class="verdict-stamp neutral">Standby</div>
-        </div>
-
+        <div class="decision-head"><div><p class="eyebrow" data-i18n="decisionSheet">决策单</p><h2 id="decision-title" data-i18n="awaitingRequest">等待请求</h2></div><div id="verdict-stamp" class="verdict-stamp neutral" data-i18n="standby">待命</div></div>
         <div class="decision-metrics">
-          <div><span>Route</span><strong id="route-value">—</strong></div>
-          <div><span>Risk</span><strong id="risk-value">—</strong></div>
-          <div><span>Executor</span><strong id="executor-value">—</strong></div>
+          <div><span data-i18n="route">路由</span><strong id="route-value">—</strong></div><div><span data-i18n="risk">风险</span><strong id="risk-value">—</strong></div><div><span data-i18n="executor">执行器</span><strong id="executor-value">—</strong></div>
         </div>
-
-        <div class="decision-section">
-          <h3>Why this route</h3>
-          <ul id="reason-list" class="reason-list"><li>Select a scenario and route it through the control plane.</li></ul>
-        </div>
-
-		<div id="security-findings" class="security-findings" hidden>
-		  <div class="finding-head">
-			<span>Session security detections</span>
-			<code id="causal-summary"></code>
-		  </div>
-		  <div id="finding-list" class="finding-list"></div>
-		</div>
-
-        <div class="behavior-grid">
-          <div class="decision-section">
-            <h3>Planned actions</h3>
-            <div id="planned-actions" class="action-list"><span class="empty-chip">None yet</span></div>
-          </div>
-          <div class="decision-section">
-            <h3>Observed actions</h3>
-            <div id="actual-actions" class="action-list"><span class="empty-chip">None yet</span></div>
-          </div>
-        </div>
-        <div id="drift-alert" class="drift-alert" hidden>
-          <span>Behavioral drift</span>
-          <strong id="drift-copy"></strong>
-        </div>
+        <div class="decision-section"><h3 data-i18n="whyRoute">为什么这样路由</h3><ul id="reason-list" class="reason-list"><li data-i18n="selectScenario">选择一个场景，通过控制平面路由。</li></ul></div>
+        <div id="security-findings" class="security-findings" hidden><div class="finding-head"><span data-i18n="securityDetections">会话安全检测</span><code id="causal-summary"></code></div><div id="finding-list" class="finding-list"></div></div>
+        <div class="behavior-grid"><div class="decision-section"><h3 data-i18n="plannedActions">计划动作</h3><div id="planned-actions" class="action-list"><span class="empty-chip" data-i18n="noneYet">暂无</span></div></div><div class="decision-section"><h3 data-i18n="observedActions">观察动作</h3><div id="actual-actions" class="action-list"><span class="empty-chip" data-i18n="noneYet">暂无</span></div></div></div>
+        <div id="drift-alert" class="drift-alert" hidden><span data-i18n="behaviorDrift">行为偏移</span><strong id="drift-copy"></strong></div>
       </section>
 
       <aside class="audit-panel" aria-labelledby="audit-title">
-        <div class="panel-title audit-title-row">
-          <div>
-            <p class="eyebrow">Append-only trail</p>
-            <h2 id="audit-title">Recent audits</h2>
-          </div>
-          <button id="refresh-audits" class="icon-button" type="button" aria-label="Refresh audits">↻</button>
-        </div>
-        <div id="audit-list" class="audit-list" aria-live="polite">
-          <p class="empty-state">No routed requests yet.</p>
-        </div>
+        <div class="panel-title audit-title-row"><div><p class="eyebrow" data-i18n="appendOnly">追加写入记录</p><h2 id="audit-title" data-i18n="recentAudits">最近审计</h2></div><button id="refresh-audits" class="icon-button" type="button" aria-label="Refresh audits">↻</button></div>
+        <p class="audit-principle" data-i18n="auditPrinciple">Allow、Block 和 Escalate 都必须留痕；Agent 在批准清单中也不例外。</p>
+        <div id="audit-list" class="audit-list" aria-live="polite"><p class="empty-state" data-i18n="noAudits">尚无已路由请求。</p></div>
       </aside>
     </div>
   </main>
 
-  <footer>
-    <span>Policy-driven · capability-aware · observable</span>
-    <a href="/api/health">API health</a>
-  </footer>
+  <footer><span data-i18n="footer">资产可见 · 逐次授权 · 持续审计</span><a href="/api/health">API health</a></footer>
   <script src="/app.js" defer></script>
 </body>
 </html>

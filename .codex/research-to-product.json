@@ -18,7 +18,8 @@
   "verification_commands": [
     "go test ./...",
     "go vet ./...",
-    "node --check web/static/app.js"
+    "npm run check:web",
+    "npm run build:web -- --log-level=warning"
   ],
   "framework_baselines": [
     {"name": "OWASP GenAI LLM Top 10", "version": "2026"},

@@ -21,6 +21,7 @@ func (p *pathsFlag) Set(value string) error {
 func main() {
 	var paths pathsFlag
 	configPath := flag.String("config", "configs/discovery.json", "discovery signatures and registry path")
+	registryPath := flag.String("approval-registry", "data/approved-agents.json", "approved-Agent registry path; falls back to config when absent")
 	format := flag.String("format", "table", "output format: table or json")
 	flag.Var(&paths, "path", "directory to scan; repeat for multiple roots")
 	flag.Parse()
@@ -32,6 +33,11 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
+	approved, err := discovery.LoadRegistry(*registryPath, cfg.ApprovedAgents)
+	if err != nil {
+		fail(err)
+	}
+	cfg.ApprovedAgents = approved
 	report, err := discovery.NewScanner(cfg).Scan(paths)
 	if err != nil {
 		fail(err)
@@ -46,12 +52,12 @@ func main() {
 		}
 	case "table":
 		writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(writer, "STATUS\tRISK\tCONFIDENCE\tTYPE\tNAME\tEVIDENCE")
+		fmt.Fprintln(writer, "STATUS\tDEPLOYMENT\tRISK\tCONFIDENCE\tTYPE\tNAME\tEVIDENCE")
 		for _, agent := range report.Agents {
-			fmt.Fprintf(writer, "%s\t%s/%d\t%.0f%%\t%s\t%s\t%d\n", agent.Status, agent.Risk.Level, agent.Risk.Score, agent.Confidence*100, agent.AgentType, agent.Name, len(agent.Evidence))
+			fmt.Fprintf(writer, "%s\t%s\t%s/%d\t%.0f%%\t%s\t%s\t%d\n", agent.Status, agent.DeploymentState, agent.Risk.Level, agent.Risk.Score, agent.Confidence*100, agent.AgentType, agent.Name, len(agent.Evidence))
 		}
 		_ = writer.Flush()
-		fmt.Printf("\nTotal: %d  Registered: %d  Shadow: %d\n", report.Summary.Total, report.Summary.Registered, report.Summary.Shadow)
+		fmt.Printf("\nTotal: %d  Approved: %d  Shadow: %d  Available only: %d  Coverage gaps: %d\n", report.Summary.Total, report.Summary.Approved, report.Summary.Shadow, report.Summary.Available, report.Summary.CoverageGaps)
 	default:
 		fail(fmt.Errorf("unsupported format %q; use table or json", *format))
 	}

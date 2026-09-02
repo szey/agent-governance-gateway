@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -22,14 +23,14 @@ type Server struct {
 	router           *router.Router
 	audits           *audit.Store
 	scenarios        []models.Scenario
-	discovery        discovery.Report
+	discovery        *discovery.Manager
 	sessionAuditPath string
 	static           fs.FS
 	logger           *slog.Logger
 }
 
-func New(r *router.Router, audits *audit.Store, scenarios []models.Scenario, report discovery.Report, sessionAuditPath string, static fs.FS, logger *slog.Logger) *Server {
-	return &Server{router: r, audits: audits, scenarios: scenarios, discovery: report, sessionAuditPath: sessionAuditPath, static: static, logger: logger}
+func New(r *router.Router, audits *audit.Store, scenarios []models.Scenario, manager *discovery.Manager, sessionAuditPath string, static fs.FS, logger *slog.Logger) *Server {
+	return &Server{router: r, audits: audits, scenarios: scenarios, discovery: manager, sessionAuditPath: sessionAuditPath, static: static, logger: logger}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -37,6 +38,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/scenarios", s.listScenarios)
 	mux.HandleFunc("GET /api/discoveries", s.listDiscoveries)
+	mux.HandleFunc("POST /api/discoveries/rescan", s.rescanDiscoveries)
+	mux.HandleFunc("GET /api/approved-agents", s.listApprovedAgents)
+	mux.HandleFunc("POST /api/approved-agents", s.saveApprovedAgent)
+	mux.HandleFunc("DELETE /api/approved-agents/{id}", s.deleteApprovedAgent)
 	mux.HandleFunc("GET /api/session-events", s.listSessionEvents)
 	mux.HandleFunc("POST /api/route", s.route)
 	mux.HandleFunc("GET /api/audits", s.listAudits)
@@ -53,7 +58,57 @@ func (s *Server) listScenarios(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) listDiscoveries(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.discovery)
+	writeJSON(w, http.StatusOK, s.discovery.Report())
+}
+
+func (s *Server) rescanDiscoveries(w http.ResponseWriter, req *http.Request) {
+	if !requireLocalAdmin(w, req) {
+		return
+	}
+	report, err := s.discovery.Rescan()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "discovery_rescan_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (s *Server) listApprovedAgents(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"approved_agents": s.discovery.Registry(),
+		"agent_types":     s.discovery.AgentTypes(),
+		"principle":       "Approval permits the Agent to exist; it never bypasses per-action policy or audit.",
+	})
+}
+
+func (s *Server) saveApprovedAgent(w http.ResponseWriter, req *http.Request) {
+	if !requireLocalAdmin(w, req) {
+		return
+	}
+	defer req.Body.Close()
+	var entry discovery.RegistryEntry
+	if err := decodeJSON(req, &entry); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_approval", err.Error())
+		return
+	}
+	saved, report, err := s.discovery.SaveApproval(entry)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "approval_not_saved", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approved_agent": saved, "discovery": report})
+}
+
+func (s *Server) deleteApprovedAgent(w http.ResponseWriter, req *http.Request) {
+	if !requireLocalAdmin(w, req) {
+		return
+	}
+	report, err := s.discovery.DeleteApproval(req.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "approval_not_found", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "discovery": report})
 }
 
 func (s *Server) listSessionEvents(w http.ResponseWriter, req *http.Request) {
@@ -151,4 +206,24 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]string{"error": code, "message": strings.TrimSpace(message)})
+}
+
+func decodeJSON(req *http.Request, value any) error {
+	decoder := json.NewDecoder(io.LimitReader(req.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("request body must contain one JSON object")
+	}
+	return nil
+}
+
+func requireLocalAdmin(w http.ResponseWriter, req *http.Request) bool {
+	if req.Header.Get("X-Agent-Governance-Admin") != "local-ui" {
+		writeError(w, http.StatusForbidden, "local_admin_header_required", "local registry changes require the Agent Governance admin header")
+		return false
+	}
+	return true
 }

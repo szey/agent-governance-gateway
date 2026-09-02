@@ -23,6 +23,8 @@ Agent 获得文件、Shell、数据库、网络和业务 API 等工具后，真�
 
 Agent Governance Gateway 位于 Agent 与执行目标之间，将这些问题收敛成一个可执行的控制点。
 
+资产批准和行为授权必须分离：批准清单只表示 Agent 可以存在并明确了负责人，不授予其全部工具、参数和资源权限。已批准 Agent 与 Shadow Agent 到达已接入控制点或观察点的所有可观察动作都必须记录；经过执行控制点的动作还必须逐次判断。
+
 ## 企业版必须增加发现平面
 
 原来的 MVP 只解决“经过 Agent Governance Gateway 的 Agent 请求如何治理”。它无法看到绕过 Router 的 Agent，因此不能直接发现企业内部未报备的 Shadow Agent。
@@ -84,12 +86,15 @@ Router 还实现了会话内的确定性安全检测：输入来源与风险信�
 - 对明确指定目录做只读配置与依赖扫描；
 - 为发现结果记录证据来源、判断依据和置信度；
 - 按项目和 Agent 类型生成指纹并合并证据；
-- 与批准清单核对，标记 `registered` 或 `shadow`；
+- 区分 `available`、`installed`、`configured`，避免把 marketplace/cache 线索直接判为 Shadow；
+- 与本地持久化批准清单核对，标记 `approved`、`shadow` 或 `unassessed`；
+- 扫描无权限子目录时记录覆盖缺口并继续；
+- 在网页新增、编辑、暂停和移除批准记录，保存或重新扫描后立即核对；
 - 对未知负责人、MCP 能力和高置信证据进行可解释风险评分。
 
 实时进程、网络、OAuth 和云审计传感器尚未实现。
 
-仓库还加入了实验性 `cmd/observe` 会话观察器，用于包裹公司批准的 CLI Agent：Agent Governance Gateway 独立记录子进程生命周期，将 Agent 输出的 JSONL 标为自报证据，只保存事件分类与载荷哈希，不默认保存命令、Prompt 和输出正文。普通 CLI Agent 即使没有 JSONL 也能记录 wrapper 生命周期，但无法识别输出语义；GUI、IDE 插件和后台 Agent 仍需要后续 OS/网络传感器。完整协议见 [`experiments/enterprise-agent-pilot.zh-CN.md`](experiments/enterprise-agent-pilot.zh-CN.md)。
+仓库还加入了实验性 `cmd/observe` 会话观察器，用于包裹公司批准的 CLI Agent：Agent Governance Gateway 独立记录子进程生命周期，将 Agent 输出的 JSONL 标为自报证据，只保存事件分类与载荷哈希，不默认保存命令、Prompt 和输出正文。所有经过 Router 的有效请求无论允许、拒绝或升级都会记录；但 GUI、IDE、后台或绕过控制点的行为仍需要后续 OS/网络传感器。项目已收到一次公司端点试用的脱敏反馈，完整受控协议仍未完成。详见 [`experiments/enterprise-agent-pilot.zh-CN.md`](experiments/enterprise-agent-pilot.zh-CN.md)。
 
 ## 六个演示场景
 
@@ -151,8 +156,8 @@ Router 还实现了会话内的确定性安全检测：输入来源与风险信�
 
 优先级从高到低：
 
-1. 先在获得公司批准的低配置端点和隔离 fixture 中，使用公司真实 Agent 完成受控审计试点；
-2. 增加跨平台进程/文件扫描器和企业遥测接入契约，用独立证据佐证 Agent 自报事件；
+1. 用隔离 fixture 回归本轮公司端点试用暴露的分类、刷新、无权限目录和清单问题；
+2. 在重新获得公司批准后完成受控审计试点，并增加跨平台进程/文件传感器，用独立证据佐证 Agent 自报事件；
 3. 持久化已经实现的会话因果状态，并把 Agent 实例与完整委托链接入企业身份；
 4. 定义 executor adapter 接口，接入第一个真实 Docker sandbox；
 5. 为 `escalate` 增加人工批准与一次性授权；

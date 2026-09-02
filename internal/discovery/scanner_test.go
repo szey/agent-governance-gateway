@@ -42,19 +42,74 @@ func TestScannerFindsAndReconcilesShadowAgent(t *testing.T) {
 		t.Fatal("fingerprint is empty")
 	}
 
-	cfg.RegisteredAgents = []discovery.RegistryEntry{{
+	cfg.ApprovedAgents = []discovery.RegistryEntry{{
 		Name: "Approved MCP", AgentType: "mcp", PathContains: "mcp.json", Owner: "platform-security",
 	}}
 	reconciled, err := discovery.NewScanner(cfg).Scan([]string{root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	registered := reconciled.Agents[0]
-	if registered.Status != discovery.StatusRegistered || registered.Owner != "platform-security" {
-		t.Fatalf("registered agent = %#v", registered)
+	approved := reconciled.Agents[0]
+	if approved.Status != discovery.StatusApproved || approved.Owner != "platform-security" {
+		t.Fatalf("approved agent = %#v", approved)
 	}
-	if reconciled.Summary.Registered != 1 || reconciled.Summary.Shadow != 0 {
+	if reconciled.Summary.Approved != 1 || reconciled.Summary.Shadow != 0 {
 		t.Fatalf("summary = %#v", reconciled.Summary)
+	}
+}
+
+func TestScannerDoesNotCallMarketplaceCatalogEvidenceShadow(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plugins", "marketplaces", "catalog-agent", "mcp.json"), `{}`)
+	cfg := discovery.Config{
+		Signatures: []discovery.Signature{{AgentType: "mcp", DisplayName: "MCP", FileNames: []string{"mcp.json"}}},
+	}
+	report, err := discovery.NewScanner(cfg).Scan([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.Available != 1 || report.Summary.Shadow != 0 {
+		t.Fatalf("summary = %#v, want one available-only capability", report.Summary)
+	}
+	if report.Agents[0].DeploymentState != discovery.DeploymentAvailable || report.Agents[0].Status != discovery.StatusUnassessed {
+		t.Fatalf("catalog finding = %#v", report.Agents[0])
+	}
+}
+
+func TestSuspendedOrExpiredApprovalDoesNotReconcile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "mcp.json"), `{}`)
+	cfg := discovery.Config{
+		ApprovedAgents: []discovery.RegistryEntry{{
+			Name: "Old MCP", AgentType: "mcp", PathContains: "mcp.json", Owner: "security", State: "suspended",
+		}},
+		Signatures: []discovery.Signature{{AgentType: "mcp", DisplayName: "MCP", FileNames: []string{"mcp.json"}}},
+	}
+	report, err := discovery.NewScanner(cfg).Scan([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.Shadow != 1 || report.Summary.Approved != 0 {
+		t.Fatalf("summary = %#v, want suspended approval to remain shadow", report.Summary)
+	}
+}
+
+func TestFingerprintPreventsBroadPathApproval(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "mcp.json"), `{}`)
+	cfg := discovery.Config{
+		ApprovedAgents: []discovery.RegistryEntry{{
+			Name: "Different MCP", AgentType: "mcp", Fingerprint: "sha256:000000000000000000000000",
+			PathContains: "mcp.json", Owner: "security",
+		}},
+		Signatures: []discovery.Signature{{AgentType: "mcp", DisplayName: "MCP", FileNames: []string{"mcp.json"}}},
+	}
+	report, err := discovery.NewScanner(cfg).Scan([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.Shadow != 1 || report.Summary.Approved != 0 {
+		t.Fatalf("summary = %#v, mismatched fingerprint must not approve", report.Summary)
 	}
 }
 

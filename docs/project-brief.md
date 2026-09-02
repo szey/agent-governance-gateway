@@ -23,6 +23,8 @@ Once an Agent can use files, shells, databases, networks, and business APIs, ris
 
 Agent Governance Gateway sits between the Agent and execution targets and turns these questions into an enforceable checkpoint.
 
+Asset approval and action authorization are deliberately separate. Registry membership says an Agent may exist and has an accountable owner; it does not grant every tool, parameter, or resource. Every observable action from approved and Shadow Agents that reaches a connected control or observation point must be recorded, and actions crossing an enforcement point must be evaluated per action.
+
 ## Enterprise deployment needs a discovery plane
 
 The original MVP governed only requests that passed through Agent Governance Gateway. It could not see an Agent that bypassed the Router, so it could not directly identify unregistered Shadow Agents inside an enterprise.
@@ -84,12 +86,15 @@ The first Shadow Agent Discovery stage is also implemented:
 - read-only scanning of explicitly selected configuration/dependency directories;
 - evidence provenance, rationale, and confidence;
 - project/Agent fingerprints and deduplication;
-- reconciliation as `registered` or `shadow`; and
+- `available`, `installed`, and `configured` deployment states so marketplace/cache evidence is not automatically Shadow;
+- reconciliation against a locally durable registry as `approved`, `shadow`, or `unassessed`;
+- coverage-gap recording that continues past unreadable child directories;
+- UI add, edit, suspend, and remove operations with immediate reconciliation; and
 - explainable risk for unknown owners, MCP capability, and high-confidence findings.
 
 Live process, network, OAuth, and cloud-audit sensors are not implemented.
 
-An experimental `cmd/observe` session wrapper records child-process lifecycle for an approved CLI Agent. Agent JSONL is marked as self-reported evidence; classification and payload fingerprints are retained without raw commands, prompts, or output. An ordinary CLI Agent without JSONL still provides wrapper lifecycle but no output semantics. GUI, IDE, and background Agents require future OS/network sensors. See [`experiments/enterprise-agent-pilot.md`](experiments/enterprise-agent-pilot.md).
+An experimental `cmd/observe` session wrapper records child-process lifecycle for an approved CLI Agent. Agent JSONL is marked as self-reported evidence; classification and payload fingerprints are retained without raw commands, prompts, or output. Every valid Router request is recorded whether allowed, denied, or escalated, but GUI, IDE, background, and bypassed behavior still requires future OS/network sensors. The project has one sanitized company-endpoint trial report; the full controlled protocol remains incomplete. See [`experiments/enterprise-agent-pilot.md`](experiments/enterprise-agent-pilot.md).
 
 ## Six demo scenarios
 
@@ -151,8 +156,8 @@ The project page should prioritize:
 
 In priority order:
 
-1. Run an authorized audit pilot with the company's real Agent, on a modestly provisioned endpoint and isolated fixture.
-2. Add cross-platform process/file sensors and an enterprise telemetry contract to corroborate Agent self-reporting.
+1. Regress the classification, refresh, unreadable-directory, and registry failures exposed by the company-endpoint trial with isolated fixtures.
+2. After renewed company authorization, complete the controlled audit pilot and add cross-platform process/file sensors to corroborate Agent self-reporting.
 3. Persist the implemented causal-session state and connect Agent instance/full delegation chains to enterprise identity.
 4. Define the executor adapter and connect the first real Docker sandbox.
 5. Add human approval and one-time grants for `escalate`.

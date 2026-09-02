@@ -23,6 +23,7 @@ func main() {
 	auditPath := flag.String("audit", "data/audit.jsonl", "append-only audit log path")
 	sessionAuditPath := flag.String("session-audit", "data/session-audit.jsonl", "local Agent session audit path")
 	discoveryConfig := flag.String("discovery-config", "configs/discovery.json", "discovery signature and registry path")
+	approvalRegistry := flag.String("approval-registry", "data/approved-agents.json", "local approved-Agent registry managed by the control desk")
 	discoveryRoot := flag.String("discovery-root", "examples/shadow-agent-sample", "directory represented in the discovery demo; empty disables discovery")
 	flag.Parse()
 
@@ -42,22 +43,18 @@ func main() {
 		logger.Error("open audit store", "error", err)
 		os.Exit(1)
 	}
-	report := discovery.Report{Agents: []discovery.DiscoveredAgent{}, Roots: []string{}}
+	roots := []string{}
 	if *discoveryRoot != "" {
-		discoveryCfg, discoveryErr := discovery.LoadConfig(*discoveryConfig)
-		if discoveryErr != nil {
-			logger.Warn("discovery demo disabled", "error", discoveryErr)
-		} else {
-			report, discoveryErr = discovery.NewScanner(discoveryCfg).Scan([]string{*discoveryRoot})
-			if discoveryErr != nil {
-				logger.Warn("discovery demo disabled", "error", discoveryErr)
-				report = discovery.Report{Agents: []discovery.DiscoveredAgent{}, Roots: []string{}}
-			}
-		}
+		roots = append(roots, *discoveryRoot)
+	}
+	discoveryManager, err := discovery.NewManager(*discoveryConfig, *approvalRegistry, roots)
+	if err != nil {
+		logger.Error("load discovery control plane", "error", err)
+		os.Exit(1)
 	}
 
 	r := router.New(cfg, store)
-	api := httpapi.New(r, store, scenarios, report, *sessionAuditPath, web.Assets(), logger)
+	api := httpapi.New(r, store, scenarios, discoveryManager, *sessionAuditPath, web.Assets(), logger)
 	server := &http.Server{
 		Addr:              *addr,
 		Handler:           api.Handler(),

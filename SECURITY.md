@@ -24,6 +24,8 @@ Session-causality, indirect-injection, protected-read, and cross-tool sequence r
 
 The discovery scanner is read-only and must be run only against paths the operator is authorized to inspect. Findings are heuristic evidence, not definitive proof that an Agent executed. Reports may contain repository paths and dependency metadata; review them before sharing outside the organization.
 
+The UI-managed registry is stored in Git-ignored `data/approved-agents.json` and may contain Agent names, path fragments, accountable owners, and internal approval references. Keep it inside the authorized data boundary. Administrative APIs use a dedicated header to reduce cross-site mistakes, but that is not authentication or RBAC. Registry membership controls asset admission only and never bypasses per-action policy or audit.
+
 Company endpoint pilots require written authorization and an approved data boundary. Do not collect other employees' activity, bypass endpoint controls, or transfer company-generated logs to personal repositories or external services. See the [enterprise pilot protocol](docs/experiments/enterprise-agent-pilot.md).
 
-The local server binds to `127.0.0.1` by default. Exposing it on a LAN or public interface requires a separately reviewed authentication, TLS, firewall, and access-control design; the current MVP does not provide those controls.
+The local server binds to `127.0.0.1` by default. Registry administration is currently suitable only for the local control desk. Exposing it on a LAN or public interface requires separately reviewed authentication, CSRF/replay protection, TLS, firewall, and access-control design; the current MVP does not provide those controls.
