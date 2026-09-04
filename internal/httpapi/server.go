@@ -17,23 +17,39 @@ import (
 	"agent-governance-gateway/internal/audit"
 	"agent-governance-gateway/internal/discovery"
 	"agent-governance-gateway/internal/models"
+	"agent-governance-gateway/internal/permit"
 	"agent-governance-gateway/internal/router"
 	"agent-governance-gateway/internal/sessionaudit"
 )
 
 type Server struct {
-	router           *router.Router
-	audits           *audit.Store
-	policy           models.PolicyConfig
-	scenarios        []models.Scenario
-	discovery        *discovery.Manager
-	sessionAuditPath string
-	static           fs.FS
-	logger           *slog.Logger
+	router                *router.Router
+	audits                *audit.Store
+	policy                models.PolicyConfig
+	scenarios             []models.Scenario
+	discovery             *discovery.Manager
+	sessionAuditPath      string
+	static                fs.FS
+	logger                *slog.Logger
+	experimentalInventory bool
+	mcpHandler            http.Handler
+}
+
+type Options struct {
+	ExperimentalInventory bool
+	MCPHandler            http.Handler
 }
 
 func New(r *router.Router, audits *audit.Store, policyConfig models.PolicyConfig, scenarios []models.Scenario, manager *discovery.Manager, sessionAuditPath string, static fs.FS, logger *slog.Logger) *Server {
-	return &Server{router: r, audits: audits, policy: policyConfig, scenarios: scenarios, discovery: manager, sessionAuditPath: sessionAuditPath, static: static, logger: logger}
+	return NewWithOptions(r, audits, policyConfig, scenarios, manager, sessionAuditPath, static, logger, Options{})
+}
+
+func NewWithOptions(r *router.Router, audits *audit.Store, policyConfig models.PolicyConfig, scenarios []models.Scenario, manager *discovery.Manager, sessionAuditPath string, static fs.FS, logger *slog.Logger, options Options) *Server {
+	return &Server{
+		router: r, audits: audits, policy: policyConfig, scenarios: scenarios, discovery: manager,
+		sessionAuditPath: sessionAuditPath, static: static, logger: logger,
+		experimentalInventory: options.ExperimentalInventory && manager != nil, mcpHandler: options.MCPHandler,
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -41,15 +57,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/overview", s.overview)
 	mux.HandleFunc("GET /api/decisions", s.listDecisions)
+	mux.HandleFunc("POST /api/actions/authorize", s.authorizeAction)
+	mux.HandleFunc("GET /api/permits", s.listPermits)
+	mux.HandleFunc("GET /api/permits/{id}", s.getPermit)
+	mux.HandleFunc("POST /api/permits/{id}/revoke", s.revokePermit)
+	mux.HandleFunc("POST /api/permits/verify", s.verifyPermit)
+	mux.HandleFunc("GET /api/demo-lab", s.listPermitDemos)
 	mux.HandleFunc("GET /api/runtime-coverage", s.runtimeCoverage)
 	mux.HandleFunc("GET /api/policies", s.listPolicies)
-	mux.HandleFunc("GET /api/agents", s.listAgents)
 	mux.HandleFunc("GET /api/scenarios", s.listScenarios)
-	mux.HandleFunc("GET /api/discoveries", s.listDiscoveries)
-	mux.HandleFunc("POST /api/discoveries/rescan", s.rescanDiscoveries)
-	mux.HandleFunc("GET /api/approved-agents", s.listApprovedAgents)
-	mux.HandleFunc("POST /api/approved-agents", s.saveApprovedAgent)
-	mux.HandleFunc("DELETE /api/approved-agents/{id}", s.deleteApprovedAgent)
+	if s.experimentalInventory {
+		mux.HandleFunc("GET /api/agents", s.listAgents)
+		mux.HandleFunc("GET /api/discoveries", s.listDiscoveries)
+		mux.HandleFunc("POST /api/discoveries/rescan", s.rescanDiscoveries)
+		mux.HandleFunc("GET /api/approved-agents", s.listApprovedAgents)
+		mux.HandleFunc("POST /api/approved-agents", s.saveApprovedAgent)
+		mux.HandleFunc("DELETE /api/approved-agents/{id}", s.deleteApprovedAgent)
+	}
 	mux.HandleFunc("GET /api/session-events", s.listSessionEvents)
 	mux.HandleFunc("POST /api/route", s.route)
 	mux.HandleFunc("POST /api/authorize", s.authorize)
@@ -57,30 +81,36 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/executions/{id}/complete", s.completeExecution)
 	mux.HandleFunc("POST /api/demo-lab/{id}/run", s.runDemoScenario)
 	mux.HandleFunc("GET /api/audits", s.listAudits)
+	if s.mcpHandler != nil {
+		mux.Handle("POST /mcp", s.mcpHandler)
+	}
 	mux.Handle("/", http.FileServerFS(s.static))
 	return s.middleware(mux)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok", "service": "aegis-router", "repository": "agent-governance-gateway",
+		"product":  "execution-permits-for-ai-agent-actions",
+		"features": map[string]bool{"mcp_enforcement": s.mcpHandler != nil, "experimental_inventory": s.experimentalInventory},
 	})
 }
 
 func (s *Server) overview(w http.ResponseWriter, _ *http.Request) {
 	records := s.audits.Recent(100)
-	counts := map[models.Route]int{
-		models.RouteAllow: 0, models.RouteRestrict: 0, models.RouteSandbox: 0,
-		models.RouteDeny: 0, models.RouteEscalate: 0,
-	}
-	highRisk, violations := 0, 0
+	counts := map[string]int{"AUTHORIZED": 0, "DENIED": 0, "PERMIT_VIOLATIONS": 0, "REPLAY_BLOCKS": 0}
 	for _, record := range records {
-		counts[effectiveRoute(record)]++
-		if record.RiskAssessment.Level == "high" {
-			highRisk++
+		switch record.AuthorizationStatus {
+		case models.AuthorizationStatusAuthorized:
+			counts["AUTHORIZED"]++
+		case models.AuthorizationStatusDenied, models.AuthorizationStatusRequiresApproval:
+			counts["DENIED"]++
 		}
-		if len(record.RuntimeObservation.AuthorizationViolations) > 0 {
-			violations++
+		if (strings.HasPrefix(record.FinalVerdict, "PERMIT_") && record.FinalVerdict != "PERMIT_VERIFIED") || record.FinalVerdict == "EXECUTION_OBLIGATION_UNSATISFIED" {
+			counts["PERMIT_VIOLATIONS"]++
+		}
+		if record.FinalVerdict == "PERMIT_REPLAY" {
+			counts["REPLAY_BLOCKS"]++
 		}
 	}
 	recent := records
@@ -88,12 +118,10 @@ func (s *Server) overview(w http.ResponseWriter, _ *http.Request) {
 		recent = recent[:8]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"decision_counts": counts, "high_risk_actions": highRisk,
-		"authorization_boundary_violations": violations,
-		"registered_agent_identities":       len(s.policy.Agents),
-		"asset_registrations":               len(s.discovery.Registry()),
-		"runtime_coverage":                  s.router.RuntimeCoverage(),
-		"recent_decisions":                  recent,
+		"execution_permit_counts": counts,
+		"recent_activity":         recent,
+		"principle":               "Authorize once. Execute exactly what was authorized.",
+		"experimental_inventory":  s.experimentalInventory,
 	})
 }
 
@@ -103,6 +131,129 @@ func (s *Server) listDecisions(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.audits.Recent(limit))
+}
+
+func (s *Server) authorizeAction(w http.ResponseWriter, req *http.Request) {
+	defer req.Body.Close()
+	var input models.Request
+	if err := decodeJSON(req, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_action", err.Error())
+		return
+	}
+	result, err := s.router.AuthorizeAction(input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "authorization_failed", err.Error())
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, result)
+}
+
+type permitView struct {
+	PermitID           string             `json:"permit_id"`
+	State              permit.State       `json:"state"`
+	RequestID          string             `json:"request_id"`
+	PrincipalID        string             `json:"principal_id"`
+	AgentID            string             `json:"agent_id"`
+	WorkloadID         string             `json:"workload_id"`
+	Tool               string             `json:"tool"`
+	Capability         string             `json:"capability"`
+	Resource           string             `json:"resource"`
+	Operation          string             `json:"operation"`
+	ActionDigest       string             `json:"action_digest"`
+	PolicyVersion      string             `json:"policy_version"`
+	Issuer             string             `json:"issuer"`
+	SingleUse          bool               `json:"single_use"`
+	Obligations        permit.Obligations `json:"obligations"`
+	IssuedAt           time.Time          `json:"issued_at"`
+	ExpiresAt          time.Time          `json:"expires_at"`
+	ConsumedAt         *time.Time         `json:"consumed_at,omitempty"`
+	ExpiredAt          *time.Time         `json:"expired_at,omitempty"`
+	RevokedAt          *time.Time         `json:"revoked_at,omitempty"`
+	VerificationResult string             `json:"verification_result,omitempty"`
+}
+
+func viewPermit(record permit.Record) permitView {
+	claims := record.Claims
+	return permitView{
+		PermitID: claims.PermitID, State: record.State, RequestID: claims.RequestID,
+		PrincipalID: claims.PrincipalID, AgentID: claims.AgentID, WorkloadID: claims.WorkloadID,
+		Tool: claims.Tool, Capability: claims.Capability, Resource: claims.Resource, Operation: claims.Operation,
+		ActionDigest: claims.ActionDigest, PolicyVersion: claims.PolicyVersion, Issuer: claims.Issuer,
+		SingleUse: claims.SingleUse, Obligations: claims.Obligations,
+		IssuedAt: claims.IssuedTime(), ExpiresAt: claims.ExpiresTime(), ConsumedAt: record.ConsumedAt,
+		ExpiredAt: record.ExpiredAt, RevokedAt: record.RevokedAt,
+	}
+}
+
+func (s *Server) listPermits(w http.ResponseWriter, req *http.Request) {
+	limit, ok := parseLimit(w, req, 50)
+	if !ok {
+		return
+	}
+	records := s.router.ListPermits()
+	if len(records) > limit {
+		records = records[:limit]
+	}
+	items := make([]permitView, 0, len(records))
+	for _, record := range records {
+		view := viewPermit(record)
+		if auditRecord, exists := s.audits.Get(record.Claims.RequestID); exists && auditRecord.ExecutionReceipt != nil {
+			view.VerificationResult = auditRecord.ExecutionReceipt.VerificationOutcome
+		}
+		items = append(items, view)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"permits": items})
+}
+
+func (s *Server) getPermit(w http.ResponseWriter, req *http.Request) {
+	record, ok := s.router.GetPermit(req.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "permit_not_found", "execution permit was not found")
+		return
+	}
+	view := viewPermit(record)
+	if auditRecord, exists := s.audits.Get(record.Claims.RequestID); exists && auditRecord.ExecutionReceipt != nil {
+		view.VerificationResult = auditRecord.ExecutionReceipt.VerificationOutcome
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) revokePermit(w http.ResponseWriter, req *http.Request) {
+	if !requireLocalAdmin(w, req) {
+		return
+	}
+	record, err := s.router.RevokePermit(req.PathValue("id"))
+	if err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, permit.ErrPermitNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, "permit_not_revoked", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, viewPermit(record))
+}
+
+type permitVerificationRequest struct {
+	PermitToken string         `json:"permit_token"`
+	Action      models.Request `json:"action"`
+}
+
+func (s *Server) verifyPermit(w http.ResponseWriter, req *http.Request) {
+	defer req.Body.Close()
+	var input permitVerificationRequest
+	if err := decodeJSON(req, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_verification_request", err.Error())
+		return
+	}
+	result, err := s.router.VerifyRequestAndConsume(input.PermitToken, input.Action)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "permit_verification_failed", err.Error())
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) runtimeCoverage(w http.ResponseWriter, _ *http.Request) {
@@ -145,6 +296,19 @@ func (s *Server) listAgents(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) listScenarios(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.scenarios)
+}
+
+func (s *Server) listPermitDemos(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"evidence_source": "simulated_demo",
+		"scenarios": []map[string]string{
+			{"id": "valid-permit", "title": "Valid permit", "description": "The exact authorized action verifies once and the simulated executor may proceed."},
+			{"id": "action-mutation", "title": "Action mutation / TOCTOU", "description": "A changed security-relevant argument produces ACTION_MISMATCH before execution."},
+			{"id": "permit-replay", "title": "Permit replay", "description": "A second use of the same single-use permit is blocked as REPLAYED."},
+			{"id": "expired-permit", "title": "Expired permit", "description": "A short-lived permit is rejected after its signed expiration time."},
+		},
+		"advanced_regression_fixtures": s.scenarios,
+	})
 }
 
 func (s *Server) listDiscoveries(w http.ResponseWriter, _ *http.Request) {
@@ -235,10 +399,12 @@ func (s *Server) listSessionEvents(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *Server) route(w http.ResponseWriter, req *http.Request) {
+	markCompatibilityEndpoint(w, "/api/actions/authorize")
 	s.authorize(w, req)
 }
 
 func (s *Server) authorize(w http.ResponseWriter, req *http.Request) {
+	markCompatibilityEndpoint(w, "/api/actions/authorize")
 	defer req.Body.Close()
 	var input models.Request
 	if err := decodeJSON(req, &input); err != nil {
@@ -254,6 +420,7 @@ func (s *Server) authorize(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *Server) ingestRuntimeEvent(w http.ResponseWriter, req *http.Request) {
+	markCompatibilityEndpoint(w, "pre-execution MCP permit verification")
 	defer req.Body.Close()
 	var event models.RuntimeEvent
 	if err := decodeJSON(req, &event); err != nil {
@@ -277,6 +444,7 @@ func (s *Server) ingestRuntimeEvent(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *Server) completeExecution(w http.ResponseWriter, req *http.Request) {
+	markCompatibilityEndpoint(w, "MCP enforcement adapter completion")
 	defer req.Body.Close()
 	var completion models.ExecutionCompletion
 	if err := decodeJSON(req, &completion); err != nil {
@@ -298,7 +466,22 @@ func (s *Server) completeExecution(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, record)
 }
 
+func markCompatibilityEndpoint(w http.ResponseWriter, successor string) {
+	w.Header().Set("Deprecation", "true")
+	w.Header().Set("X-Aegis-Compatibility-Endpoint", "true")
+	w.Header().Set("Warning", fmt.Sprintf(`299 - "Compatibility endpoint; use %s"`, successor))
+}
+
 func (s *Server) runDemoScenario(w http.ResponseWriter, req *http.Request) {
+	if isPermitDemo(req.PathValue("id")) {
+		result, err := s.runPermitDemo(req.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "permit_demo_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	var scenario *models.Scenario
 	for index := range s.scenarios {
 		if s.scenarios[index].ID == req.PathValue("id") {
@@ -352,6 +535,124 @@ func (s *Server) runDemoScenario(w http.ResponseWriter, req *http.Request) {
 		record = latest
 	}
 	writeJSON(w, http.StatusOK, record)
+}
+
+func isPermitDemo(id string) bool {
+	switch id {
+	case "valid-permit", "action-mutation", "permit-replay", "expired-permit":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) runPermitDemo(id string) (map[string]any, error) {
+	action := permitDemoRequest(id)
+	var (
+		authorized models.ActionAuthorizationResponse
+		err        error
+	)
+	if id == "expired-permit" {
+		authorized, err = s.router.AuthorizeSyntheticDemoAction(action, time.Second)
+	} else {
+		authorized, err = s.router.AuthorizeSyntheticDemoAction(action, 30*time.Second)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if authorized.Permit == nil {
+		return map[string]any{
+			"scenario_id": id, "evidence_source": models.RuntimeSourceSimulatedDemo,
+			"verification_result": "DENIED", "upstream_invoked": false, "decision": authorized.Decision,
+		}, nil
+	}
+
+	actual := action
+	attempts := []models.PermitVerification{}
+	upstreamInvoked := false
+	verify := func() (models.PermitVerification, error) {
+		result, verifyErr := s.router.VerifySyntheticDemoRequest(authorized.Permit.PermitToken, actual)
+		attempts = append(attempts, result)
+		return result, verifyErr
+	}
+
+	switch id {
+	case "action-mutation":
+		actual.Action.Arguments = json.RawMessage(`{"amount":10000,"currency":"USD","recipient":"merchant-456"}`)
+		if _, err = verify(); err != nil {
+			return nil, err
+		}
+	case "permit-replay":
+		var first models.PermitVerification
+		first, err = verify()
+		if err != nil {
+			return nil, err
+		}
+		if first.Verified {
+			upstreamInvoked = true
+			_, _ = s.router.CompleteSyntheticDemoExecution(models.ExecutionCompletion{
+				RequestID: first.RequestID, PermitID: first.PermitID, Status: "completed",
+			})
+		}
+		if _, err = verify(); err != nil {
+			return nil, err
+		}
+	case "expired-permit":
+		wait := time.Until(authorized.Permit.ExpiresAt) + 25*time.Millisecond
+		if wait > 0 {
+			time.Sleep(wait)
+		}
+		if _, err = verify(); err != nil {
+			return nil, err
+		}
+	default:
+		var result models.PermitVerification
+		result, err = verify()
+		if err != nil {
+			return nil, err
+		}
+		if result.Verified {
+			upstreamInvoked = true
+			_, _ = s.router.CompleteSyntheticDemoExecution(models.ExecutionCompletion{
+				RequestID: result.RequestID, PermitID: result.PermitID, Status: "completed",
+			})
+		}
+	}
+
+	latest := attempts[len(attempts)-1]
+	permitRecord, _ := s.router.GetPermit(authorized.Permit.PermitID)
+	return map[string]any{
+		"scenario_id": id, "simulated": true, "evidence_source": models.RuntimeSourceSimulatedDemo,
+		"verification_result": latest.Outcome, "permit_state": permitRecord.State,
+		"permit": viewPermit(permitRecord), "attempts": attempts, "upstream_invoked": upstreamInvoked,
+		"decision": authorized.Decision,
+	}, nil
+}
+
+func permitDemoRequest(id string) models.Request {
+	request := models.Request{
+		Principal: models.PrincipalContext{PrincipalID: "demo-user", PrincipalType: "human", Environment: "synthetic"},
+		Agent:     models.AgentIdentity{AgentID: "coder-agent", WorkloadID: "coder-workload-v1", Environment: "synthetic"},
+		Authority: models.DelegatedAuthority{
+			CredentialFingerprint: strings.Repeat("d", 64), Scopes: []string{"code.read"}, Subject: "demo-user",
+		},
+		Tool: models.ToolContext{Name: "coder", Provider: "simulated-demo"},
+		Action: models.ActionRequest{
+			Capability: "generate_code", Operation: "generate", TargetResource: "public_workspace",
+			Arguments: json.RawMessage(`{"language":"go","task":"permit-demo"}`), SideEffect: "none",
+		},
+	}
+	if id == "action-mutation" {
+		request.Agent = models.AgentIdentity{AgentID: "finance-agent", WorkloadID: "finance-workload-v1", Environment: "synthetic"}
+		request.Authority.Scopes = []string{"payment.transfer"}
+		request.Tool = models.ToolContext{Name: "payment.send", Provider: "simulated-demo"}
+		request.Action = models.ActionRequest{
+			Capability: "payment_transfer", Operation: "transfer", TargetResource: "account-123",
+			Arguments:  json.RawMessage(`{"amount":100,"currency":"USD","recipient":"merchant-456"}`),
+			SideEffect: "financial_transaction",
+		}
+	}
+	return request
 }
 
 func (s *Server) listAudits(w http.ResponseWriter, req *http.Request) {

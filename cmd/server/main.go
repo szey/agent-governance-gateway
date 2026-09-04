@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-governance-gateway/internal/adapters/mcp"
 	"agent-governance-gateway/internal/audit"
 	"agent-governance-gateway/internal/config"
 	"agent-governance-gateway/internal/discovery"
@@ -25,6 +26,8 @@ func main() {
 	sessionAuditPath := flag.String("session-audit", "data/session-audit.jsonl", "local Agent session audit path")
 	discoveryConfig := flag.String("discovery-config", "configs/discovery.json", "discovery signature and registry path")
 	approvalRegistry := flag.String("approval-registry", "data/approved-agents.json", "local approved-Agent registry managed by the control desk")
+	enableExperimentalInventory := flag.Bool("enable-experimental-inventory", false, "enable frozen experimental inventory APIs and UI")
+	mcpUpstream := flag.String("mcp-upstream", "", "optional upstream MCP Streamable HTTP URL; enables permit-gated POST /mcp")
 	var discoveryRoots stringList
 	flag.Var(&discoveryRoots, "discovery-root", "optional approved inventory root; repeat for multiple roots")
 	flag.Parse()
@@ -45,14 +48,29 @@ func main() {
 		logger.Error("open audit store", "error", err)
 		os.Exit(1)
 	}
-	discoveryManager, err := discovery.NewManager(*discoveryConfig, *approvalRegistry, discoveryRoots)
-	if err != nil {
-		logger.Error("load discovery control plane", "error", err)
-		os.Exit(1)
+	var discoveryManager *discovery.Manager
+	if *enableExperimentalInventory {
+		discoveryManager, err = discovery.NewManager(*discoveryConfig, *approvalRegistry, discoveryRoots)
+		if err != nil {
+			logger.Error("load experimental inventory", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	r := router.New(cfg, store)
-	api := httpapi.New(r, store, cfg, scenarios, discoveryManager, *sessionAuditPath, web.Assets(), logger)
+	var mcpHandler http.Handler
+	if strings.TrimSpace(*mcpUpstream) != "" {
+		proxy, proxyErr := mcp.New(r, *mcpUpstream, nil)
+		if proxyErr != nil {
+			logger.Error("configure MCP enforcement adapter", "error", proxyErr)
+			os.Exit(1)
+		}
+		mcpHandler = proxy
+	}
+	api := httpapi.NewWithOptions(r, store, cfg, scenarios, discoveryManager, *sessionAuditPath, web.Assets(), logger, httpapi.Options{
+		ExperimentalInventory: *enableExperimentalInventory,
+		MCPHandler:            mcpHandler,
+	})
 	server := &http.Server{
 		Addr:              *addr,
 		Handler:           api.Handler(),
@@ -62,7 +80,7 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	logger.Info("Aegis Router listening", "address", *addr)
+	logger.Info("Aegis Router listening", "address", *addr, "mcp_enforcement", mcpHandler != nil, "experimental_inventory", *enableExperimentalInventory)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)

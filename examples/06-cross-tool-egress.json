@@ -1,8 +1,8 @@
 {
   "id": "cross-tool-egress",
   "title": "Sensitive read followed by egress",
-  "description": "Protected-read provenance is chained to an otherwise authorized external request; the causal sequence is denied before execution.",
-  "expected_route": "deny",
+  "description": "Protected-read provenance is chained to an otherwise authorized external request. The sequence remains an advanced advisory regression fixture while permit verification enforces the exact action.",
+  "expected_route": "restrict",
   "request": {
     "request_id": "evt-egress-001",
     "session_id": "demo-cross-tool",

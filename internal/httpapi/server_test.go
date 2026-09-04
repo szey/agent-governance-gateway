@@ -88,6 +88,122 @@ func TestAuthorizeIssuesPermitWithoutInventingRuntimeEvents(t *testing.T) {
 	}
 }
 
+func TestActionPermitAPIReturnsCredentialOnceAndNeverListsIt(t *testing.T) {
+	handler := testHandler(t)
+	input := structuredSafeRequest()
+	input.Action.Arguments = json.RawMessage(`{"task":"api-secret-marker","language":"go"}`)
+	body, _ := json.Marshal(input)
+	request := httptest.NewRequest(http.MethodPost, "/api/actions/authorize", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var authorized models.ActionAuthorizationResponse
+	if err := json.NewDecoder(response.Body).Decode(&authorized); err != nil {
+		t.Fatal(err)
+	}
+	if authorized.Permit == nil || authorized.Permit.PermitToken == "" || authorized.Permit.PermitID == "" {
+		t.Fatalf("authorization response = %#v", authorized)
+	}
+	if authorized.Decision.ExecutionReceipt == nil || authorized.Decision.ExecutionReceipt.ActionDigest == "" {
+		t.Fatalf("authorization receipt = %#v", authorized.Decision.ExecutionReceipt)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/permits?limit=10", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("permit list status = %d", response.Code)
+	}
+	listed := response.Body.String()
+	if strings.Contains(listed, authorized.Permit.PermitToken) || strings.Contains(listed, "api-secret-marker") || strings.Contains(listed, "permit_token") {
+		t.Fatalf("permit list leaked credential or raw arguments: %s", listed)
+	}
+
+	verificationBody, _ := json.Marshal(map[string]any{"permit_token": authorized.Permit.PermitToken, "action": input})
+	request = httptest.NewRequest(http.MethodPost, "/api/permits/verify", bytes.NewReader(verificationBody))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var first models.PermitVerification
+	if err := json.NewDecoder(response.Body).Decode(&first); err != nil {
+		t.Fatal(err)
+	}
+	if !first.Verified || first.Outcome != "VERIFIED" {
+		t.Fatalf("first verification = %#v", first)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/permits/verify", bytes.NewReader(verificationBody))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var second models.PermitVerification
+	if err := json.NewDecoder(response.Body).Decode(&second); err != nil {
+		t.Fatal(err)
+	}
+	if second.Verified || second.Outcome != "REPLAYED" {
+		t.Fatalf("second verification = %#v", second)
+	}
+}
+
+func TestPrimaryPermitDemosExerciseFocusedOutcomes(t *testing.T) {
+	handler := testHandler(t)
+	cases := []struct {
+		id              string
+		outcome         string
+		upstreamInvoked bool
+		attempts        int
+	}{
+		{"valid-permit", "VERIFIED", true, 1},
+		{"action-mutation", "ACTION_MISMATCH", false, 1},
+		{"permit-replay", "REPLAYED", true, 2},
+		{"expired-permit", "EXPIRED", false, 1},
+	}
+	for _, test := range cases {
+		t.Run(test.id, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/demo-lab/"+test.id+"/run", bytes.NewBufferString(`{}`))
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			var result struct {
+				VerificationResult string                      `json:"verification_result"`
+				EvidenceSource     models.RuntimeEventSource   `json:"evidence_source"`
+				UpstreamInvoked    bool                        `json:"upstream_invoked"`
+				Attempts           []models.PermitVerification `json:"attempts"`
+				Decision           models.AuditRecord          `json:"decision"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+				t.Fatal(err)
+			}
+			if result.VerificationResult != test.outcome || result.UpstreamInvoked != test.upstreamInvoked || len(result.Attempts) != test.attempts {
+				t.Fatalf("demo result = %#v", result)
+			}
+			if result.EvidenceSource != models.RuntimeSourceSimulatedDemo {
+				t.Fatalf("demo evidence source = %q", result.EvidenceSource)
+			}
+			auditRequest := httptest.NewRequest(http.MethodGet, "/api/audits?limit=100", nil)
+			auditResponse := httptest.NewRecorder()
+			handler.ServeHTTP(auditResponse, auditRequest)
+			var records []models.AuditRecord
+			if err := json.NewDecoder(auditResponse.Body).Decode(&records); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, record := range records {
+				if record.RequestID == result.Decision.RequestID {
+					found = record.ExecutionReceipt != nil && record.ExecutionReceipt.EvidenceSource == models.RuntimeSourceSimulatedDemo
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("persisted demo audit did not retain simulated_demo provenance for %s", result.Decision.RequestID)
+			}
+		})
+	}
+}
+
 func TestPublicRequestRejectsLegacySimulatedActionsField(t *testing.T) {
 	handler := testHandler(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/authorize", bytes.NewBufferString(`{
@@ -179,7 +295,7 @@ func TestDemoLabRunsServerOwnedTelemetryAndShowsBoundaryViolation(t *testing.T) 
 	}
 }
 
-func TestDemoLabCompletesSafeScenarioWithinAuthorization(t *testing.T) {
+func TestAdvancedDemoFixtureRemainsEvidenceOnlyCompatibility(t *testing.T) {
 	handler := testHandlerWithDemoScenarios(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/demo-lab/safe-code/run", bytes.NewBufferString(`{}`))
 	response := httptest.NewRecorder()
@@ -191,7 +307,7 @@ func TestDemoLabCompletesSafeScenarioWithinAuthorization(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&record); err != nil {
 		t.Fatal(err)
 	}
-	if record.FinalVerdict != "COMPLETED_WITHIN_AUTHORIZATION" {
+	if record.FinalVerdict != "COMPLETED_WITHOUT_BOUNDARY_VERIFICATION" {
 		t.Fatalf("final verdict = %q", record.FinalVerdict)
 	}
 	if len(record.RuntimeObservation.Events) != 1 || record.RuntimeObservation.Events[0].Source != models.RuntimeSourceSimulatedDemo {
@@ -219,6 +335,29 @@ func TestRuntimeCoverageNeverPresentsMissingSensorsAsZeroEvents(t *testing.T) {
 	}
 	if !strings.Contains(body.Principle, "zero events never implies") {
 		t.Fatalf("principle = %q", body.Principle)
+	}
+}
+
+func TestExperimentalInventoryIsDisabledByDefault(t *testing.T) {
+	handler := testHandlerWithServerOptions(t, filepath.Join(t.TempDir(), "session-audit.jsonl"), nil, nil, httpapi.Options{})
+	request := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("inventory status = %d, want 404 while disabled", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var body struct {
+		Features map[string]bool `json:"features"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Features["experimental_inventory"] {
+		t.Fatal("health advertised experimental inventory as enabled by default")
 	}
 }
 
@@ -408,6 +547,10 @@ func testHandlerWithDemoScenarios(t *testing.T) http.Handler {
 }
 
 func testHandlerWithOptions(t *testing.T, sessionAuditPath string, scenarios []models.Scenario, discoveryRoots []string) http.Handler {
+	return testHandlerWithServerOptions(t, sessionAuditPath, scenarios, discoveryRoots, httpapi.Options{ExperimentalInventory: true})
+}
+
+func testHandlerWithServerOptions(t *testing.T, sessionAuditPath string, scenarios []models.Scenario, discoveryRoots []string, options httpapi.Options) http.Handler {
 	t.Helper()
 	cfg, err := config.Load(filepath.Join("..", "..", "configs", "policy.json"))
 	if err != nil {
@@ -432,7 +575,7 @@ func testHandlerWithOptions(t *testing.T, sessionAuditPath string, scenarios []m
 	if err != nil {
 		t.Fatal(err)
 	}
-	return httpapi.New(router.New(cfg, store), store, cfg, scenarios, manager, sessionAuditPath, static, logger).Handler()
+	return httpapi.NewWithOptions(router.New(cfg, store), store, cfg, scenarios, manager, sessionAuditPath, static, logger, options).Handler()
 }
 
 func structuredSafeRequest() models.Request {

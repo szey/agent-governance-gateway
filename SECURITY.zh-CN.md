@@ -2,55 +2,78 @@
 
 [English](SECURITY.md) | 简体中文
 
-本文适用于 **Aegis Router — A Policy-Driven Security Router for AI Agents**。仓库名称暂时仍是 `agent-governance-gateway`。
+本文适用于 **Aegis Router — AI Agent 动作的执行许可**。仓库名称暂时仍是 `agent-governance-gateway`。
 
 ## 报告漏洞
 
-请不要在公开 Issue 中披露疑似漏洞。如果仓库已启用 GitHub Private Vulnerability Reporting，请使用该功能，并提供：受影响版本/Commit、最小安全复现、预期与实际决定、潜在影响和可行缓解措施。
+请不要在公开 Issue 中披露疑似漏洞。如果仓库已启用 GitHub Private Vulnerability Reporting，请使用该功能，并提供：受影响版本/Commit、最小安全复现、预期与实际验证结果、上游工具是否被调用、潜在影响和可行缓解措施。
 
 在第一个正式 Tag 发布前，只支持默认分支上的最新 Commit。
 
 ## 信任边界
 
-Aegis Router 当前是 MVP，而不是生产安全边界。它只能控制进入其 API、Gateway 或已连接 Adapter 的动作；绕过这些控制点的 Agent 行为不会因为安装了本项目而自动被发现或阻止。
+Aegis 是参考实现，不是经独立评审的生产安全边界。它只保护实际经过其 verifier/MCP Adapter 的工具调用；绕过该边界的行为不会因为安装 Aegis 而自动被发现或阻止。
 
-资产登记只处理工作负载准入，不能授予行为权限。逐次授权必须检查 principal、Agent/workload、委托 Scope、能力、工具、资源、操作和约束。未知上下文 fail closed；数值风险不得覆盖明确拒绝。
+核心控制是：确定性授权精确的 `CanonicalAction`，签发短时、动作绑定、单次使用的签名 `permit_token`，并在真实工具副作用前验证和原子消费。`permit_id` 只是关联标识，不能独立授权。验证失败后上游工具必须保持未调用。
 
-允许/受限/沙箱路由可产生 `AuthorizationEnvelope`（Execution Permit）。拒绝或升级不能产生可执行 Permit。运行时事件必须绑定正确且未过期的 request/permit；越权读秘密、只读许可下写入、禁网许可下外联以及主体/Agent 绑定不匹配必须被视为拒绝或授权边界违规。
+`AuthorizationEnvelope` 继续承载结构化 principal、Agent/workload、delegation、tool、capability、resource、operation 和 policy context，但执行凭据还必须包含可验证签名与相同动作摘要。
 
-## 证据可信度与覆盖
+## Token、密钥与 replay
 
-任何运行时记录都必须保留来源和信任等级：`gateway_enforced`、`instrumented_adapter`、`agent_self_reported`、`os_sensor`、`network_sensor` 或 `simulated_demo`。Demo 和 Agent 自报事件不能显示成无来源的“Observed”。
+聚焦 MVP 使用项目自有的 Ed25519 签名紧凑格式，形态为 `base64url(header).base64url(payload).base64url(signature)`，不声明通用 JWT/JWS 互操作性。
 
-当前没有通用 OS、文件、系统调用或网络传感器。未连接的传感器必须显示 `UNKNOWN / not instrumented`，不能显示“0 个 coverage gaps”。本地 CLI wrapper 独立看到的仅是它启动的子进程生命周期；结构化 Agent 日志仍然是自报证据。
+Permit TTL 必须是整秒，默认 30 秒，当前最大 15 分钟。
 
-`SANDBOX` 当前是分流结果。除非已经连接并验证 Docker、gVisor、Firecracker 等隔离后端，否则 UI、API 和文档只能称为 `SANDBOX ROUTE / isolation backend not connected`，不能声称真实隔离或可靠终止。
+- 私钥只能存在于许可签发方的获准边界，不得进入 UI、审计、错误消息或仓库；
+- public key 可以分发给可信 verifier，但 key rotation、HSM/KMS、跨实例信任和灾难恢复尚不属于 MVP；
+- Permit 默认单次使用，并通过并发安全的 Store 原子消费；
+- 过期、撤销、已消费或未知 Permit 必须 fail closed；
+- 若 Store 仅在单进程内，重启/多副本会形成 replay 状态缺口；在引入共享持久化与密钥生命周期设计前不能声称提供集群级 replay defense。
 
-当前公开 Runtime Event API 尚无 Adapter 身份认证或加密证明。它只校验 `source` 与 `trust_level` 的合法配对、Permit 绑定和元数据边界；因此 `instrumented_adapter` 仍是调用方声明，而不是已证明的独立事实。接入真实 Adapter 前必须增加认证、完整性和防重放机制。
+## 动作绑定与 canonicalization
 
-Demo Lab 使用无害的服务端 synthetic event fixture，并明确标记为 `simulated_demo`；它没有启动真实执行器。演示结论证明确定性代码路径通过测试，不证明生产遥测、端点覆盖或对任意 Agent 的拦截能力。
+授权方和执行方必须复用同一 canonicalizer。空参数转为 `{}`；对象键递归按 Unicode 字典序排列；重复键、畸形 UTF-8 和未配对 surrogate 拒绝；数组保持原顺序；字符串采用 JSON 转义；数字不经浮点转换而精确归一化，再以 SHA-256 生成 `sha256:<64 位小写十六进制>` 摘要。
 
-## 敏感数据
+Principal、Agent/workload、delegation fingerprint、tool、capability、resource、operation 或安全相关 arguments 任一改变，都必须导致绑定校验失败。不要依赖 `claimed_intent`、自然语言计划或客户端提供的摘要来替代服务器端规范化。
 
-永不保存或审计：
+## MCP 执行边界
 
-- raw bearer token、Cookie、私钥或秘密值；
-- Prompt、检索文档、文件或工具输出正文（除非操作者明确启用本地 Demo 模式）；
-- 正常运行时审计中的完整本地路径、URL 或 Windows 用户名；
-- 未脱敏的员工、客户或生产数据。
+MCP 是当前唯一的生产形态 Adapter。Adapter 必须在转发上游 `tools/call` 之前验证并消费 Permit；错误签名、过期、撤销、replay、wrong agent/workload/tool/resource/operation 或 action mismatch 均不得调用上游。
 
-委托凭据只记录稳定 fingerprint 和必要元数据。路径/URI 应转为 `USER_PROFILE / AGENT_CONFIG`、`WORKSPACE / SOURCE`、`PROTECTED_CONFIG`、`SECRET_STORE` 等类别。Inventory 所需相对证据路径必须与 Runtime Audit 分区。
+MCP `2026-07-28` 的 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与 JSON-RPC 正文必须一致；Proxy 拒绝重复 JSON key 和未绑定的 Tool `_meta`，剥离任意入站 Header/Session 上下文，并只重建最小传输信息与标准路由 Header。当前 focused subset 不缓存 Tool Schema，因此无法可靠校验 `Mcp-Param-*`，也没有把 MRTR `inputResponses`/`requestState` 纳入动作摘要；这些输入一律在上游前 fail closed。不要把这一子集描述为完整 MCP conformance。
 
-本地追加式 JSONL 尚不防篡改，也不是中央审计仓。因果状态和 Permit 状态若只在单进程内存在，重启后的缺口必须被保留说明。
+保护只覆盖经过该 Adapter 的调用。当前授权 API 信任调用方提供的结构化身份/委托元数据，本身不是身份认证器。MCP 客户端身份、上游 TLS/认证、transport framing、工具自身副作用、部署绕过和 confused-deputy 风险仍需要独立威胁建模。不要把本地 API 监听或自定义 Header 当作生产身份认证。
 
-## 管理面与 Discovery
+## Policy、Risk 与隔离
 
-本地批准清单可能包含 Agent 名称、路径片段、负责人和内部批准编号，应留在获准的数据边界。专用管理 Header 只能降低浏览器误操作风险，不是身份认证、授权、CSRF 完整防护或 RBAC。Server 默认应监听 `127.0.0.1`；暴露到局域网或公网前需要单独设计认证、TLS、防重放、防火墙和访问控制。
+Policy 授权保持确定性。Risk 只能产生咨询元数据或 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等义务，不能覆盖明确拒绝。
 
-Discovery 只能只读扫描操作者获准的明确路径。配置、依赖、marketplace/cache 或 MCP manifest 是启发式发现证据，可能误报/漏报，不证明 Agent 正在运行。Dependency presence 不能直接创建 Agent identity，discovery confidence 不能被称为 runtime risk。
+Aegis 不实现沙箱。`isolation_required: true` 只要求外部 executor 提供隔离；当仍需要隔离或人工批准时，focused MCP Proxy 会以 `EXECUTION_OBLIGATION_UNSATISFIED` fail closed，而不是转发。`read_only` 与 `network_egress_denied` 仍是已签名要求，必须由另一个独立可信的 executor/control 真正落实。兼容输出中的 `SANDBOX` 也是 profile hint。不要声称 Aegis 提供 Docker、gVisor、Firecracker、文件系统或网络隔离。
+
+## 审计与敏感数据
+
+正常审计可保存 request/decision/permit ID、规范化身份字段、tool/resource/operation、`action_digest`、policy version、授权决定、Permit 状态、验证结果、时间和 evidence source。
+
+调用方必须先对委托凭据做哈希再提交。Aegis 会在 Permit/审计持久化前再次哈希所声明的 64 位十六进制 fingerprint，因此即便输入形状像摘要也不会被原样保存；这层防御不会把授权 API 变成凭据认证器。
+
+永不保存或显示：
+
+- `permit_token` 或签名私钥；
+- raw bearer/delegated token、Cookie 或秘密值；
+- 原始敏感 action arguments、Prompt、检索文档、文件或工具输出正文；
+- 正常运行时审计中的完整个人路径、用户名或未脱敏 URL；
+- 未脱敏员工、客户或生产数据。
+
+本地审计文件尚不等于防篡改中央审计仓。错误路径也必须经过脱敏检查，避免 Token 被异常消息或请求 dump 泄漏。
+
+## 运行时证据与实验性 Discovery
+
+`gateway_enforced`、`instrumented_adapter`、`agent_self_reported`、`os_sensor`、`network_sensor` 和 `simulated_demo` 必须保留各自来源/信任等级。事件 API 是辅助证据路径，不是执行前控制。未接入覆盖是 `UNKNOWN / not instrumented`，不是零风险。
+
+Discovery 已冻结、默认关闭，并只在 `--enable-experimental-inventory` 后暴露 Server 能力。配置/依赖/manifest 只能形成启发式发现证据，不能证明运行时行为。不要扩展进程、OAuth、CI/CD、云端或中央企业 Inventory。
 
 ## 公司端点与生产禁区
 
-公司试点必须取得设备负责人、IT/安全和数据负责人的书面授权，并仅使用 synthetic 文件、非生产凭据和批准目标。不得扫描其他员工目录、捕获同事行为、绕过 EDR/DLP/代理/应用白名单，或将公司日志上传到个人 GitHub和外部 AI 服务。
+公司试点必须重新获得设备负责人、IT/安全和数据负责人的书面授权，并只使用 synthetic 参数、测试凭据和批准的 MCP 上游。不得捕获其他员工行为、绕过 EDR/DLP/代理/应用白名单，或将公司日志上传到个人 GitHub 或外部 AI 服务。
 
-在完成独立安全评审、真实 Adapter/执行点验证和正式试点前，不得把 Aegis Router 放在生产凭据或客户数据前充当唯一阻断控制。详见[企业 Agent 端点试点](docs/experiments/enterprise-agent-pilot.zh-CN.md)。
+在完成独立安全评审、受控 MCP 试点、持久化 replay/key 设计和正式运维方案前，不得把 Aegis 作为生产凭据或客户数据前的唯一阻断控制。详见[执行许可试点](docs/experiments/enterprise-agent-pilot.zh-CN.md)。

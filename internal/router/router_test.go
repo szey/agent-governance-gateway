@@ -3,11 +3,14 @@ package router_test
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"agent-governance-gateway/internal/audit"
+	"agent-governance-gateway/internal/canonicalaction"
 	"agent-governance-gateway/internal/config"
 	"agent-governance-gateway/internal/models"
 	"agent-governance-gateway/internal/router"
@@ -76,6 +79,132 @@ func TestSafeRequestAllowsAndIssuesLeastPrivilegePermit(t *testing.T) {
 	}
 }
 
+func TestSignedPermitCredentialStaysOutsideAuditAndIsSingleUse(t *testing.T) {
+	r, store, _ := testRouter(t)
+	req := safeRequest()
+	req.Action.Arguments = json.RawMessage(`{"language":"go","marker":"sensitive-argument-marker"}`)
+	result, err := r.AuthorizeAction(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Permit == nil || result.Permit.PermitToken == "" {
+		t.Fatal("authorized action did not receive a permit credential")
+	}
+	stored, ok := store.Get(result.Decision.RequestID)
+	if !ok {
+		t.Fatal("authorization audit was not stored")
+	}
+	encoded, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(result.Permit.PermitToken)) {
+		t.Fatal("permit token leaked into audit")
+	}
+	if bytes.Contains(encoded, []byte("sensitive-argument-marker")) {
+		t.Fatal("raw action arguments leaked into audit")
+	}
+	first, err := r.VerifyRequestAndConsume(result.Permit.PermitToken, req)
+	if err != nil || !first.Verified || first.Outcome != "VERIFIED" {
+		t.Fatalf("first verification = %#v, err = %v", first, err)
+	}
+	second, err := r.VerifyRequestAndConsume(result.Permit.PermitToken, req)
+	if err != nil || second.Verified || second.Outcome != "REPLAYED" {
+		t.Fatalf("second verification = %#v, err = %v", second, err)
+	}
+}
+
+func TestRevokedSignedPermitIsRejected(t *testing.T) {
+	r, _, _ := testRouter(t)
+	req := safeRequest()
+	result, err := r.AuthorizeAction(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RevokePermit(result.Permit.PermitID); err != nil {
+		t.Fatal(err)
+	}
+	verification, err := r.VerifyRequestAndConsume(result.Permit.PermitToken, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verification.Verified || verification.Outcome != "REVOKED" {
+		t.Fatalf("verification = %#v", verification)
+	}
+}
+
+func TestValidationRejectsRawDelegatedCredential(t *testing.T) {
+	req := safeRequest()
+	req.Authority.CredentialFingerprint = "Bearer-real-secret-must-never-enter-audit"
+	if err := router.Validate(req); err == nil {
+		t.Fatal("raw delegated credential was accepted as a fingerprint")
+	}
+}
+
+func TestRejectedRawDelegatedCredentialNeverReachesAudit(t *testing.T) {
+	marker := "Bearer-secret-delegated-token-marker"
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	store, err := audit.NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.New(loadConfig(t), store)
+	request := safeRequest()
+	request.Authority.CredentialFingerprint = marker
+	if _, err := r.AuthorizeAction(request); err == nil {
+		t.Fatal("raw delegated credential was accepted")
+	}
+	encoded, err := json.Marshal(store.Recent(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(marker)) {
+		t.Fatal("raw delegated credential reached the in-memory audit")
+	}
+	if persisted, err := os.ReadFile(path); err == nil && bytes.Contains(persisted, []byte(marker)) {
+		t.Fatal("raw delegated credential reached the persisted audit")
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+func TestDigestShapedDelegatedInputIsReboundBeforeAudit(t *testing.T) {
+	marker := strings.Repeat("0123456789abcdef", 4)
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	store, err := audit.NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.New(loadConfig(t), store)
+	request := safeRequest()
+	request.Authority.CredentialFingerprint = marker
+	result, err := r.AuthorizeAction(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := canonicalaction.BindDelegatedAuthorityFingerprint(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision.Request.Authority.CredentialFingerprint != bound || result.Decision.AuthorizationEnvelope.DelegatedCredentialFingerprint != bound {
+		t.Fatalf("delegated fingerprint was not rebound: %#v", result.Decision)
+	}
+	encoded, err := json.Marshal(store.Recent(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(marker)) {
+		t.Fatal("digest-shaped delegated input reached the in-memory audit verbatim")
+	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(persisted, []byte(marker)) {
+		t.Fatal("digest-shaped delegated input reached the persisted audit verbatim")
+	}
+}
+
 func TestUnauthorizedActionIsDeniedRegardlessOfHighRiskScore(t *testing.T) {
 	r, _, _ := testRouter(t)
 	req := safeRequest()
@@ -93,7 +222,7 @@ func TestUnauthorizedActionIsDeniedRegardlessOfHighRiskScore(t *testing.T) {
 	}
 }
 
-func TestHighRiskButAuthorizedActionUsesSandboxRoute(t *testing.T) {
+func TestHighRiskRemainsAdvisoryAndAddsEnhancedAuditObligation(t *testing.T) {
 	r, _, _ := testRouter(t)
 	req := safeRequest()
 	req.Agent = models.AgentIdentity{AgentID: "finance-agent", WorkloadID: "finance-workload-v1"}
@@ -107,11 +236,14 @@ func TestHighRiskButAuthorizedActionUsesSandboxRoute(t *testing.T) {
 	if !record.PolicyDecision.Authorized || record.PolicyDecision.Route != models.RouteAllow {
 		t.Fatalf("policy decision = %#v, want explicit authorization", record.PolicyDecision)
 	}
-	if record.RiskAssessment.Level != "high" || record.DispatchDecision.Route != models.RouteSandbox || record.AuthorizationEnvelope == nil {
+	if record.RiskAssessment.Level != "high" || record.DispatchDecision.Route != models.RouteAllow || record.AuthorizationEnvelope == nil {
 		t.Fatalf("risk/dispatch/permit = %#v / %#v / %#v", record.RiskAssessment, record.DispatchDecision, record.AuthorizationEnvelope)
 	}
-	if record.DispatchDecision.IsolationBackend != "not_connected" || record.DispatchDecision.ExecutorInvoked {
-		t.Fatalf("sandbox truthfulness fields = %#v", record.DispatchDecision)
+	if !record.AuthorizationEnvelope.Obligations.EnhancedAuditRequired || record.AuthorizationEnvelope.Obligations.IsolationRequired {
+		t.Fatalf("advisory obligations = %#v", record.AuthorizationEnvelope.Obligations)
+	}
+	if record.DispatchDecision.ExecutorInvoked {
+		t.Fatalf("authorization claimed execution: %#v", record.DispatchDecision)
 	}
 }
 
@@ -188,7 +320,7 @@ func TestCompletionRevokesPermit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if completed.FinalVerdict != "COMPLETED_WITHIN_AUTHORIZATION" {
+	if completed.FinalVerdict != "COMPLETED_WITHOUT_BOUNDARY_VERIFICATION" {
 		t.Fatalf("completion = %#v", completed)
 	}
 	event := eventFor(record)
@@ -217,7 +349,7 @@ func TestCompletionAfterPermitExpiryIsAudited(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if completed.FinalVerdict != "EXECUTION_PERMIT_EXPIRED" || len(completed.RuntimeObservation.AuthorizationViolations) != 1 {
+	if completed.FinalVerdict != "PERMIT_EXPIRED" || len(completed.RuntimeObservation.AuthorizationViolations) != 1 {
 		t.Fatalf("expired completion = %#v", completed)
 	}
 }

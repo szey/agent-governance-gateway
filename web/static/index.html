@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Aegis Router — a policy-driven security router for AI agents.">
-  <meta name="theme-color" content="#102a2b">
-  <title>Aegis Router · Security control plane</title>
+  <meta name="description" content="Aegis Router — Execution Permits for AI Agent Actions.">
+  <meta name="theme-color" content="#162321">
+  <title>Aegis Router · Execution Permits</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -13,267 +13,163 @@
   <div class="app-shell">
     <aside class="sidebar" aria-label="Primary navigation">
       <div class="brand">
-        <div class="brand-glyph" aria-hidden="true"><span>A</span><i></i></div>
+        <div class="brand-mark" aria-hidden="true"><span>A</span><i></i><i></i></div>
         <div class="brand-copy">
           <strong>Aegis Router</strong>
-          <span data-i18n="brandSubtitle">AI Agent 策略驱动安全路由器</span>
+          <span data-i18n="brandSubtitle">AI Agent 动作执行许可证</span>
         </div>
       </div>
 
       <nav class="primary-nav" aria-label="Workspace">
-        <button class="nav-item active" type="button" data-nav="overview" aria-current="page">
-          <span class="nav-code">OV</span><span data-i18n="navOverview">总览</span><i></i>
+        <button class="nav-item active" type="button" data-nav="decisions" aria-current="page">
+          <span class="nav-code">01</span><span data-i18n="navDecisions">裁决</span><i id="nav-decision-count">0</i>
         </button>
-        <button class="nav-item" type="button" data-nav="decisions">
-          <span class="nav-code">DE</span><span data-i18n="navDecisions">裁决</span><i id="nav-decision-count">0</i>
+        <button class="nav-item" type="button" data-nav="permits">
+          <span class="nav-code">02</span><span data-i18n="navPermits">许可证</span><i id="nav-permit-count">0</i>
         </button>
-        <button class="nav-item" type="button" data-nav="investigations">
-          <span class="nav-code">AU</span><span data-i18n="navInvestigations">审计 / 调查</span><i id="nav-violation-count">0</i>
-        </button>
-        <button class="nav-item" type="button" data-nav="policies">
-          <span class="nav-code">PO</span><span data-i18n="navPolicies">策略</span><i></i>
-        </button>
-        <button class="nav-item" type="button" data-nav="inventory">
-          <span class="nav-code">AI</span><span data-i18n="navInventory">Agent 清单</span><i id="nav-shadow-count">0</i>
+        <button class="nav-item" type="button" data-nav="audit">
+          <span class="nav-code">03</span><span data-i18n="navAudit">审计</span><i id="nav-violation-count">0</i>
         </button>
         <button class="nav-item" type="button" data-nav="demo">
-          <span class="nav-code">DL</span><span data-i18n="navDemo">演示实验室</span><i class="demo-dot">●</i>
+          <span class="nav-code">04</span><span data-i18n="navDemo">演示</span><i class="demo-dot">●</i>
+        </button>
+        <button id="inventory-nav" class="nav-item experimental-nav" type="button" data-nav="inventory" hidden>
+          <span class="nav-code">EX</span><span data-i18n="navInventory">实验性清单</span><i>β</i>
         </button>
       </nav>
 
       <div class="sidebar-doctrine">
-        <span data-i18n="doctrineLabel">零信任原则</span>
-        <p data-i18n="doctrine">批准 Agent 存在，不代表批准它的行为。</p>
+        <span data-i18n="invariantLabel">执行不变量</span>
+        <p data-i18n="invariant">被授权的动作，必须正是被执行的动作。</p>
       </div>
       <div class="sidebar-footer">
-        <button id="language-toggle" class="language-toggle" type="button" aria-label="Switch language">EN</button>
-        <a href="/api/health" class="api-link">API <span aria-hidden="true">↗</span></a>
+        <div id="system-state" class="system-state checking" role="status"><span></span><b data-i18n="checking">检查中</b></div>
+        <div class="sidebar-links">
+          <button id="language-toggle" class="language-toggle" type="button" aria-label="Switch language">EN</button>
+          <a href="/api/health" class="api-link">API <span aria-hidden="true">↗</span></a>
+        </div>
       </div>
     </aside>
 
     <main id="main-content" class="main-content" tabindex="-1">
       <header class="topbar">
         <div>
-          <p class="eyebrow"><span data-i18n="controlPlane">安全控制平面</span> / <span id="view-kicker">OVERVIEW</span></p>
-          <h1 id="view-title" data-i18n="overviewTitle">运行时态势</h1>
+          <p class="eyebrow"><span data-i18n="productClass">执行许可证层</span> / <span id="view-kicker">DECISIONS</span></p>
+          <h1 id="view-title" data-i18n="decisionsTitle">动作裁决</h1>
         </div>
-        <div class="topbar-actions">
-          <div id="system-state" class="system-state checking" role="status"><span></span><b data-i18n="checking">检查中</b></div>
-          <button id="refresh-all" class="icon-button" type="button"><span aria-hidden="true">↻</span><span data-i18n="refresh">刷新</span></button>
-        </div>
+        <button id="refresh-all" class="refresh-button" type="button"><span aria-hidden="true">↻</span><span data-i18n="refresh">刷新</span></button>
       </header>
 
-      <section class="view active" data-view="overview" aria-labelledby="overview-heading">
-        <div class="overview-thesis">
-          <div class="thesis-copy">
-            <p class="eyebrow" data-i18n="runtimeFirst">RUNTIME ENFORCEMENT FIRST</p>
-            <h2 id="overview-heading" data-i18n="overviewHero">每个动作先获准，<br>再越过安全边界。</h2>
-            <p data-i18n="overviewCopy">Aegis 在 Agent 与工具、资源之间核验身份、委托权限和动作约束，并用授权信封约束后续执行。</p>
+      <section class="view active" data-view="decisions" aria-labelledby="decisions-heading">
+        <div class="permit-hero">
+          <div class="hero-copy">
+            <p class="eyebrow" data-i18n="referenceMonitor">REFERENCE MONITOR / PRE-EXECUTION</p>
+            <h2 id="decisions-heading"><span>Aegis Router</span><strong data-i18n="heroTitle">AI Agent 动作执行许可证</strong></h2>
+            <p class="hero-line" data-i18n="heroLine">一次授权。只执行获准的那一个动作。</p>
+            <p class="hero-description" data-i18n="heroDescription">在真实工具副作用发生前，执行边界验证并消费一张短时、动作绑定、单次使用的签名许可证。</p>
+            <button class="primary-button" type="button" data-go="demo"><span data-i18n="runDemo">验证四种安全结果</span><b>→</b></button>
           </div>
-          <div class="router-map" aria-label="Identity to audit request path">
-            <div class="route-wire" aria-hidden="true"></div>
-            <div class="route-node"><b>I</b><span data-i18n="identity">身份</span></div>
-            <div class="route-node"><b>P</b><span data-i18n="policy">策略</span></div>
-            <div class="route-node"><b>R</b><span data-i18n="risk">风险</span></div>
-            <div class="route-node route-gate"><b>D</b><span data-i18n="dispatch">分派</span></div>
-            <div class="route-node"><b>O</b><span data-i18n="observation">观察</span></div>
-            <div class="route-node"><b>A</b><span data-i18n="audit">审计</span></div>
-          </div>
-          <div class="boundary-note">
-            <span data-i18n="securityBoundary">安全边界</span>
-            <strong data-i18n="envelopeIsBoundary">授权信封，而非 Agent 自述计划</strong>
+          <div class="permit-rail" aria-label="Execution permit lifecycle">
+            <div class="rail-line" aria-hidden="true"><i></i></div>
+            <article><b>01</b><span data-i18n="normalize">规范化</span><small>canonical action</small></article>
+            <article><b>02</b><span data-i18n="authorize">授权</span><small>deterministic policy</small></article>
+            <article class="rail-ticket"><b>03</b><span data-i18n="issue">签发</span><small>signed + short-lived</small></article>
+            <article><b>04</b><span data-i18n="verify">验证</span><small>at MCP boundary</small></article>
+            <article><b>05</b><span data-i18n="consume">消费</span><small>single use</small></article>
           </div>
         </div>
 
-        <div class="decision-counter" aria-label="Decision counts">
-          <article class="count-card allow"><span>ALLOW</span><strong id="count-allow">0</strong><small data-i18n="allowedActions">已允许动作</small></article>
-          <article class="count-card restrict"><span>RESTRICT</span><strong id="count-restrict">0</strong><small data-i18n="restrictedActions">受限执行</small></article>
-          <article class="count-card sandbox"><span>SANDBOX</span><strong id="count-sandbox">0</strong><small data-i18n="sandboxRoutes">沙箱路由</small></article>
-          <article class="count-card deny"><span>DENY</span><strong id="count-deny">0</strong><small data-i18n="blockedActions">执行前阻断</small></article>
-          <article class="count-card escalate"><span>ESCALATE</span><strong id="count-escalate">0</strong><small data-i18n="needsReview">等待复核</small></article>
+        <div class="metric-strip" aria-label="Permit security metrics">
+          <article class="metric authorized"><span>AUTHORIZED</span><strong id="count-authorized">0</strong><small data-i18n="authorizedCopy">策略明确授权</small></article>
+          <article class="metric denied"><span>DENIED</span><strong id="count-denied">0</strong><small data-i18n="deniedCopy">执行前拒绝</small></article>
+          <article class="metric violation"><span>PERMIT VIOLATIONS</span><strong id="count-violations">0</strong><small data-i18n="violationsCopy">验证未通过</small></article>
+          <article class="metric replay"><span>REPLAY BLOCKS</span><strong id="count-replays">0</strong><small data-i18n="replayCopy">重复消费已阻断</small></article>
         </div>
 
-        <div class="overview-grid">
-          <section class="panel recent-panel" aria-labelledby="recent-heading">
-            <div class="panel-head">
-              <div><p class="eyebrow" data-i18n="decisionStream">DECISION STREAM</p><h3 id="recent-heading" data-i18n="recentDecisions">最近裁决</h3></div>
-              <button class="text-button" type="button" data-go="decisions" data-i18n="viewAll">查看全部</button>
+        <section class="activity-section" aria-labelledby="activity-heading">
+          <div class="section-head">
+            <div><p class="eyebrow" data-i18n="executionActivity">EXECUTION ACTIVITY</p><h3 id="activity-heading" data-i18n="recentActivity">最近活动</h3></div>
+            <span class="truth-chip" data-i18n="unknownRule">未上报 ≠ 已验证</span>
+          </div>
+          <div class="activity-workspace">
+            <div class="table-scroll">
+              <table class="activity-table">
+                <thead><tr><th data-i18n="agent">Agent</th><th data-i18n="action">动作</th><th data-i18n="permit">许可证</th><th data-i18n="verificationResult">验证结果</th><th><span class="sr-only" data-i18n="inspect">查看</span></th></tr></thead>
+                <tbody id="activity-body"></tbody>
+              </table>
+              <div id="activity-empty" class="empty-state" hidden></div>
             </div>
-            <div id="overview-decisions" class="decision-stream" aria-live="polite"></div>
-          </section>
-
-          <section class="panel alert-panel" aria-labelledby="alerts-heading">
-            <div class="panel-head">
-              <div><p class="eyebrow" data-i18n="attentionQueue">ATTENTION QUEUE</p><h3 id="alerts-heading" data-i18n="blockedAndViolations">阻断与越界</h3></div>
-              <span id="alert-count" class="panel-count">0</span>
-            </div>
-            <div id="overview-alerts" class="alert-list"></div>
-          </section>
-
-          <section class="panel coverage-panel" aria-labelledby="coverage-heading">
-            <div class="panel-head">
-              <div><p class="eyebrow" data-i18n="evidencePlane">EVIDENCE PLANE</p><h3 id="coverage-heading" data-i18n="runtimeCoverage">运行时覆盖</h3></div>
-              <span class="truth-label" data-i18n="unknownNotZero">UNKNOWN ≠ 0</span>
-            </div>
-            <p class="panel-intro" data-i18n="coverageCopy">仅显示已接入且有来源标识的证据；未接入的传感器保持未知。</p>
-            <div id="coverage-grid" class="coverage-grid"></div>
-          </section>
-
-          <section class="panel identity-panel" aria-labelledby="identity-heading">
-            <div class="panel-head">
-              <div><p class="eyebrow" data-i18n="identityPlane">IDENTITY PLANE</p><h3 id="identity-heading" data-i18n="workloadIdentities">Agent 工作负载</h3></div>
-              <button class="text-button" type="button" data-go="inventory" data-i18n="openInventory">打开清单</button>
-            </div>
-            <div class="identity-summary">
-              <div><strong id="summary-registered">0</strong><span data-i18n="governedIdentities">受治理身份</span></div>
-              <div><strong id="summary-shadow">0</strong><span>Shadow</span></div>
-              <div><strong id="summary-evidence">0</strong><span data-i18n="evidenceOnly">仅证据</span></div>
-            </div>
-            <p class="identity-boundary" data-i18n="identityBoundary">登记回答“工作负载能否进入治理环境”；策略回答“此刻能否执行这个动作”。</p>
-          </section>
-        </div>
-      </section>
-
-      <section class="view" data-view="decisions" aria-labelledby="decisions-heading" hidden>
-        <div class="page-heading">
-          <div><p class="eyebrow" data-i18n="runtimeGateway">RUNTIME GATEWAY</p><h2 id="decisions-heading" data-i18n="decisionsTitle">逐动作裁决</h2><p data-i18n="decisionsCopy">授权与风险分开计算；明确的策略拒绝不会被风险分数覆盖。</p></div>
-          <button class="primary-button" type="button" data-go="demo"><span data-i18n="tryDemo">运行安全场景</span><b>→</b></button>
-        </div>
-        <div class="decision-workspace">
-          <aside class="decision-index">
-            <div class="filter-row" role="group" aria-label="Decision filter">
-              <button class="filter-chip active" type="button" data-filter="all" data-i18n="all">全部</button>
-              <button class="filter-chip" type="button" data-filter="blocked" data-i18n="blocked">阻断</button>
-              <button class="filter-chip" type="button" data-filter="permitted" data-i18n="permitted">已放行</button>
-            </div>
-            <div id="decision-list" class="decision-list"></div>
-          </aside>
-          <article id="decision-detail" class="decision-detail" aria-live="polite"></article>
-        </div>
-      </section>
-
-      <section class="view" data-view="investigations" aria-labelledby="investigations-heading" hidden>
-        <div class="page-heading">
-          <div><p class="eyebrow" data-i18n="evidenceChain">EVIDENCE CHAIN</p><h2 id="investigations-heading" data-i18n="investigationsTitle">审计与调查</h2><p data-i18n="investigationsCopy">从请求上下文到最终结论，保留可解释的裁决与证据链。</p></div>
-        </div>
-        <div class="investigation-layout">
-          <section class="panel">
-            <div class="panel-head"><div><p class="eyebrow" data-i18n="boundaryEvents">BOUNDARY EVENTS</p><h3 data-i18n="violationsAndBlocks">越界与阻断</h3></div></div>
-            <div id="investigation-list" class="investigation-list"></div>
-          </section>
-          <aside class="panel evidence-ledger">
-            <div class="panel-head"><div><p class="eyebrow" data-i18n="runtimeEvidence">RUNTIME EVIDENCE</p><h3 data-i18n="sourceAndTrust">来源与可信度</h3></div></div>
-            <p class="panel-intro" data-i18n="evidenceRule">自报、适配器、OS 与网络传感器不可混为同一种“已观察”。</p>
-            <div id="runtime-event-list" class="runtime-event-list"></div>
-          </aside>
-        </div>
-      </section>
-
-      <section class="view" data-view="policies" aria-labelledby="policies-heading" hidden>
-        <div class="page-heading">
-          <div><p class="eyebrow" data-i18n="policyPlane">POLICY PLANE</p><h2 id="policies-heading" data-i18n="policiesTitle">授权策略</h2><p data-i18n="policiesCopy">围绕身份、委托权限、能力、工具、资源、操作与约束做显式授权。</p></div>
-        </div>
-        <div class="policy-principle">
-          <div><span data-i18n="assetRegistration">资产登记</span><strong data-i18n="mayParticipate">这个工作负载可以参与治理环境吗？</strong></div>
-          <b aria-hidden="true">≠</b>
-          <div><span data-i18n="actionAuthorization">逐动作授权</span><strong data-i18n="mayActNow">它在当前委托权限下可以执行这个动作吗？</strong></div>
-        </div>
-        <div class="policy-grid">
-          <section class="panel policy-anatomy">
-            <div class="panel-head"><div><p class="eyebrow" data-i18n="evaluationOrder">EVALUATION INPUTS</p><h3 data-i18n="authorizationAnatomy">授权构成</h3></div></div>
-            <div class="policy-dimensions">
-              <article><span>01</span><strong data-i18n="principalAndAgent">主体 + Agent 身份</strong><small data-i18n="principalAndAgentCopy">人类或服务主体，以及实际工作负载</small></article>
-              <article><span>02</span><strong data-i18n="delegatedAuthority">委托权限</strong><small data-i18n="delegatedAuthorityCopy">凭据指纹、颁发者、主体、范围与有效期</small></article>
-              <article><span>03</span><strong data-i18n="capabilityAndTool">能力 + 工具</strong><small data-i18n="capabilityAndToolCopy">允许的能力、工具身份和 Schema</small></article>
-              <article><span>04</span><strong data-i18n="resourceAndOperation">资源 + 操作</strong><small data-i18n="resourceAndOperationCopy">资源类别、read/write/admin 与副作用</small></article>
-              <article><span>05</span><strong data-i18n="constraints">执行约束</strong><small data-i18n="constraintsCopy">网络、秘密、写入、时长与执行环境</small></article>
-            </div>
-          </section>
-          <section class="panel policy-observed">
-            <div class="panel-head"><div><p class="eyebrow" data-i18n="observedRules">OBSERVED RULES</p><h3 data-i18n="rulesSeenInAudits">审计中出现的规则</h3></div><span class="truth-label" data-i18n="notPolicyEditor">只读证据</span></div>
-            <div id="policy-rule-list" class="policy-rule-list"></div>
-            <p class="policy-api-note" data-i18n="policyApiNote">当前 UI 不假装提供尚未暴露的策略编辑 API；这里仅汇总真实审计记录中命中的规则。</p>
-          </section>
-        </div>
-        <section class="permit-specimen" aria-labelledby="permit-specimen-title">
-          <div><p class="eyebrow" data-i18n="securityObject">SECURITY OBJECT</p><h3 id="permit-specimen-title" data-i18n="envelopeTitle">授权信封</h3></div>
-          <div class="permit-fields"><span>principal</span><span>agent</span><span>capability</span><span>tool</span><span>resource</span><span>operations</span><span>constraints</span><span>expiry</span></div>
-          <p data-i18n="envelopeCopy">只有 ALLOW、RESTRICT 或 SANDBOX 才能产生信封；运行时事件必须绑定信封并接受越界检查。</p>
+            <aside id="decision-detail" class="decision-detail" aria-live="polite"></aside>
+          </div>
         </section>
       </section>
 
-      <section class="view" data-view="inventory" aria-labelledby="inventory-heading" hidden>
+      <section class="view" data-view="permits" aria-labelledby="permits-heading" hidden>
         <div class="page-heading">
-          <div><p class="eyebrow" data-i18n="visibilityModule">OPTIONAL VISIBILITY MODULE</p><h2 id="inventory-heading" data-i18n="inventoryTitle">Agent 清单</h2><p data-i18n="inventoryCopy">发现证据帮助识别工作负载，但依赖、插件或缓存文件本身不是 Agent 身份。</p></div>
-          <button id="rescan-discoveries" class="secondary-button" type="button" data-i18n="rescan">重新扫描</button>
+          <div><p class="eyebrow" data-i18n="credentialLedger">EXECUTION CREDENTIAL LEDGER</p><h2 id="permits-heading" data-i18n="permitsTitle">执行许可证</h2><p data-i18n="permitsCopy">只展示安全的相关标识与绑定字段。许可证令牌和原始敏感参数永不显示。</p></div>
+          <span class="security-note" data-i18n="tokenHidden">permit_token: NEVER RENDERED</span>
         </div>
-        <div class="inventory-stats">
-          <article><span data-i18n="registered">已登记</span><strong id="inventory-approved">—</strong></article>
-          <article><span>Shadow</span><strong id="inventory-shadow">—</strong></article>
-          <article><span data-i18n="evidenceOnly">仅证据</span><strong id="inventory-available">—</strong></article>
-          <article><span data-i18n="scanCoverage">扫描覆盖</span><strong id="inventory-coverage">UNKNOWN</strong></article>
-        </div>
-        <div id="inventory-warning" class="warning-strip" hidden></div>
-        <div class="inventory-layout">
-          <section class="panel inventory-results">
-            <div class="panel-head"><div><p class="eyebrow" data-i18n="workloadEvidence">WORKLOAD EVIDENCE</p><h3 data-i18n="deployedCandidates">已部署 / 已配置候选</h3></div><time id="scanned-at"></time></div>
-            <div id="inventory-primary-list" class="inventory-list"></div>
-            <details class="available-evidence">
-              <summary><span data-i18n="availableIntegrations">发现证据 / 可用集成</span><b id="available-count">0</b></summary>
-              <p data-i18n="availableDisclosure">这些 marketplace、catalog、cache 或依赖线索默认折叠，不计作运行中的 Agent。</p>
-              <div id="inventory-evidence-list" class="inventory-list compact"></div>
-            </details>
-          </section>
-          <aside class="panel registry-panel">
-            <div class="panel-head"><div><p class="eyebrow" data-i18n="admissionRegistry">ADMISSION REGISTRY</p><h3 data-i18n="approvedWorkloads">已登记工作负载</h3></div></div>
-            <p class="panel-intro" data-i18n="registryBoundary">登记只控制工作负载准入；它的每次行为仍须经过策略与审计。</p>
-            <div id="approval-list" class="approval-list"></div>
-            <details class="registry-editor">
-              <summary data-i18n="addOrEditRegistration">添加或编辑登记</summary>
-              <form id="approval-form" class="approval-form">
-                <input id="approval-id" name="id" type="hidden">
-                <label><span data-i18n="agentName">Agent 名称</span><input id="approval-name" name="name" maxlength="160" required placeholder="WorkBuddy"></label>
-                <label><span data-i18n="agentType">Agent 类型</span><select id="approval-type" name="agent_type" required></select></label>
-                <label class="wide-field"><span data-i18n="pathEvidence">证据路径片段</span><input id="approval-path" name="path_contains" maxlength="160" required placeholder=".workbuddy/.mcp.json"><small data-i18n="relativeEvidenceOnly">仅使用相对扫描根目录的稳定片段。</small></label>
-                <label class="wide-field"><span data-i18n="fingerprint">发现指纹</span><input id="approval-fingerprint" name="fingerprint" maxlength="128" placeholder="sha256:…"></label>
-                <label><span data-i18n="owner">负责人</span><input id="approval-owner" name="owner" maxlength="160" required></label>
-                <label><span data-i18n="environment">环境</span><input id="approval-environment" name="environment" maxlength="80" placeholder="local"></label>
-                <label><span data-i18n="approvalRef">批准单号</span><input id="approval-ref" name="approval_ref" maxlength="160"></label>
-                <label><span data-i18n="expiresOn">到期日</span><input id="approval-expiry" name="expires_on" type="date"></label>
-                <label><span data-i18n="registryState">登记状态</span><select id="approval-state" name="state"><option value="active" data-i18n="active">生效</option><option value="suspended" data-i18n="suspended">暂停</option></select></label>
-                <label><span data-i18n="policyProfile">策略档案</span><input id="approval-policy-profile" name="policy_profile" maxlength="120" placeholder="default-deny"></label>
-                <div class="form-actions wide-field"><button class="primary-button" type="submit" data-i18n="saveRegistration">保存登记</button><button id="cancel-approval" class="text-button" type="button" data-i18n="clearForm">清空</button></div>
-                <p id="approval-feedback" class="form-feedback wide-field" role="status"></p>
-              </form>
-            </details>
+        <div class="permit-workspace">
+          <aside class="permit-index panel">
+            <div class="filter-row" role="group" aria-label="Permit state filter">
+              <button class="filter-chip active" type="button" data-permit-filter="all" data-i18n="all">全部</button>
+              <button class="filter-chip" type="button" data-permit-filter="issued">ISSUED</button>
+              <button class="filter-chip" type="button" data-permit-filter="consumed">CONSUMED</button>
+              <button class="filter-chip" type="button" data-permit-filter="failed" data-i18n="failed">异常</button>
+            </div>
+            <div id="permit-list" class="permit-list"></div>
           </aside>
+          <article id="permit-detail" class="permit-detail" aria-live="polite"></article>
         </div>
+      </section>
+
+      <section class="view" data-view="audit" aria-labelledby="audit-heading" hidden>
+        <div class="page-heading">
+          <div><p class="eyebrow" data-i18n="receiptLedger">EXPLAINABLE RECEIPTS</p><h2 id="audit-heading" data-i18n="auditTitle">执行授权审计</h2><p data-i18n="auditCopy">每张回执连接策略裁决、许可证状态、执行边界验证结果与来源明确的证据。</p></div>
+        </div>
+        <div class="evidence-separation">
+          <article><span data-i18n="criticalControl">关键控制</span><strong data-i18n="preExecution">执行前许可证验证</strong><small data-i18n="preExecutionCopy">只有 VERIFIED 才能调用上游工具。</small></article>
+          <b aria-hidden="true">≠</b>
+          <article><span data-i18n="additionalEvidence">附加证据</span><strong data-i18n="postExecution">执行中 / 执行后遥测</strong><small data-i18n="postExecutionCopy">来源与可信度保持可区分；UNKNOWN 不会被写成 SAFE。</small></article>
+        </div>
+        <section class="audit-ledger panel">
+          <div class="section-head"><div><p class="eyebrow" data-i18n="auditReceipts">AUDIT RECEIPTS</p><h3 data-i18n="latestReceipts">最近回执</h3></div><span id="audit-count" class="panel-count">0</span></div>
+          <div id="audit-list" class="audit-list"></div>
+        </section>
       </section>
 
       <section class="view" data-view="demo" aria-labelledby="demo-heading" hidden>
         <div class="page-heading">
-          <div><p class="eyebrow" data-i18n="safeFixtures">SAFE FIXTURES</p><h2 id="demo-heading" data-i18n="demoTitle">演示实验室</h2><p data-i18n="demoCopy">六个场景用于回归授权与检测流程，不代表真实生产遥测。</p></div>
-          <div class="demo-badge"><span aria-hidden="true">●</span><b>DEMO TELEMETRY</b></div>
+          <div><p class="eyebrow" data-i18n="safeFixtures">SAFE / SERVER-OWNED FIXTURES</p><h2 id="demo-heading" data-i18n="demoTitle">许可证验证实验</h2><p data-i18n="demoCopy">四个场景直接证明动作绑定、短时效与单次消费。所有行为证据均明确标记为 simulated_demo。</p></div>
+          <div class="demo-badge"><i></i><span>simulated_demo</span></div>
         </div>
-        <div class="demo-warning"><strong data-i18n="truthfulDemo">这里产生的行为证据会明确标记为 simulated_demo。</strong><span data-i18n="sandboxTruth">SANDBOX 仅表示路由；隔离后端：NOT CONNECTED / DEMO。</span></div>
         <div class="demo-layout">
-          <aside class="panel scenario-panel">
-            <div class="panel-head"><div><p class="eyebrow" data-i18n="scenarioLibrary">SCENARIO LIBRARY</p><h3 data-i18n="securityScenarios">安全场景</h3></div></div>
-            <div id="scenario-list" class="scenario-list"></div>
-          </aside>
-          <section class="panel request-panel">
-            <div class="panel-head"><div><p class="eyebrow" data-i18n="actionRequest">ACTION REQUEST</p><h3 id="scenario-selection" data-i18n="chooseScenario">选择场景</h3></div><span id="scenario-expected" class="expected-route">—</span></div>
-            <label class="json-label" for="request-json" data-i18n="requestPayload">请求载荷</label>
-            <textarea id="request-json" spellcheck="false" aria-describedby="request-privacy-note" readonly></textarea>
-            <p id="request-privacy-note" class="privacy-note" data-i18n="privacyNote">演示请求不得包含真实令牌、秘密、提示词内容或个人路径。</p>
-            <button id="authorize-button" class="route-button" type="button"><span data-i18n="authorizeAction">授权并路由</span><b>→</b></button>
+          <section class="scenario-column" aria-labelledby="primary-scenarios-heading">
+            <div class="section-head compact"><div><p class="eyebrow" data-i18n="primaryProofs">PRIMARY PROOFS</p><h3 id="primary-scenarios-heading" data-i18n="fourScenarios">四个核心场景</h3></div></div>
+            <div id="primary-scenario-list" class="scenario-list"></div>
+            <details id="advanced-fixtures" class="advanced-fixtures">
+              <summary><span data-i18n="advancedFixtures">高级回归夹具</span><b id="advanced-count">0</b></summary>
+              <p data-i18n="advancedCopy">保留旧安全场景用于回归，但它们不定义产品主线。</p>
+              <div id="advanced-scenario-list" class="scenario-list compact"></div>
+            </details>
+          </section>
+          <section class="demo-stage panel">
+            <div id="demo-scenario-detail" class="demo-scenario-detail"></div>
+            <button id="run-scenario" class="primary-button run-scenario" type="button"><span data-i18n="runScenario">运行服务器夹具</span><b>→</b></button>
             <p id="demo-error" class="form-error" role="alert"></p>
           </section>
-          <section id="demo-result" class="panel demo-result" aria-live="polite"></section>
+          <section id="demo-result" class="demo-result panel" aria-live="polite"></section>
         </div>
       </section>
 
-      <footer class="page-footer"><span>Aegis Router · MVP</span><span data-i18n="footerTruth">默认拒绝 · 逐动作授权 · 来源可辨的审计</span></footer>
+      <section class="view" data-view="inventory" aria-labelledby="inventory-heading" hidden>
+        <div class="page-heading">
+          <div><p class="eyebrow">EXPERIMENTAL / DISABLED BY DEFAULT</p><h2 id="inventory-heading" data-i18n="inventoryTitle">实验性 Agent 清单</h2><p data-i18n="inventoryCopy">该功能不属于执行许可证主线，仅在服务端明确启用实验性清单时显示。</p></div>
+        </div>
+        <section class="panel experimental-panel"><div id="inventory-list" class="inventory-list"></div></section>
+      </section>
+
+      <footer class="page-footer"><span>Aegis Router · Execution Permit MVP</span><span data-i18n="footerTruth">签名 · 动作绑定 · 短时 · 单次使用 · 不记录秘密</span></footer>
     </main>
   </div>
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>

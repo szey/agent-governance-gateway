@@ -114,6 +114,7 @@ func (e *Engine) Evaluate(req models.Request) models.PolicyDecision {
 	}
 	return models.PolicyDecision{
 		Authorized: true,
+		Status:     models.AuthorizationStatusAuthorized,
 		Route:      route,
 		Reasons: []string{
 			"principal, workload, delegated scopes, capability, tool, resource, operation, and constraints match",
@@ -129,7 +130,7 @@ func (e *Engine) Evaluate(req models.Request) models.PolicyDecision {
 }
 
 func deny(rule, reason string) models.PolicyDecision {
-	return models.PolicyDecision{Authorized: false, Route: models.RouteDeny, Reasons: []string{reason}, Rules: []string{rule}}
+	return models.PolicyDecision{Authorized: false, Status: models.AuthorizationStatusDenied, Route: models.RouteDeny, Reasons: []string{reason}, Rules: []string{rule}}
 }
 
 func legacyGrant(resourceID string, resource models.ResourcePolicy) models.CapabilityGrant {

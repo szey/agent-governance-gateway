@@ -2,238 +2,189 @@
 
 English | [简体中文](README.zh-CN.md)
 
-**A Policy-Driven Security Router for AI Agents**
+**Execution Permits for AI Agent Actions**
 
-Aegis Router is a zero-trust security control plane that sits between AI agents and the tools and resources they act upon. Before each action, it evaluates the **principal, Agent workload identity, delegated authority, capability, tool, resource, operation, and constraints**. For an executable request it issues an explicit `AuthorizationEnvelope` (Execution Permit), then evaluates runtime events against that permit and retains an explainable audit chain. The API field is `authorization_envelope`; its identifier is `permit_id`.
+Aegis Router is a framework-agnostic authorization layer for tool-using AI agents. Before a privileged tool action executes, Aegis makes a deterministic decision over the normalized action and issues a signed, short-lived, action-bound, single-use-by-default execution permit. The executor verifies and consumes that permit immediately before the real side effect.
 
-> **Approving an Agent to exist does not approve its behavior.** Asset registration answers “may this workload participate in the governed environment?” Per-action authorization answers “may it use this delegation and this tool to perform this operation on this resource now?”
+If the Agent changes the tool, operation, resource, or security-relevant arguments after authorization, the permit no longer matches and the tool must not execute.
 
-The GitHub repository retains the [`szey/agent-governance-gateway`](https://github.com/szey/agent-governance-gateway) name and URL to avoid a migration. The product is branded **Aegis Router**.
+> **The action that was authorized must be exactly the action that executes.**
 
-This codebase is a runnable MVP and reference implementation, not a production security boundary. It can demonstrate and test deterministic per-action authorization, risk-based dispatch, execution permits, adapter event ingestion, boundary evaluation, and audit. It has no universal endpoint sensor and cannot automatically stop an Agent that bypasses Aegis Router. `SANDBOX` is currently a route, not a connected isolation backend.
+Aegis is not a sandbox, EDR, IAM system, Agent management platform, or enterprise Inventory product. The GitHub repository remains [`szey/agent-governance-gateway`](https://github.com/szey/agent-governance-gateway) to avoid a migration; the product name is **Aegis Router**.
 
-## Product center
-
-Aegis Router puts runtime control first; filesystem discovery is not the primary product:
-
-| Plane | Target weighting | Question |
-|---|---:|---|
-| Runtime Gateway / Enforcement | about 60% | Is this action authorized, and how should it be dispatched? |
-| Runtime Observation + Audit | about 25% | Does execution remain inside the permit, and how trustworthy is the evidence? |
-| Agent Inventory / Discovery | about 15% | Which registered workloads or unverified artifacts exist? |
-
-Discovery is an optional asset-visibility module. A configuration, dependency, marketplace/cache entry, or manifest is discovery evidence; by itself it proves neither that an Agent is running nor the runtime risk of any action.
-
-## One-action security loop
-
-```mermaid
-flowchart LR
-    A[Agent attempts action] --> I[Identity\nprincipal + workload]
-    I --> P[Policy\ndelegation + capability + tool + resource + operation]
-    P -->|unauthorized| X[DENY\nno permit]
-    P -->|authorized| R[Risk\nindependent assessment]
-    R --> D{Dispatch}
-    D --> L[ALLOW]
-    D --> T[RESTRICT]
-    D --> S[SANDBOX ROUTE]
-    D --> E[ESCALATE]
-    L & T & S --> EP[Authorization Envelope / Permit\nexact authorization boundary]
-    EP --> O[Runtime events\nsource + trust]
-    O --> C{Inside permit?}
-    C -->|yes| F[Complete / audit]
-    C -->|no| V[AUTHORIZATION_BOUNDARY_VIOLATION\nstop or flag / audit]
-    X & E --> F
-```
-
-The investigation sequence remains `I → P → R → D → O → A`:
-
-- **Identity**: who is acting and which Agent/workload acts for them;
-- **Policy**: whether delegation scopes, capability, tool, resource, operation, and explicit constraints match;
-- **Risk**: the sensitivity and uncertainty of an action that passed the authorization gate;
-- **Dispatch**: `ALLOW / RESTRICT / SANDBOX / DENY / ESCALATE`;
-- **Observation**: whether adapter or sensor events exceed the permit;
-- **Audit**: the causal chain across request, decision, permit, evidence, violations, and final verdict.
-
-A risk score never overrides an explicit authorization failure. A request without `finance.read`, for example, must be denied by policy rather than allowed because its numerical risk appears low.
-
-## Security context and execution permits
-
-Each `ActionRequest` represents the security context for one attempted action:
+## Core execution path
 
 ```text
-PrincipalContext       human/service principal, tenant or environment
-AgentIdentity          agent_id, workload_id, owner, environment, framework/version
-DelegatedAuthority     credential fingerprint, issuer, subject, scopes, expiry
-ToolContext            tool_id/name, provider, schema hash
-ActionRequest          capability, operation, resource, side effect, destination
+Agent proposes action
+  → normalize CanonicalAction
+  → deterministic Policy authorization
+  → issue Execution Permit
+  → verify and consume Permit at the MCP execution boundary
+  → call upstream tool only after VERIFIED
+  → write a redacted Audit Receipt
 ```
 
-The system never needs to retain or audit a raw bearer token. `claimed_intent` may be contextual or risk metadata, but it is not the authorization boundary. Authorization primarily derives from:
+The security boundary is **before the real tool side effect**. `POST /api/runtime-events` may still record during- or post-execution evidence, but an after-the-fact event is not the primary blocking mechanism.
+
+## Core objects
+
+### CanonicalAction
+
+The authorizer and executor must derive the same normalized action from the same fields:
+
+- principal identity;
+- Agent and workload identity;
+- delegated-authority fingerprint;
+- tool, capability, resource, and operation;
+- security-relevant arguments.
+
+Arguments use deterministic canonical JSON and a SHA-256 digest. Empty arguments normalize to `{}`; object keys sort recursively by Unicode lexical order; duplicate keys, malformed UTF-8, and unpaired surrogates are rejected; arrays preserve order; and numbers normalize exactly without float conversion (`100.0` and `1e2` are equivalent). Object key order does not change the digest; changing an amount, resource, tool, operation, or another bound field does. The digest is `sha256:<64 lowercase hex>`. Normal audit records retain `action_digest`, not raw sensitive arguments.
+
+### Execution Permit
+
+The `AuthorizationEnvelope` concept is retained and strengthened into a signed execution credential. A permit binds at least:
 
 ```text
-identity + delegated authority + capability + tool + resource + operation + constraints
+permit_id / jti      request_id
+principal_id         agent_id / workload_id
+delegation_digest    tool / capability
+resource / operation action_digest
+policy_version       issued_at / expires_at
+single_use=true
 ```
 
-An `ALLOW`, `RESTRICT`, or `SANDBOX` request receives a time-bounded permit tied to the request, principal, and Agent. `DENY` and `ESCALATE` do not receive an executable permit. A permit states what Aegis actually approved, for example:
+The focused MVP uses an Ed25519-signed compact token: `base64url(header).base64url(payload).base64url(signature)`. Its header is `alg=EdDSA`, `typ=AEGIS-PERMIT`, and `v=1`. It is a project-specific JWS-shaped format and does not claim general JWT/JWS interoperability.
+
+TTL uses whole seconds, defaults to 30 seconds, and is currently capped at 15 minutes.
+
+`permit_id` is a safe correlation identifier; `permit_token` is the execution credential. An ID alone cannot authorize execution. Signing keys, `permit_token`, raw delegated credentials, and secret arguments must never enter the UI or audit log. Callers submit only a 64-hex SHA-256 credential fingerprint; Aegis hashes that declared fingerprint again into an algorithm-qualified binding before it enters CanonicalAction, Permit claims, or audit. This is defense in depth, not permission to submit a bearer token.
+
+### Verification and replay defense
+
+The execution boundary validates signature, issuer, expiry, principal/Agent/workload, tool, resource, operation, and action digest, then atomically consumes the permit. Only `VERIFIED` may call the upstream tool. Failure outcomes cover invalid signature, expiry, revocation, wrong binding, action mismatch, and replay. At most one of two concurrent consumption attempts for the same permit may succeed.
+
+The lifecycle is `ISSUED → CONSUMED`, or `ISSUED → EXPIRED/REVOKED`.
+
+## The only MVP adapter: MCP
+
+The focused MVP has exactly one production-shaped execution boundary: MCP tool calls.
+
+```text
+MCP client
+  → Aegis MCP adapter/proxy
+  → normalize tools/call
+  → authorize exact action
+  → issue signed permit
+  → verify + consume immediately before forwarding
+  → upstream MCP server
+  → audit result metadata
+```
+
+Every verification failure must occur before the upstream `tools/call`. This milestone does not implement HTTP, A2A, database, shell, or cloud-policy adapters.
+
+Configure an upstream on the existing Server to mount permit-gated `POST /mcp`:
+
+```bash
+go run ./cmd/server --mcp-upstream http://127.0.0.1:3001/mcp
+```
+
+`tools/call` uses `Authorization: AegisPermit <permit_token>` plus `X-Aegis-Principal-Id`, `X-Aegis-Agent-Id`, `X-Aegis-Workload-Id`, `X-Aegis-Capability`, `X-Aegis-Resource`, and `X-Aegis-Operation`; the delegation-fingerprint header is optional. Tool name and arguments come directly from JSON-RPC `params`, so headers cannot replace them. The Proxy strips the credential, every `X-Aegis-*` header, cookies, content encodings, session context, and arbitrary extension headers. It forwards only normalized JSON content negotiation plus MCP routing headers rebuilt from the validated body. `initialize`, `notifications/initialized`, `ping`, and `tools/list` pass through as compatibility protocol methods; other unsupported methods fail closed.
+
+For MCP `2026-07-28`, the Proxy also requires `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` to agree exactly with `params._meta` and the JSON-RPC body, then rebuilds forwarded routing headers from the validated body. Duplicate JSON keys are rejected before Permit verification. On `tools/call`, the only accepted `_meta` entry is the validated protocol version; unbound extension metadata is rejected. This is an intentionally narrow HTTP `POST` subset: `server/discover`, `tools/list`, and permit-gated `tools/call` are supported; full MCP conformance is not claimed. MRTR `inputResponses`/`requestState` and schema-aware `Mcp-Param-*` validation are not yet part of `CanonicalAction`, so they fail closed. The old `initialize` path remains compatibility-only when a modern version is not declared.
+
+## Policy, Risk, and obligations
+
+Authorization stays deterministic, with the conceptual outcomes:
+
+- `AUTHORIZED`;
+- `DENIED`;
+- `REQUIRES_APPROVAL`.
+
+Risk is optional advisory metadata. It cannot override an explicit denial and does not define the product. Isolation, read-only behavior, denied network egress, human approval, and enhanced audit are decision/permit obligations, for example:
 
 ```json
 {
-  "allowed_capability": "config.read",
-  "allowed_tool": "config-reader",
-  "allowed_resource": "protected_config",
-  "allowed_operations": ["read"],
-  "constraints": {
-    "network_egress": "deny",
-    "secret_access": "deny",
-    "write_access": "deny"
-  }
+  "isolation_required": true,
+  "network_egress_denied": true,
+  "read_only": true,
+  "human_approval_required": false,
+  "enhanced_audit_required": true
 }
 ```
 
-An Agent's declared plan may remain investigation context, but `declared plan != authorization boundary`; the issued permit is the security boundary.
+`isolation_required: true` requires an external execution environment to supply isolation; Aegis does not implement or claim a sandbox. The focused MCP proxy therefore consumes and rejects a valid Permit when `isolation_required` or `human_approval_required` is still unsatisfied, records `EXECUTION_OBLIGATION_UNSATISFIED`, and never calls upstream. `read_only` and `network_egress_denied` remain signed requirements: the reference proxy binds the requested operation but cannot prove the internal behavior of an arbitrary upstream tool, so deployment needs a separately trusted executor/control for those semantics. `ALLOW / RESTRICT / SANDBOX / DENY / ESCALATE` in compatibility responses are legacy routing or obligation/profile hints.
 
-## Current capabilities and evidence truth
+## API direction
 
-| Capability | Current status | What it does—and does not—prove |
-|---|---:|---|
-| Structured action authorization | MVP implemented | Evaluates identity, delegation, capability, tool, resource, operation, and constraints for requests entering the API |
-| Explicit execution permit | MVP implemented | Records the approved scope for one action; denied/escalated requests receive no permit |
-| Policy/Risk separation | MVP implemented | Authorization failures deny first; risk only affects dispatch for authorized actions |
-| Runtime event ingestion and permit evaluation | MVP implemented | Evaluates permit-bound events submitted by an adapter; Demo events come from server-owned fixtures |
-| Per-action audit and causal chain | MVP implemented | Records requests entering the control point, decisions, risk, permits, evidence sources, and final verdicts |
-| Demo Lab server-side fixture runner | Demo/regression | Sends fixed harmless events through the same permit checks and labels them `simulated_demo`; it is neither a real executor nor production telemetry |
-| Local CLI wrapper | Experimental | Independently records the child lifecycle it starts; Agent JSONL remains self-reported evidence |
-| Agent Inventory / configuration discovery | Optional, implemented | Finds config/dependency evidence in explicit roots and reconciles it with a local registry |
-| Universal OS file/process sensor | Not connected | Cannot independently see arbitrary processes or file access |
-| Network sensor | Not connected | Cannot independently see egress that bypasses the Router/adapter |
-| Real sandbox isolation | Not connected | A `SANDBOX` route does not imply Docker/gVisor/Firecracker isolation |
-| Enterprise auth, RBAC, multi-tenancy, central policy | Not implemented | The administrative control desk is for trusted local development/demo use |
+Focused APIs:
 
-Every runtime event must retain an evidence source and trust level:
+- `POST /api/actions/authorize` — authorize a normalized action; success returns a decision and a permit object containing `permit_id`, `permit_token`, and `expires_at`;
+- `POST /api/permits/verify` — verify and atomically consume a Permit at a trusted execution boundary;
+- `POST /api/permits/{id}/revoke` — revoke an unconsumed permit;
+- `GET /api/permits` and `GET /api/permits/{id}` — return safe metadata only;
+- `GET /api/decisions` and `GET /api/audits` — read authorization decisions and audit receipts.
 
-| `source` | `trust_level` | Meaning |
-|---|---|---|
-| `gateway_enforced` | `enforced` | The request crossed an Aegis enforcement point |
-| `instrumented_adapter` | `adapter_reported` | The caller claims adapter provenance; the MVP does not yet authenticate adapter identity |
-| `agent_self_reported` | `self_reported` | The Agent or its log reported the event |
-| `os_sensor` / `network_sensor` | `independent_sensor` | Usable only when that sensor is actually connected |
-| `simulated_demo` | `simulated` | A synthetic Demo Lab event |
+The MCP adapter directly reuses the same verifier. `POST /api/actions/authorize` currently evaluates caller-supplied structured identity and delegation metadata; it does not authenticate a human, workload, or bearer credential. Place it behind an authenticated intake boundary before any real deployment. `POST /api/permits/verify` is for trusted, controlled integrations and is not network identity authentication. `/api/authorize`, `/api/runtime-events`, and `/api/route` remain temporarily as compatibility endpoints. They do not treat a `permit_id` as an execution credential or upgrade client-reported events into independent observation.
 
-Uninstrumented coverage remains `UNKNOWN / not instrumented`; it must not appear as “zero gaps.”
+## UI
 
-The Event API validates source/trust pairing and permit binding, but it does not yet provide adapter authentication, cryptographic integrity, or replay defense. These labels describe an evidence claim, not independent attestation.
+Primary navigation is limited to `Decisions / Permits / Audit / Demo`:
+
+- the home view shows `AUTHORIZED`, `DENIED`, `PERMIT VIOLATIONS`, and `REPLAY BLOCKS`;
+- permit details show `permit_id`, state, principal, Agent/workload, tool, capability, resource, operation, `action_digest`, policy version, issued/expires/consumed time, and verification result;
+- the UI never shows `permit_token`, raw delegated credentials, secret values, or raw sensitive arguments;
+- Inventory does not appear in normal navigation.
+
+## Demo Lab
+
+Four primary scenarios directly test the execution-permit invariant:
+
+| Scenario | Expected result |
+|---|---|
+| Valid Permit | Exact action is `VERIFIED`, upstream is called, Permit becomes `CONSUMED` |
+| Action Mutation / TOCTOU | A post-authorization argument change returns `PERMIT_ACTION_MISMATCH`; upstream is not called |
+| Permit Replay | First use succeeds; second use returns `PERMIT_REPLAY` |
+| Expired Permit | Execution after TTL returns `PERMIT_EXPIRED` |
+
+Historical security scenarios may remain under `Advanced regression fixtures`. All Demo telemetry remains `simulated_demo`; it is not real Agent or production observation.
+
+## Experimental Inventory
+
+Discovery remains buildable but is frozen, disabled by default, and outside the primary product story. Related Server API/UI is exposed only after explicit enablement:
+
+```bash
+go run ./cmd/server --enable-experimental-inventory
+```
+
+The standalone read-only utility remains under `cmd/discover`. Process, OAuth, CI/CD, cloud, and central enterprise Agent Inventory expansion is not planned. Discovery evidence cannot prove runtime behavior.
 
 ## Quick start
 
-Go 1.26 is required. Node.js is needed only when editing the TypeScript frontend.
+Go 1.26 is required. Node.js is needed only when changing the TypeScript frontend.
 
 ```bash
 go run ./cmd/server
 ```
 
-Open [http://localhost:8080](http://localhost:8080). Alternatively:
+Open [http://localhost:8080](http://localhost:8080), or run `docker compose up --build`. For MCP enforcement, add `--mcp-upstream <absolute-http(s)-url>` to the same Server and follow the [pilot protocol](docs/experiments/enterprise-agent-pilot.md) with a harmless controlled upstream first. Do not connect production tools or credentials directly.
 
-```bash
-docker compose up --build
-```
+## Audit and evidence truth
 
-The control desk is runtime-first: Overview, Decisions, Audit / Investigations, Policies, Agent Inventory, and Demo Lab. The Overview does not dump marketplace/cache evidence.
+Each action produces an explainable, redacted receipt: request/decision/permit IDs, principal, Agent, tool, resource, operation, action digest, policy version, authorization decision, permit state, verification result, timestamp, and evidence source.
 
-### API direction
+Runtime sources remain distinct: `gateway_enforced`, `instrumented_adapter`, `agent_self_reported`, `os_sensor`, `network_sensor`, and `simulated_demo`. Runtime evidence is secondary. Uninstrumented coverage remains `UNKNOWN / not instrumented`: `UNKNOWN != SAFE` and `UNKNOWN != ZERO`.
 
-The primary flow separates pre-execution authorization from runtime evidence:
+## Documentation and verification
 
-```text
-POST /api/authorize
-  → policy decision + risk assessment + dispatch decision
-  → AuthorizationEnvelope / Permit only for an executable result
-
-POST /api/runtime-events
-  → event bound to request/permit
-  → permit-boundary evaluation and violation result
-
-POST /api/executions/{id}/complete
-  → final verdict
-```
-
-Read APIs:
-
-- `GET /api/decisions` — recent per-action authorization decisions;
-- `GET /api/audits` — investigation and audit chains;
-- `GET /api/runtime-coverage` — truthful coverage state for each telemetry class;
-- `GET /api/agents` — Agent asset registrations;
-- `GET /api/scenarios` — Demo Lab scenarios;
-- `GET /api/discoveries` — optional discovery evidence.
-
-Other current endpoints include `GET /api/health`, `GET /api/overview`, `GET /api/policies`, `POST /api/demo-lab/{id}/run`, and local Inventory management APIs. `POST /api/route` remains as a compatibility alias for `/api/authorize`, but it never presents client-submitted simulated actions as independent observation. `POST /api/runtime-events` accepts only `instrumented_adapter` or `agent_self_reported`; stronger labels are reserved for trusted internal integrations. Consult the running code and API response as the source of truth while these MVP endpoints evolve.
-
-## Demo Lab
-
-The six scenarios are deterministic security regressions, not production incidents:
-
-| Scenario | Core result | Property under test |
-|---|---|---|
-| Safe code request | `ALLOW` + permit | Valid identity, delegation, tool, resource, and operation; demo event stays inside the permit |
-| Unauthorized finance access | `DENY`, no permit | Code-scoped delegation cannot read finance; no executor invocation |
-| Authorization-boundary violation | Violation after permit | Permit allows only `config.read`; `secret.read` or write triggers a boundary verdict |
-| Indirect prompt injection | `DENY/ESCALATE` | Deterministic combination of untrusted provenance and a side-effecting tool |
-| Protected file read | Restricted/sandbox route | Retain classified metadata and budget, not content or a full path |
-| Sensitive read followed by egress | `DENY` or runtime violation | Cross-tool causality plus a denied-egress constraint |
-
-Demo Lab events must be labeled `simulated_demo`. Only an adapter, gateway, or real connected sensor may use the corresponding non-demo source label.
-
-## Agent Inventory (optional)
-
-Discovery is disabled by default. Only when Inventory is needed, repeat `--discovery-root` for one or more explicitly approved roots. Without it, the runtime-first home page does not load the repository Shadow fixture:
-
-```powershell
-.\dist\agent-governance-gateway.exe `
-  --addr "127.0.0.1:8080" `
-  --discovery-root "C:\approved-agent-directory" `
-  --discovery-root "D:\another-approved-root"
-```
-
-Or run the read-only scanner separately:
-
-```bash
-go run ./cmd/discover --path ./examples/shadow-agent-sample
-```
-
-The discovery module:
-
-- reads only explicit roots, records inaccessible children as coverage gaps, and continues;
-- retains relative evidence paths, types, fingerprints, and confidence—not file contents;
-- groups marketplace/catalog/cache/temp artifacts under `Discovery Evidence / Available Integrations`;
-- separates `available`, `installed`, `configured`, and `observed`;
-- calls a workload Shadow only when deployment evidence exists but no registry entry matches;
-- never treats a dependency string or MCP manifest itself as an independent Agent identity;
-- separates discovery confidence/deployment state from the runtime risk of an attempted action.
-
-The local asset registry may contain `agent_id`, `workload_identity`, display name, owner, environment, framework, approval reference, expiry, status, and `policy_profile`. Registration grants no behavioral permission; each action entering Aegis Router is still authorized and audited independently.
-
-## Privacy defaults
-
-The normal UI and runtime audit should not expose raw Windows usernames or full local paths. Resources are normalized into classes such as `USER_PROFILE / AGENT_CONFIG`, `WORKSPACE / SOURCE`, `PROTECTED_CONFIG`, and `SECRET_STORE`. If Inventory needs relative evidence paths, it keeps them separate from runtime audit records.
-
-Never record raw tokens, secret values, or retrieved document contents. Prompt content is also excluded unless the operator explicitly chooses a local demo mode. Administrative and audit data remain inside the operator-approved data boundary.
-
-## Documentation and pilot
-
-Chinese is the semantic working source; English is synchronized in the same change:
+Chinese is the semantic working source; English changes in the same commit:
 
 | Topic | 简体中文 | English |
 |---|---|---|
 | Product brief | [中文](docs/project-brief.zh-CN.md) | [English](docs/project-brief.md) |
-| Enterprise endpoint pilot | [中文](docs/experiments/enterprise-agent-pilot.zh-CN.md) | [English](docs/experiments/enterprise-agent-pilot.md) |
-| Research, risk frameworks, and iteration | [中文](docs/research-product-mapping-iteration.zh-CN.md) | [English](docs/research-product-mapping-iteration.md) |
+| MCP execution-permit pilot | [中文](docs/experiments/enterprise-agent-pilot.zh-CN.md) | [English](docs/experiments/enterprise-agent-pilot.md) |
+| Research and product decisions | [中文](docs/research-product-mapping-iteration.zh-CN.md) | [English](docs/research-product-mapping-iteration.md) |
 | Contributing | [中文](CONTRIBUTING.zh-CN.md) | [English](CONTRIBUTING.md) |
 | Security policy | [中文](SECURITY.zh-CN.md) | [English](SECURITY.md) |
-
-A company pilot is not “install and automatically monitor.” Only actions crossing the Router or events submitted by a connected adapter/sensor can be evaluated. A formal pilot requires renewed written authorization and synthetic data. See the [Enterprise Agent Endpoint Pilot](docs/experiments/enterprise-agent-pilot.md).
-
-Ongoing research uses the separate `$research-to-product` skill; this repository is one consumer of that skill. [`.codex/research-to-product.json`](.codex/research-to-product.json) forbids automatic publishing, deployment, and production data.
-
-## Development and verification
 
 ```bash
 npm install
@@ -244,46 +195,15 @@ go test -race ./...
 go vet ./...
 ```
 
-The frontend source is `web/src/app.ts`; the compiled `web/static/app.js` is committed so a low-spec machine that only runs the repository binaries does not need Node.js.
-
-## Roadmap
-
-### Runtime Gateway / Enforcement
-
-- [x] Deterministic default-deny policy and Policy/Risk separation
-- [x] Explicit Agent, delegation, tool, resource, and operation context
-- [x] `AuthorizationEnvelope` / permit and per-action audit
-- [x] Runtime Event ingestion and permit-boundary evaluation
-- [ ] Real MCP/HTTP/tool proxy enforcement points
-- [ ] Human approval, permit revocation, and one-time authorization
-- [ ] Signed identity, enterprise authentication, RBAC, and policy distribution
-
-### Observation / Audit
-
-- [x] Source/trust labels for Demo/adapter events
-- [x] Deterministic inside-permit and boundary-violation results
-- [x] Session, parent event, input provenance, and cross-tool sequence metadata
-- [ ] Independent OS and network sensors
-- [ ] Tamper-evident audit, durable causal state, and OpenTelemetry
-- [ ] Real isolation executor and verifiable termination semantics
-
-### Inventory / Discovery
-
-- [x] Scoped scanning, fingerprints, deduplication, and local registry reconciliation
-- [x] Separation of available integrations from deployed workloads
-- [ ] Process, IdP/OAuth, CI/CD, and cloud-audit connectors
-- [ ] Central enterprise inventory and full lifecycle management
+The frontend source is `web/src/app.ts`; the generated `web/static/app.js` is committed too. If the environment lacks the race-detector toolchain, report that limitation exactly instead of claiming it passed.
 
 ## Security boundaries
 
-- Aegis Router can authorize and audit only requests that enter its control point.
-- Adapter or Agent self-reports may be incomplete and must retain provenance labels.
-- Unconnected sensors are unknown, not zero-risk or zero-gap.
-- A `SANDBOX` route is not host isolation unless a configured backend is independently verified.
-- Discovery evidence can produce false positives and false negatives and does not prove execution.
-- Local JSONL audit is not yet tamper-evident or a central enterprise store.
-- A dedicated administrative header is not authentication or RBAC.
-- Do not connect production credentials, customer data, or unrestricted internet before independent security review.
+- Aegis protects only actions that actually cross its verifier/MCP boundary; bypassed calls are not automatically discovered or blocked;
+- an in-process PermitStore, local key management, and local audit are not production-grade high availability, tamper resistance, or cross-instance replay defense;
+- MCP adapter identity, upstream transport, and deployment topology still need a separate threat model and security review;
+- Aegis does not provide real isolation, EDR sensors, full IAM, SSO, RBAC, or multi-tenancy;
+- do not use production credentials, customer data, or uncontrolled Internet targets before independent review and a formally authorized pilot.
 
 ## License
 

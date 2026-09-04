@@ -1,6 +1,7 @@
 package router
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -10,21 +11,28 @@ import (
 	"time"
 
 	"agent-governance-gateway/internal/audit"
+	"agent-governance-gateway/internal/canonicalaction"
 	"agent-governance-gateway/internal/detection"
 	"agent-governance-gateway/internal/models"
 	"agent-governance-gateway/internal/observer"
+	"agent-governance-gateway/internal/permit"
 	"agent-governance-gateway/internal/policy"
 	"agent-governance-gateway/internal/risk"
+	"agent-governance-gateway/internal/verifier"
 )
 
 type Router struct {
-	policy    *policy.Engine
-	risk      *risk.Scorer
-	observer  *observer.Observer
-	audit     *audit.Store
-	detection *detection.Engine
-	clock     func() time.Time
-	permitTTL time.Duration
+	policy         *policy.Engine
+	risk           *risk.Scorer
+	observer       *observer.Observer
+	audit          *audit.Store
+	detection      *detection.Engine
+	clock          func() time.Time
+	permitTTL      time.Duration
+	policyVersion  string
+	permitIssuer   *permit.Issuer
+	permitStore    *permit.MemoryStore
+	permitVerifier *verifier.Verifier
 
 	mu      sync.RWMutex
 	permits map[string]models.AuthorizationEnvelope
@@ -40,11 +48,36 @@ func NewWithClock(cfg models.PolicyConfig, store *audit.Store, clock func() time
 	}
 	ttl := time.Duration(cfg.Permits.TTLSeconds) * time.Second
 	if ttl <= 0 {
-		ttl = 5 * time.Minute
+		ttl = permit.DefaultTTL
+	}
+	if ttl > permit.MaxTTL {
+		ttl = permit.MaxTTL
+	}
+	issuerName := strings.TrimSpace(cfg.Permits.Issuer)
+	if issuerName == "" {
+		issuerName = "aegis-router"
+	}
+	policyVersion := strings.TrimSpace(cfg.Version)
+	if policyVersion == "" {
+		policyVersion = "policy-v1"
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(fmt.Sprintf("initialize execution-permit signing key: %v", err))
+	}
+	permitStore := permit.NewMemoryStore()
+	issuer, err := permit.NewIssuer(issuerName, privateKey, permitStore, permit.WithIssuerClock(clock))
+	if err != nil {
+		panic(fmt.Sprintf("initialize execution-permit issuer: %v", err))
+	}
+	permitVerifier, err := verifier.New(publicKey, issuerName, permitStore, verifier.WithClock(clock))
+	if err != nil {
+		panic(fmt.Sprintf("initialize execution-permit verifier: %v", err))
 	}
 	return &Router{
 		policy: policy.New(cfg), risk: risk.New(cfg), observer: observer.New(cfg), audit: store,
 		detection: detection.New(cfg.SessionControls), clock: clock, permitTTL: ttl,
+		policyVersion: policyVersion, permitIssuer: issuer, permitStore: permitStore, permitVerifier: permitVerifier,
 		permits: make(map[string]models.AuthorizationEnvelope),
 	}
 }
@@ -56,11 +89,31 @@ func (r *Router) Process(req models.Request) (models.AuditRecord, error) {
 	return r.Authorize(req)
 }
 
-// Authorize evaluates identity/policy first, risk second, selects a route, and
-// issues a least-privilege execution permit only when execution may proceed.
+// Authorize is the compatibility authorization entry point. It deliberately
+// omits the execution credential; new executors must call AuthorizeAction and
+// verify the returned permit token immediately before the side effect.
 func (r *Router) Authorize(req models.Request) (models.AuditRecord, error) {
+	result, err := r.AuthorizeAction(req)
+	return result.Decision, err
+}
+
+// AuthorizeAction deterministically evaluates the structured request and, for
+// an authorized action, returns a signed short-lived single-use credential.
+// The token exists only in the response and is never placed in AuditRecord.
+func (r *Router) AuthorizeAction(req models.Request) (models.ActionAuthorizationResponse, error) {
+	return r.authorizeAction(req, 0)
+}
+
+// AuthorizeSyntheticDemoAction is restricted to server-owned fixtures. It
+// permits a shorter TTL so expiration can be demonstrated without changing
+// the production policy or accepting a client-controlled lifetime.
+func (r *Router) AuthorizeSyntheticDemoAction(req models.Request, ttl time.Duration) (models.ActionAuthorizationResponse, error) {
+	return r.authorizeAction(req, ttl)
+}
+
+func (r *Router) authorizeAction(req models.Request, ttlOverride time.Duration) (models.ActionAuthorizationResponse, error) {
 	if err := Validate(req); err != nil {
-		return models.AuditRecord{}, err
+		return models.ActionAuthorizationResponse{}, err
 	}
 	started := r.clock().UTC()
 	if req.RequestID == "" {
@@ -72,6 +125,9 @@ func (r *Router) Authorize(req models.Request) (models.AuditRecord, error) {
 	detected := r.detection.Evaluate(req, assessment.Score)
 	assessment = applyDetectionRisk(assessment, detected)
 	dispatch := dispatchFor(policyDecision, assessment, detected)
+	status := authorizationStatus(policyDecision, dispatch)
+	decisionID := newIdentifier("decision")
+	obligations := obligationsFor(policyDecision, assessment, detected, dispatch)
 
 	observation := models.RuntimeObservation{
 		Events: []models.RuntimeEvent{}, EventEvaluations: []models.RuntimeEventEvaluation{},
@@ -81,33 +137,252 @@ func (r *Router) Authorize(req models.Request) (models.AuditRecord, error) {
 		Coverage: r.RuntimeCoverage(),
 	}
 
-	var permit *models.AuthorizationEnvelope
-	if executionPermitted(dispatch.Route) && policyDecision.Authorized && policyDecision.Grant != nil {
-		issued := issuePermit(req, *policyDecision.Grant, dispatch, started, r.permitTTL)
-		permit = &issued
+	var envelope *models.AuthorizationEnvelope
+	var credential *models.PermitCredential
+	var actionDigest string
+	if policyDecision.Grant != nil {
+		action := canonicalAction(req, *policyDecision.Grant)
+		var err error
+		actionDigest, err = action.Digest()
+		if err != nil {
+			return models.ActionAuthorizationResponse{}, fmt.Errorf("canonicalize authorized action: %w", err)
+		}
+	}
+	if status == models.AuthorizationStatusAuthorized && executionPermitted(dispatch.Route) && policyDecision.Grant != nil {
+		issued, issueErr := r.issuePermit(req, *policyDecision.Grant, obligations, actionDigest, started, ttlOverride)
+		if issueErr != nil {
+			return models.ActionAuthorizationResponse{}, issueErr
+		}
+		envelope = envelopeFor(issued, req.SessionID, policyDecision.Grant.Constraints, dispatch.Route)
+		credential = &models.PermitCredential{
+			PermitID: issued.PermitID, PermitToken: issued.Token(), IssuedAt: issued.Claims.IssuedTime(),
+			ExpiresAt: issued.Claims.ExpiresTime(), SingleUse: issued.Claims.SingleUse,
+		}
 		r.mu.Lock()
-		r.permits[issued.PermitID] = issued
+		r.permits[envelope.PermitID] = *envelope
 		r.mu.Unlock()
 	}
 
 	auditRequest := privacySafeRequest(req)
+	receipt := authorizationReceipt(decisionID, req, status, envelope, actionDigest, r.policyVersion, started)
 	record := models.AuditRecord{
-		RequestID: req.RequestID, CreatedAt: started, Request: auditRequest,
+		RequestID: req.RequestID, DecisionID: decisionID, AuthorizationStatus: status,
+		CreatedAt: started, Request: auditRequest,
 		PolicyDecision: policyDecision, RiskAssessment: assessment, DispatchDecision: dispatch,
-		AuthorizationEnvelope: permit, SelectedExecutor: dispatch.ExecutorProfile,
+		AuthorizationEnvelope: envelope, ExecutionReceipt: receipt, SelectedExecutor: dispatch.ExecutorProfile,
 		RuntimeObservation: observation, SecurityFindings: nonNilFindings(detected.Findings),
-		CausalContext: detected.Context, FinalVerdict: authorizationVerdict(dispatch.Route),
+		CausalContext: detected.Context, FinalVerdict: authorizationVerdict(status),
 		DurationMS: elapsedMilliseconds(started, r.clock().UTC()),
 	}
 	if err := r.audit.Append(record); err != nil {
-		if permit != nil {
+		if envelope != nil {
+			_, _ = r.permitStore.Revoke(envelope.PermitID, r.clock().UTC())
 			r.mu.Lock()
-			delete(r.permits, permit.PermitID)
+			delete(r.permits, envelope.PermitID)
 			r.mu.Unlock()
 		}
-		return models.AuditRecord{}, err
+		return models.ActionAuthorizationResponse{}, err
+	}
+	return models.ActionAuthorizationResponse{Decision: record, Permit: credential}, nil
+}
+
+// VerifyAndConsume is the only authorization method an executor should trust.
+// A permit identifier alone is never accepted as an execution credential.
+func (r *Router) VerifyAndConsume(permitToken string, action canonicalaction.Action) (models.PermitVerification, error) {
+	return r.verifyAndConsume(permitToken, action, models.RuntimeSourceGatewayEnforced)
+}
+
+func (r *Router) VerifySyntheticDemo(permitToken string, action canonicalaction.Action) (models.PermitVerification, error) {
+	return r.verifyAndConsume(permitToken, action, models.RuntimeSourceSimulatedDemo)
+}
+
+func (r *Router) verifyAndConsume(permitToken string, action canonicalaction.Action, source models.RuntimeEventSource) (models.PermitVerification, error) {
+	result := r.permitVerifier.VerifyAndConsume(permitToken, action)
+	verification := models.PermitVerification{
+		PermitID: result.PermitID, RequestID: result.RequestID, Outcome: string(result.Outcome),
+		Verified: result.Allowed(), State: string(result.State), VerifiedAt: result.VerifiedAt,
+		EvidenceSource: string(source),
+	}
+	if result.Claims != nil {
+		verification.Obligations = models.ExecutionObligations{
+			IsolationRequired:     result.Claims.Obligations.IsolationRequired,
+			NetworkEgressDenied:   result.Claims.Obligations.NetworkEgressDenied,
+			ReadOnly:              result.Claims.Obligations.ReadOnly,
+			HumanApprovalRequired: result.Claims.Obligations.HumanApprovalRequired,
+			EnhancedAuditRequired: result.Claims.Obligations.EnhancedAuditRequired,
+		}
+	}
+	if result.RequestID == "" {
+		attemptID, auditErr := r.auditUnboundVerificationFailure(result, source)
+		verification.RequestID = attemptID
+		return verification, auditErr
+	}
+	_, err := r.audit.Mutate(result.RequestID, func(record *models.AuditRecord) error {
+		if record.AuthorizationEnvelope != nil && record.AuthorizationEnvelope.PermitID == result.PermitID {
+			record.AuthorizationEnvelope.State = string(result.State)
+		}
+		existingOutcome := ""
+		if record.ExecutionReceipt != nil {
+			existingOutcome = record.ExecutionReceipt.VerificationOutcome
+			record.ExecutionReceipt.PermitState = string(result.State)
+			if verificationOutcomePriority(string(result.Outcome)) >= verificationOutcomePriority(existingOutcome) {
+				record.ExecutionReceipt.VerificationOutcome = string(result.Outcome)
+				record.ExecutionReceipt.Timestamp = result.VerifiedAt
+				record.ExecutionReceipt.EvidenceSource = source
+			}
+		}
+		if verificationOutcomePriority(string(result.Outcome)) >= verificationOutcomePriority(existingOutcome) {
+			record.FinalVerdict = permitVerdict(result.Outcome)
+		}
+		record.DurationMS = elapsedMilliseconds(record.CreatedAt, result.VerifiedAt)
+		return nil
+	})
+	if err != nil {
+		return verification, err
+	}
+	return verification, nil
+}
+
+func (r *Router) auditUnboundVerificationFailure(result verifier.Result, source models.RuntimeEventSource) (string, error) {
+	attemptID := newIdentifier("verify")
+	decisionID := newIdentifier("decision")
+	verdict := permitVerdict(result.Outcome)
+	record := models.AuditRecord{
+		RequestID: attemptID, DecisionID: decisionID, AuthorizationStatus: models.AuthorizationStatusDenied,
+		CreatedAt: result.VerifiedAt,
+		PolicyDecision: models.PolicyDecision{
+			Authorized: false, Status: models.AuthorizationStatusDenied, Route: models.RouteDeny,
+			Reasons: []string{"the execution credential could not be authenticated; token claims were not trusted"},
+			Rules:   []string{"permit.untrusted_credential"},
+		},
+		RiskAssessment:   models.RiskAssessment{Level: "not_evaluated", Signals: []string{"verification failed before trusted claims were available"}},
+		DispatchDecision: dispatch(models.RouteDeny, "none", "not_applicable", []string{"execution blocked at the permit boundary"}, []string{"permit.untrusted_credential"}),
+		ExecutionReceipt: &models.ExecutionReceipt{
+			RequestID: attemptID, DecisionID: decisionID, AuthorizationDecision: models.AuthorizationStatusDenied,
+			VerificationOutcome: string(result.Outcome), Timestamp: result.VerifiedAt, EvidenceSource: source,
+		},
+		RuntimeObservation: models.RuntimeObservation{
+			Events: []models.RuntimeEvent{}, EventEvaluations: []models.RuntimeEventEvaluation{},
+			AuthorizationViolations: []models.AuthorizationViolation{}, PlannedActions: []string{}, ActualActions: []string{},
+			UnexpectedActions: []string{}, SuspiciousActions: []string{}, Coverage: r.RuntimeCoverage(),
+		},
+		SecurityFindings: []models.SecurityFinding{}, FinalVerdict: verdict,
+	}
+	if err := r.audit.Append(record); err != nil {
+		return attemptID, err
+	}
+	return attemptID, nil
+}
+
+func verificationOutcomePriority(outcome string) int {
+	if outcome == "" {
+		return 0
+	}
+	if outcome == string(verifier.OutcomeVerified) {
+		return 1
+	}
+	return 2
+}
+
+func (r *Router) VerifyRequestAndConsume(permitToken string, req models.Request) (models.PermitVerification, error) {
+	if strings.TrimSpace(permitToken) == "" {
+		return models.PermitVerification{}, fmt.Errorf("permit_token is required")
+	}
+	if err := Validate(req); err != nil {
+		return models.PermitVerification{}, err
+	}
+	return r.VerifyAndConsume(permitToken, executionAction(req))
+}
+
+func (r *Router) VerifySyntheticDemoRequest(permitToken string, req models.Request) (models.PermitVerification, error) {
+	if strings.TrimSpace(permitToken) == "" {
+		return models.PermitVerification{}, fmt.Errorf("permit_token is required")
+	}
+	if err := Validate(req); err != nil {
+		return models.PermitVerification{}, err
+	}
+	return r.VerifySyntheticDemo(permitToken, executionAction(req))
+}
+
+func (r *Router) ListPermits() []permit.Record {
+	return r.permitStore.List(r.clock().UTC())
+}
+
+func (r *Router) GetPermit(permitID string) (permit.Record, bool) {
+	return r.permitStore.Get(permitID, r.clock().UTC())
+}
+
+func (r *Router) RevokePermit(permitID string) (permit.Record, error) {
+	now := r.clock().UTC()
+	record, err := r.permitStore.Revoke(permitID, now)
+	if err != nil {
+		return record, err
+	}
+	r.mu.Lock()
+	delete(r.permits, permitID)
+	r.mu.Unlock()
+	if _, ok := r.audit.Get(record.Claims.RequestID); ok {
+		_, updateErr := r.audit.Mutate(record.Claims.RequestID, func(auditRecord *models.AuditRecord) error {
+			if auditRecord.AuthorizationEnvelope != nil {
+				auditRecord.AuthorizationEnvelope.State = string(record.State)
+			}
+			if auditRecord.ExecutionReceipt != nil {
+				auditRecord.ExecutionReceipt.PermitState = string(record.State)
+				auditRecord.ExecutionReceipt.VerificationOutcome = string(verifier.OutcomeRevoked)
+				auditRecord.ExecutionReceipt.Timestamp = now
+			}
+			auditRecord.FinalVerdict = "PERMIT_REVOKED"
+			auditRecord.DurationMS = elapsedMilliseconds(auditRecord.CreatedAt, now)
+			return nil
+		})
+		if updateErr != nil {
+			return record, updateErr
+		}
 	}
 	return record, nil
+}
+
+func authorizationReceipt(decisionID string, req models.Request, status models.AuthorizationStatus, envelope *models.AuthorizationEnvelope, digest, policyVersion string, at time.Time) *models.ExecutionReceipt {
+	principal := req.EffectivePrincipal()
+	agent := req.EffectiveAgent()
+	tool := req.EffectiveTool().Name
+	action := req.EffectiveAction()
+	permitID, permitState := "", ""
+	if envelope != nil {
+		permitID, permitState = envelope.PermitID, envelope.State
+		tool = envelope.AllowedTool
+		action.Capability = envelope.AllowedCapability
+		action.TargetResource = envelope.AllowedResource
+		action.Operation = envelope.AllowedOperation
+	}
+	return &models.ExecutionReceipt{
+		RequestID: req.RequestID, DecisionID: decisionID, PermitID: permitID,
+		PrincipalID: principal.PrincipalID, AgentID: agent.AgentID, WorkloadID: agent.WorkloadID,
+		Tool: tool, Capability: action.Capability, Resource: action.TargetResource, Operation: action.Operation,
+		ActionDigest: digest, PolicyVersion: policyVersion, AuthorizationDecision: status,
+		PermitState: permitState, Timestamp: at, EvidenceSource: models.RuntimeSourceGatewayEnforced,
+	}
+}
+
+func permitVerdict(outcome verifier.Outcome) string {
+	switch outcome {
+	case verifier.OutcomeVerified:
+		return "PERMIT_VERIFIED"
+	case verifier.OutcomeActionMismatch, verifier.OutcomeWrongPrincipal, verifier.OutcomeWrongAgent,
+		verifier.OutcomeWrongWorkload, verifier.OutcomeWrongDelegation, verifier.OutcomeWrongTool,
+		verifier.OutcomeWrongCapability, verifier.OutcomeWrongResource, verifier.OutcomeWrongOperation:
+		return "PERMIT_ACTION_MISMATCH"
+	case verifier.OutcomeExpired:
+		return "PERMIT_EXPIRED"
+	case verifier.OutcomeReplayed:
+		return "PERMIT_REPLAY"
+	case verifier.OutcomeRevoked:
+		return "PERMIT_REVOKED"
+	case verifier.OutcomeInvalidSignature:
+		return "PERMIT_INVALID_SIGNATURE"
+	default:
+		return "PERMIT_REJECTED"
+	}
 }
 
 // IngestRuntimeEvent accepts privacy-preserving metadata from a named evidence
@@ -147,49 +422,81 @@ func (r *Router) IngestRuntimeEvent(event models.RuntimeEvent) (models.RuntimeEv
 		delete(r.permits, permit.PermitID)
 	}
 	r.mu.Unlock()
-	record, ok := r.audit.Get(permit.RequestID)
-	if !ok {
-		return evaluation, fmt.Errorf("audit record %q for permit %q not found", permit.RequestID, permit.PermitID)
-	}
-	record.RuntimeObservation.Events = append(record.RuntimeObservation.Events, event)
-	record.RuntimeObservation.EventEvaluations = append(record.RuntimeObservation.EventEvaluations, evaluation)
-	record.RuntimeObservation.AuthorizationViolations = append(record.RuntimeObservation.AuthorizationViolations, evaluation.Violations...)
-	record.RuntimeObservation.ActualActions = append(record.RuntimeObservation.ActualActions, event.Operation)
-	record.RuntimeObservation.Coverage.ToolEvents = coverageFor(event)
-	if len(evaluation.Violations) > 0 {
-		for _, item := range evaluation.Violations {
-			record.SecurityFindings = append(record.SecurityFindings, models.SecurityFinding{
-				ID: event.EventID + ":" + item.Rule, Category: "authorization_boundary", Severity: "critical",
-				Rule: item.Rule, Summary: item.Summary,
-				Evidence: []string{"event_id=" + safeEvidence(event.EventID), "source=" + string(event.Source), "trust_level=" + string(event.TrustLevel)},
-			})
-		}
-	}
-	if !evaluation.Accepted {
-		record.FinalVerdict = "RUNTIME_EVENT_REJECTED"
-	}
-	if evaluation.Accepted && !evaluation.WithinEnvelope {
-		record.FinalVerdict = "AUTHORIZATION_BOUNDARY_VIOLATION"
-	}
 	if evaluation.Terminated {
-		completed := now
-		record.CompletedAt = &completed
+		_, _ = r.permitStore.Revoke(permit.PermitID, now)
 	}
-	record.DurationMS = elapsedMilliseconds(record.CreatedAt, now)
-	if err := r.audit.Update(record); err != nil {
+	_, err := r.audit.Mutate(permit.RequestID, func(record *models.AuditRecord) error {
+		record.RuntimeObservation.Events = append(record.RuntimeObservation.Events, event)
+		record.RuntimeObservation.EventEvaluations = append(record.RuntimeObservation.EventEvaluations, evaluation)
+		record.RuntimeObservation.AuthorizationViolations = append(record.RuntimeObservation.AuthorizationViolations, evaluation.Violations...)
+		record.RuntimeObservation.ActualActions = append(record.RuntimeObservation.ActualActions, event.Operation)
+		record.RuntimeObservation.Coverage.ToolEvents = coverageFor(event)
+		if len(evaluation.Violations) > 0 {
+			for _, item := range evaluation.Violations {
+				record.SecurityFindings = append(record.SecurityFindings, models.SecurityFinding{
+					ID: event.EventID + ":" + item.Rule, Category: "authorization_boundary", Severity: "critical",
+					Rule: item.Rule, Summary: item.Summary,
+					Evidence: []string{"event_id=" + safeEvidence(event.EventID), "source=" + string(event.Source), "trust_level=" + string(event.TrustLevel)},
+				})
+			}
+		}
+		if !evaluation.Accepted {
+			record.FinalVerdict = "RUNTIME_EVENT_REJECTED"
+		}
+		if evaluation.Accepted && !evaluation.WithinEnvelope {
+			record.FinalVerdict = "AUTHORIZATION_BOUNDARY_VIOLATION"
+		}
+		if evaluation.Terminated {
+			completed := now
+			record.CompletedAt = &completed
+		}
+		record.DurationMS = elapsedMilliseconds(record.CreatedAt, now)
+		return nil
+	})
+	if err != nil {
 		return evaluation, err
 	}
 	return evaluation, nil
 }
 
+// CompleteExecution is retained for compatibility evidence. It cannot prove
+// that a permit was verified at the execution boundary.
 func (r *Router) CompleteExecution(completion models.ExecutionCompletion) (models.AuditRecord, error) {
+	return r.completeExecution(completion, models.RuntimeSourceAgentSelfReported)
+}
+
+// CompleteVerifiedExecution is called only by an in-process enforcement
+// adapter after VerifyAndConsume and an upstream execution attempt.
+func (r *Router) CompleteVerifiedExecution(completion models.ExecutionCompletion) (models.AuditRecord, error) {
+	return r.completeExecution(completion, models.RuntimeSourceGatewayEnforced)
+}
+
+func (r *Router) CompleteSyntheticDemoExecution(completion models.ExecutionCompletion) (models.AuditRecord, error) {
+	return r.completeExecution(completion, models.RuntimeSourceSimulatedDemo)
+}
+
+func (r *Router) completeExecution(completion models.ExecutionCompletion, source models.RuntimeEventSource) (models.AuditRecord, error) {
 	if !safeMetadataLabel(completion.RequestID) || !safeMetadataLabel(completion.PermitID) {
 		return models.AuditRecord{}, fmt.Errorf("request_id and permit_id must be short metadata identifiers")
 	}
 	if completion.Status != "completed" && completion.Status != "failed" && completion.Status != "terminated" {
 		return models.AuditRecord{}, fmt.Errorf("status must be completed, failed, or terminated")
 	}
+	if completion.BoundaryOutcome != "" {
+		if source != models.RuntimeSourceGatewayEnforced && source != models.RuntimeSourceSimulatedDemo {
+			return models.AuditRecord{}, fmt.Errorf("boundary_outcome is reserved for a trusted execution adapter")
+		}
+		if completion.BoundaryOutcome != "UNSATISFIED_OBLIGATION" {
+			return models.AuditRecord{}, fmt.Errorf("unsupported boundary_outcome")
+		}
+	}
 	receivedAt := r.clock().UTC()
+	if source == models.RuntimeSourceGatewayEnforced || source == models.RuntimeSourceSimulatedDemo {
+		permitRecord, exists := r.permitStore.Get(completion.PermitID, receivedAt)
+		if !exists || permitRecord.State != permit.StateConsumed {
+			return models.AuditRecord{}, fmt.Errorf("trusted execution completion requires a consumed permit")
+		}
+	}
 	r.mu.Lock()
 	permit, ok := r.permits[completion.PermitID]
 	if !ok || permit.RequestID != completion.RequestID {
@@ -198,73 +505,101 @@ func (r *Router) CompleteExecution(completion models.ExecutionCompletion) (model
 	}
 	delete(r.permits, completion.PermitID)
 	r.mu.Unlock()
-	record, ok := r.audit.Get(completion.RequestID)
-	if !ok {
-		return models.AuditRecord{}, fmt.Errorf("audit record %q not found", completion.RequestID)
-	}
-	if !permit.ExpiresAt.After(receivedAt) || (!completion.CompletedAt.IsZero() && !permit.ExpiresAt.After(completion.CompletedAt.UTC())) {
-		violation := models.AuthorizationViolation{
-			Rule: "execution.permit_expired", Summary: "execution completion was reported after the authorization permit expired",
-			Expected: "completion before " + permit.ExpiresAt.UTC().Format(time.RFC3339Nano), Actual: receivedAt.Format(time.RFC3339Nano),
+	permitRecord, _ := r.permitStore.Get(completion.PermitID, receivedAt)
+	expired := !permit.ExpiresAt.After(receivedAt) || (!completion.CompletedAt.IsZero() && !permit.ExpiresAt.After(completion.CompletedAt.UTC()))
+	return r.audit.Mutate(completion.RequestID, func(record *models.AuditRecord) error {
+		if expired {
+			violation := models.AuthorizationViolation{
+				Rule: "execution.permit_expired", Summary: "execution completion was reported after the authorization permit expired",
+				Expected: "completion before " + permit.ExpiresAt.UTC().Format(time.RFC3339Nano), Actual: receivedAt.Format(time.RFC3339Nano),
+			}
+			record.RuntimeObservation.AuthorizationViolations = append(record.RuntimeObservation.AuthorizationViolations, violation)
+			record.SecurityFindings = append(record.SecurityFindings, models.SecurityFinding{
+				ID: safeEvidence(completion.RequestID) + ":execution.permit_expired", Category: "execution_completion", Severity: "high",
+				Rule: violation.Rule, Summary: violation.Summary,
+				Evidence: []string{"request_id=" + safeEvidence(completion.RequestID), "permit_id=" + safeEvidence(completion.PermitID)},
+			})
+			record.CompletedAt = &receivedAt
+			if record.AuthorizationEnvelope != nil {
+				record.AuthorizationEnvelope.State = string(permitRecord.State)
+			}
+			if record.ExecutionReceipt != nil {
+				record.ExecutionReceipt.PermitState = string(permitRecord.State)
+				record.ExecutionReceipt.VerificationOutcome = string(verifier.OutcomeExpired)
+				record.ExecutionReceipt.Timestamp = receivedAt
+				record.ExecutionReceipt.EvidenceSource = source
+			}
+			record.FinalVerdict = "PERMIT_EXPIRED"
+			record.DurationMS = elapsedMilliseconds(record.CreatedAt, receivedAt)
+			return nil
 		}
-		record.RuntimeObservation.AuthorizationViolations = append(record.RuntimeObservation.AuthorizationViolations, violation)
-		record.SecurityFindings = append(record.SecurityFindings, models.SecurityFinding{
-			ID: safeEvidence(completion.RequestID) + ":execution.permit_expired", Category: "execution_completion", Severity: "high",
-			Rule: violation.Rule, Summary: violation.Summary,
-			Evidence: []string{"request_id=" + safeEvidence(completion.RequestID), "permit_id=" + safeEvidence(completion.PermitID)},
-		})
-		record.CompletedAt = &receivedAt
-		record.FinalVerdict = "EXECUTION_PERMIT_EXPIRED"
-		record.DurationMS = elapsedMilliseconds(record.CreatedAt, receivedAt)
-		if err := r.audit.Update(record); err != nil {
-			return models.AuditRecord{}, err
+
+		completed := receivedAt
+		record.CompletedAt = &completed
+		if record.AuthorizationEnvelope != nil {
+			record.AuthorizationEnvelope.State = string(permitRecord.State)
 		}
-		return record, nil
-	}
-	completed := receivedAt
-	record.CompletedAt = &completed
-	if record.FinalVerdict != "AUTHORIZATION_BOUNDARY_VIOLATION" && record.FinalVerdict != "RUNTIME_EVENT_REJECTED" {
-		switch completion.Status {
-		case "completed":
-			record.FinalVerdict = "COMPLETED_WITHIN_AUTHORIZATION"
-		case "failed":
-			record.FinalVerdict = "EXECUTION_FAILED"
-		case "terminated":
-			record.FinalVerdict = "EXECUTION_TERMINATED"
+		if record.ExecutionReceipt != nil {
+			record.ExecutionReceipt.PermitState = string(permitRecord.State)
+			record.ExecutionReceipt.Timestamp = receivedAt
+			record.ExecutionReceipt.EvidenceSource = source
+			record.ExecutionReceipt.ExecutionOutcome = completion.Status
+			if completion.BoundaryOutcome != "" {
+				record.ExecutionReceipt.ExecutionOutcome = completion.BoundaryOutcome
+			}
 		}
-	}
-	record.DurationMS = elapsedMilliseconds(record.CreatedAt, completed)
-	if err := r.audit.Update(record); err != nil {
-		return models.AuditRecord{}, err
-	}
-	return record, nil
+		if completion.BoundaryOutcome == "UNSATISFIED_OBLIGATION" {
+			record.FinalVerdict = "EXECUTION_OBLIGATION_UNSATISFIED"
+		} else if record.FinalVerdict != "AUTHORIZATION_BOUNDARY_VIOLATION" && record.FinalVerdict != "RUNTIME_EVENT_REJECTED" &&
+			!(strings.HasPrefix(record.FinalVerdict, "PERMIT_") && record.FinalVerdict != "PERMIT_VERIFIED") {
+			switch completion.Status {
+			case "completed":
+				if record.ExecutionReceipt != nil && record.ExecutionReceipt.VerificationOutcome == string(verifier.OutcomeVerified) && source == models.RuntimeSourceGatewayEnforced {
+					record.FinalVerdict = "EXECUTED_WITH_VALID_PERMIT"
+				} else if record.ExecutionReceipt != nil && record.ExecutionReceipt.VerificationOutcome == string(verifier.OutcomeVerified) && source == models.RuntimeSourceSimulatedDemo {
+					record.FinalVerdict = "SIMULATED_EXECUTION_WITH_VALID_PERMIT"
+				} else {
+					record.FinalVerdict = "COMPLETED_WITHOUT_BOUNDARY_VERIFICATION"
+				}
+			case "failed":
+				record.FinalVerdict = "EXECUTION_FAILED"
+			case "terminated":
+				record.FinalVerdict = "EXECUTION_TERMINATED"
+			}
+		}
+		record.DurationMS = elapsedMilliseconds(record.CreatedAt, completed)
+		return nil
+	})
 }
 
 func (r *Router) auditRejectedEvent(event models.RuntimeEvent, evaluation models.RuntimeEventEvaluation, includeEvent bool, now time.Time) error {
 	if !safeMetadataLabel(event.RequestID) {
 		return nil
 	}
-	record, ok := r.audit.Get(event.RequestID)
+	_, ok := r.audit.Get(event.RequestID)
 	if !ok {
 		return nil
 	}
-	if includeEvent {
-		record.RuntimeObservation.Events = append(record.RuntimeObservation.Events, event)
-	}
-	record.RuntimeObservation.EventEvaluations = append(record.RuntimeObservation.EventEvaluations, evaluation)
-	record.RuntimeObservation.AuthorizationViolations = append(record.RuntimeObservation.AuthorizationViolations, evaluation.Violations...)
-	for _, item := range evaluation.Violations {
-		record.SecurityFindings = append(record.SecurityFindings, models.SecurityFinding{
-			ID: safeEvidence(event.EventID) + ":" + item.Rule, Category: "runtime_event_rejection", Severity: "high",
-			Rule: item.Rule, Summary: item.Summary,
-			Evidence: []string{"event_id=" + safeEvidence(event.EventID), "source=" + string(event.Source), "trust_level=" + string(event.TrustLevel)},
-		})
-	}
-	if record.FinalVerdict != "AUTHORIZATION_BOUNDARY_VIOLATION" {
-		record.FinalVerdict = "RUNTIME_EVENT_REJECTED"
-	}
-	record.DurationMS = elapsedMilliseconds(record.CreatedAt, now)
-	return r.audit.Update(record)
+	_, err := r.audit.Mutate(event.RequestID, func(record *models.AuditRecord) error {
+		if includeEvent {
+			record.RuntimeObservation.Events = append(record.RuntimeObservation.Events, event)
+		}
+		record.RuntimeObservation.EventEvaluations = append(record.RuntimeObservation.EventEvaluations, evaluation)
+		record.RuntimeObservation.AuthorizationViolations = append(record.RuntimeObservation.AuthorizationViolations, evaluation.Violations...)
+		for _, item := range evaluation.Violations {
+			record.SecurityFindings = append(record.SecurityFindings, models.SecurityFinding{
+				ID: safeEvidence(event.EventID) + ":" + item.Rule, Category: "runtime_event_rejection", Severity: "high",
+				Rule: item.Rule, Summary: item.Summary,
+				Evidence: []string{"event_id=" + safeEvidence(event.EventID), "source=" + string(event.Source), "trust_level=" + string(event.TrustLevel)},
+			})
+		}
+		if record.FinalVerdict != "AUTHORIZATION_BOUNDARY_VIOLATION" {
+			record.FinalVerdict = "RUNTIME_EVENT_REJECTED"
+		}
+		record.DurationMS = elapsedMilliseconds(record.CreatedAt, now)
+		return nil
+	})
+	return err
 }
 
 func (r *Router) RuntimeCoverage() models.RuntimeCoverage {
@@ -349,6 +684,11 @@ func Validate(req models.Request) error {
 		}
 		if req.DataAccess.Bytes < 0 {
 			return fmt.Errorf("data_access.bytes cannot be negative")
+		}
+	}
+	if arguments := req.EffectiveAction().Arguments; len(arguments) > 0 {
+		if _, err := canonicalaction.CanonicalizeJSON(arguments); err != nil {
+			return fmt.Errorf("action.arguments must be valid deterministic JSON: %w", err)
 		}
 	}
 	return nil
@@ -448,18 +788,40 @@ func dispatchFor(policyDecision models.PolicyDecision, assessment models.RiskAss
 	route := policyDecision.Route
 	reasons := append([]string(nil), policyDecision.Reasons...)
 	rules := append([]string(nil), policyDecision.Rules...)
-	if routeRank(detected.RecommendedRoute) > routeRank(route) {
-		route = detected.RecommendedRoute
-		reasons = append(reasons, "pre-execution security signals require a stricter route")
+	if detected.RecommendedRoute != "" {
+		reasons = append(reasons, "advisory security signals produced execution obligations; deterministic policy authorization was not replaced")
 		rules = append(rules, detectionRules(detected.Findings)...)
 	}
-	if assessment.Level == "high" && (route == models.RouteAllow || route == models.RouteRestrict) {
-		route = models.RouteSandbox
-		reasons = append(reasons, "high risk requires the sandbox route")
-		rules = append(rules, "risk.high_sandbox_route")
+	if assessment.Level == "high" {
+		reasons = append(reasons, "high advisory risk requires enhanced audit metadata")
+		rules = append(rules, "risk.high_enhanced_audit_obligation")
 	}
 	profile, isolation := routeProfile(route)
 	return dispatch(route, profile, isolation, reasons, uniqueStrings(rules))
+}
+
+func authorizationStatus(policyDecision models.PolicyDecision, dispatch models.DispatchDecision) models.AuthorizationStatus {
+	if !policyDecision.Authorized || dispatch.Route == models.RouteDeny {
+		return models.AuthorizationStatusDenied
+	}
+	if dispatch.Route == models.RouteEscalate {
+		return models.AuthorizationStatusRequiresApproval
+	}
+	return models.AuthorizationStatusAuthorized
+}
+
+func obligationsFor(policyDecision models.PolicyDecision, assessment models.RiskAssessment, detected detection.Result, dispatch models.DispatchDecision) models.ExecutionObligations {
+	constraints := models.AuthorizationConstraints{}
+	if policyDecision.Grant != nil {
+		constraints = policyDecision.Grant.Constraints
+	}
+	return models.ExecutionObligations{
+		IsolationRequired:     dispatch.Route == models.RouteSandbox || detected.RecommendedRoute == models.RouteSandbox,
+		NetworkEgressDenied:   constraints.NetworkEgress != "allow",
+		ReadOnly:              constraints.WriteAccess != "allow",
+		HumanApprovalRequired: dispatch.Route == models.RouteEscalate,
+		EnhancedAuditRequired: assessment.Level == "high" || len(detected.Findings) > 0 || dispatch.Route == models.RouteRestrict || dispatch.Route == models.RouteSandbox,
+	}
 }
 
 func dispatch(route models.Route, profile, isolation string, reasons, rules []string) models.DispatchDecision {
@@ -476,7 +838,7 @@ func routeProfile(route models.Route) (string, string) {
 	case models.RouteRestrict:
 		return "restricted-route", "policy_constraints_only"
 	case models.RouteSandbox:
-		return "sandbox-route", "not_connected"
+		return "isolation-required", "obligation_only_not_provided"
 	case models.RouteEscalate:
 		return "approval-queue", "not_applicable"
 	default:
@@ -484,36 +846,99 @@ func routeProfile(route models.Route) (string, string) {
 	}
 }
 
-func issuePermit(req models.Request, grant models.MatchedAuthorizationGrant, dispatch models.DispatchDecision, issuedAt time.Time, ttl time.Duration) models.AuthorizationEnvelope {
-	principal := req.EffectivePrincipal()
-	agent := req.EffectiveAgent()
-	authority := req.EffectiveAuthority()
+func canonicalAction(req models.Request, grant models.MatchedAuthorizationGrant) canonicalaction.Action {
+	result := executionAction(req)
 	action := req.EffectiveAction()
-	constraints := grant.Constraints
-	if constraints.ExecutorProfile == "" {
-		constraints.ExecutorProfile = dispatch.ExecutorProfile
-	}
-	expiresAt := issuedAt.Add(ttl)
-	if constraints.MaxDurationMS > 0 {
-		constraintExpiry := issuedAt.Add(time.Duration(constraints.MaxDurationMS) * time.Millisecond)
-		if constraintExpiry.Before(expiresAt) {
-			expiresAt = constraintExpiry
-		}
-	}
-	if authority.ExpiresAt != nil && authority.ExpiresAt.Before(expiresAt) {
-		expiresAt = authority.ExpiresAt.UTC()
-	}
 	operation := action.Operation
 	if operation == "" && len(grant.AllowedOperations) > 0 {
 		operation = grant.AllowedOperations[0]
 	}
-	return models.AuthorizationEnvelope{
-		PermitID: newIdentifier("permit"), RequestID: req.RequestID, SessionID: req.SessionID,
+	if result.Tool == "" {
+		result.Tool = grant.Tool
+	}
+	result.Capability = grant.Capability
+	result.Resource = grant.Resource
+	result.Operation = operation
+	return result
+}
+
+func executionAction(req models.Request) canonicalaction.Action {
+	principal := req.EffectivePrincipal()
+	agent := req.EffectiveAgent()
+	authority := req.EffectiveAuthority()
+	tool := req.EffectiveTool()
+	action := req.EffectiveAction()
+	toolName := tool.Name
+	if toolName == "" {
+		toolName = tool.ToolID
+	}
+	delegationBinding := authority.CredentialFingerprint
+	if bound, err := canonicalaction.BindDelegatedAuthorityFingerprint(authority.CredentialFingerprint); err == nil {
+		delegationBinding = bound
+	}
+	return canonicalaction.Action{
 		PrincipalID: principal.PrincipalID, AgentID: agent.AgentID, WorkloadID: agent.WorkloadID,
-		DelegatedCredentialFingerprint: authority.CredentialFingerprint,
-		AllowedCapability:              grant.Capability, AllowedTool: grant.Tool, AllowedResource: grant.Resource,
-		AllowedOperations: []string{operation}, Constraints: constraints,
-		IssuedAt: issuedAt, ExpiresAt: expiresAt, Route: dispatch.Route,
+		DelegatedAuthorityFingerprint: delegationBinding,
+		Tool:                          toolName, Capability: action.Capability, Resource: action.TargetResource,
+		Operation: action.Operation, Arguments: action.Arguments,
+	}
+}
+
+func (r *Router) issuePermit(req models.Request, grant models.MatchedAuthorizationGrant, obligations models.ExecutionObligations, actionDigest string, issuedAt time.Time, ttlOverride time.Duration) (permit.IssuedPermit, error) {
+	action := canonicalAction(req, grant)
+	ttl := r.permitTTL
+	if ttlOverride > 0 && ttlOverride < ttl {
+		ttl = ttlOverride
+	}
+	if grant.Constraints.MaxDurationMS > 0 {
+		maximum := time.Duration(grant.Constraints.MaxDurationMS) * time.Millisecond
+		if maximum < ttl {
+			ttl = maximum
+		}
+	}
+	if expires := req.EffectiveAuthority().ExpiresAt; expires != nil {
+		remaining := expires.UTC().Sub(issuedAt)
+		if remaining < ttl {
+			ttl = remaining
+		}
+	}
+	ttl = ttl.Truncate(time.Second)
+	if ttl < time.Second {
+		return permit.IssuedPermit{}, fmt.Errorf("execution permit lifetime is shorter than one second")
+	}
+	issued, err := r.permitIssuer.Issue(permit.IssueRequest{
+		RequestID: req.RequestID, PrincipalID: action.PrincipalID, AgentID: action.AgentID,
+		WorkloadID: action.WorkloadID, DelegatedAuthorityFingerprint: action.DelegatedAuthorityFingerprint,
+		Tool: action.Tool, Capability: action.Capability, Resource: action.Resource, Operation: action.Operation,
+		ActionDigest: actionDigest, PolicyVersion: r.policyVersion, TTL: ttl,
+		Obligations: permit.Obligations{
+			IsolationRequired: obligations.IsolationRequired, NetworkEgressDenied: obligations.NetworkEgressDenied,
+			ReadOnly: obligations.ReadOnly, HumanApprovalRequired: obligations.HumanApprovalRequired,
+			EnhancedAuditRequired: obligations.EnhancedAuditRequired,
+		},
+	})
+	if err != nil {
+		return permit.IssuedPermit{}, fmt.Errorf("issue signed execution permit: %w", err)
+	}
+	return issued, nil
+}
+
+func envelopeFor(issued permit.IssuedPermit, sessionID string, constraints models.AuthorizationConstraints, route models.Route) *models.AuthorizationEnvelope {
+	claims := issued.Claims
+	return &models.AuthorizationEnvelope{
+		PermitID: claims.PermitID, RequestID: claims.RequestID, SessionID: sessionID,
+		PrincipalID: claims.PrincipalID, AgentID: claims.AgentID, WorkloadID: claims.WorkloadID,
+		DelegatedCredentialFingerprint: claims.DelegatedAuthorityFingerprint,
+		AllowedCapability:              claims.Capability, AllowedTool: claims.Tool, AllowedResource: claims.Resource,
+		AllowedOperation: claims.Operation, AllowedOperations: []string{claims.Operation},
+		ActionDigest: claims.ActionDigest, PolicyVersion: claims.PolicyVersion, Issuer: claims.Issuer,
+		SingleUse: claims.SingleUse, State: string(permit.StateIssued), Constraints: constraints, Route: route,
+		Obligations: models.ExecutionObligations{
+			IsolationRequired: claims.Obligations.IsolationRequired, NetworkEgressDenied: claims.Obligations.NetworkEgressDenied,
+			ReadOnly: claims.Obligations.ReadOnly, HumanApprovalRequired: claims.Obligations.HumanApprovalRequired,
+			EnhancedAuditRequired: claims.Obligations.EnhancedAuditRequired,
+		},
+		IssuedAt: claims.IssuedTime(), ExpiresAt: claims.ExpiresTime(),
 	}
 }
 
@@ -521,19 +946,21 @@ func privacySafeRequest(req models.Request) models.Request {
 	// requested_action can contain prompt text in legacy clients. It is not an
 	// authorization input and is deliberately omitted from the audit record.
 	req.RequestedAction = ""
+	req.Action.Arguments = nil
+	if bound, err := canonicalaction.BindDelegatedAuthorityFingerprint(req.Authority.CredentialFingerprint); err == nil {
+		req.Authority.CredentialFingerprint = bound
+	} else {
+		req.Authority.CredentialFingerprint = ""
+	}
 	return req
 }
 
-func authorizationVerdict(route models.Route) string {
-	switch route {
-	case models.RouteDeny:
+func authorizationVerdict(status models.AuthorizationStatus) string {
+	switch status {
+	case models.AuthorizationStatusDenied:
 		return "BLOCKED_BEFORE_EXECUTION"
-	case models.RouteEscalate:
+	case models.AuthorizationStatusRequiresApproval:
 		return "APPROVAL_REQUIRED"
-	case models.RouteRestrict:
-		return "AUTHORIZED_RESTRICTED"
-	case models.RouteSandbox:
-		return "AUTHORIZED_SANDBOX_ROUTE"
 	default:
 		return "AUTHORIZED"
 	}
@@ -575,10 +1002,6 @@ func detectionRules(findings []models.SecurityFinding) []string {
 		rules = append(rules, finding.Rule)
 	}
 	return rules
-}
-
-func routeRank(route models.Route) int {
-	return map[models.Route]int{"": 0, models.RouteAllow: 1, models.RouteRestrict: 2, models.RouteSandbox: 3, models.RouteEscalate: 4, models.RouteDeny: 5}[route]
 }
 
 func riskLevel(score int) string {

@@ -2,127 +2,161 @@
 
 [English](README.md) | 简体中文
 
-**A Policy-Driven Security Router for AI Agents**
-**面向 AI Agent 的策略驱动安全路由器**
+**AI Agent 动作的执行许可**
 
-Aegis Router 是位于 AI Agent 与其工具/资源之间的零信任安全控制面。每次动作执行前，它根据**主体身份、Agent 工作负载身份、委托权限、能力、工具、资源、操作和约束**作出策略决定；对可执行请求签发明确的 `AuthorizationEnvelope`（Execution Permit，执行许可），再将运行时事件与该许可逐项核对并保留可解释审计链。API 中的字段名为 `authorization_envelope`，许可标识为 `permit_id`。
+Aegis Router 是面向工具型 AI Agent、且不绑定具体框架的授权层。特权工具动作执行前，Aegis 对规范化动作作出确定性授权，并签发短时、动作绑定、默认单次使用的签名执行许可。执行器在真实副作用发生前验证并消费该许可。
 
-> **批准一个 Agent 存在，不等于批准它的行为。** 资产登记回答“这个工作负载能否进入受治理环境”；逐次授权回答“它此刻能否凭这份委托，用这个工具，对这个资源执行这个操作”。
+如果 Agent 在授权后改变工具、操作、资源或安全相关参数，许可不再匹配，工具不得执行。
 
-GitHub 仓库仍保留 [`szey/agent-governance-gateway`](https://github.com/szey/agent-governance-gateway) 名称与链接以避免迁移，产品名称统一为 **Aegis Router**。
+> **获得授权的动作，必须与实际执行的动作完全一致。**
 
-当前代码是可运行的 MVP 和参考实现，不是生产安全边界。它可演示并测试确定性的逐次授权、风险分流、执行许可、适配器事件接收、越界判定和审计。它没有通用端点传感器，也不会自动拦截绕过 Aegis Router 的 Agent；`SANDBOX` 目前只是路由结果，未连接真实隔离后端。
+Aegis 不是沙箱、EDR、IAM、Agent 管理平台或企业 Inventory 产品。GitHub 仓库继续使用 [`szey/agent-governance-gateway`](https://github.com/szey/agent-governance-gateway) 名称，以避免迁移；产品名称为 **Aegis Router**。
 
-## 产品中心
-
-Aegis Router 优先解决运行时控制，而不是把文件扫描当作主产品：
-
-| 平面 | 目标权重 | 回答的问题 |
-|---|---:|---|
-| Runtime Gateway / Enforcement | 约 60% | 这次动作是否获得授权，应当如何分流？ |
-| Runtime Observation + Audit | 约 25% | 实际事件是否仍在执行许可内，证据可靠吗？ |
-| Agent Inventory / Discovery | 约 15% | 环境中存在哪些已登记工作负载或待核实线索？ |
-
-Discovery 是可选的资产可见性模块。配置、依赖、marketplace、cache 或 manifest 只能构成发现证据，不能单独证明 Agent 正在运行，更不能生成某次动作的“运行时风险”。
-
-## 一次动作的安全闭环
-
-```mermaid
-flowchart LR
-    A[Agent 尝试动作] --> I[Identity\n主体 + 工作负载]
-    I --> P[Policy\n委托 + 能力 + 工具 + 资源 + 操作]
-    P -->|未授权| X[DENY\n不签发 Permit]
-    P -->|已授权| R[Risk\n独立风险评估]
-    R --> D{Dispatch}
-    D --> L[ALLOW]
-    D --> T[RESTRICT]
-    D --> S[SANDBOX ROUTE]
-    D --> E[ESCALATE]
-    L & T & S --> EP[Authorization Envelope / Permit\n精确授权边界]
-    EP --> O[Runtime events\n来源 + 信任等级]
-    O --> C{符合 Permit?}
-    C -->|是| F[完成 / 审计]
-    C -->|否| V[AUTHORIZATION_BOUNDARY_VIOLATION\n停止或标记 / 审计]
-    X & E --> F
-```
-
-保留的调查顺序是 `I → P → R → D → O → A`：
-
-- **Identity**：谁在行动，哪个 Agent/工作负载代表它行动；
-- **Policy**：委托 Scope、能力、工具、资源、操作和明确约束是否匹配；
-- **Risk**：对已经通过授权门槛的动作评估敏感度与不确定性；
-- **Dispatch**：`ALLOW / RESTRICT / SANDBOX / DENY / ESCALATE`；
-- **Observation**：适配器或传感器事件是否超出执行许可；
-- **Audit**：请求、决定、许可、证据、违规和最终结论的因果链。
-
-风险评分不能推翻明确的授权失败。例如，未获得 `finance.read` 的请求必须由 Policy 拒绝，而不是靠一个较低风险分数放行。
-
-## 安全上下文与执行许可
-
-每个 `ActionRequest` 表示一次尝试动作的安全上下文：
+## 核心执行链
 
 ```text
-PrincipalContext       human/service 主体、租户或环境
-AgentIdentity          agent_id、workload_id、owner、environment、framework/version
-DelegatedAuthority     credential fingerprint、issuer、subject、scopes、expiry
-ToolContext            tool_id/name、provider、schema hash
-ActionRequest          capability、operation、resource、side effect、destination
+Agent 提议动作
+  → 规范化 CanonicalAction
+  → 确定性 Policy 授权
+  → 签发 Execution Permit
+  → MCP 执行边界验证并消费 Permit
+  → 仅在 VERIFIED 后调用上游工具
+  → 写入脱敏 Audit Receipt
 ```
 
-系统绝不需要保存或审计原始 Bearer Token。`claimed_intent` 可以作为上下文或风险信号，但不是授权依据。授权主要来自：
+安全边界位于**真实工具副作用之前**。`POST /api/runtime-events` 仍可记录执行中或执行后的证据，但事后事件不是主要阻断机制。
+
+## 核心对象
+
+### CanonicalAction
+
+授权器和执行器必须从相同字段生成相同的规范动作：
+
+- principal identity；
+- Agent 与 workload identity；
+- delegated authority fingerprint；
+- tool、capability、resource 与 operation；
+- 安全相关 arguments。
+
+Arguments 使用确定性 canonical JSON 表示并以 SHA-256 摘要。空参数归一化为 `{}`；对象键递归按 Unicode 字典序排列，重复键、畸形 UTF-8 和未配对 surrogate 拒绝；数组保持原顺序；数字在不转为浮点数的情况下精确归一化（例如 `100.0` 与 `1e2` 等价）。对象键顺序不影响摘要；改变金额、资源、工具、操作或其他受绑定字段会改变摘要。摘要格式为 `sha256:<64 位小写十六进制>`。正常审计只保存 `action_digest`，不保存原始敏感参数。
+
+### Execution Permit
+
+`AuthorizationEnvelope` 概念被保留并强化为签名执行凭据。Permit 至少绑定：
 
 ```text
-identity + delegated authority + capability + tool + resource + operation + constraints
+permit_id / jti      request_id
+principal_id         agent_id / workload_id
+delegation_digest    tool / capability
+resource / operation action_digest
+policy_version       issued_at / expires_at
+single_use=true
 ```
 
-`ALLOW`、`RESTRICT` 或 `SANDBOX` 请求会得到有时效且绑定请求/主体/Agent 的 Permit；`DENY` 和 `ESCALATE` 不会获得可执行许可。许可描述 Aegis 实际批准的边界，例如：
+聚焦版 MVP 使用 Ed25519 签名的紧凑 token：`base64url(header).base64url(payload).base64url(signature)`；Header 使用 `alg=EdDSA`、`typ=AEGIS-PERMIT`、`v=1`。这是项目自有的 JWS 形态，不声称具备通用 JWT/JWS 互操作性。
+
+TTL 必须是整秒，默认 30 秒，当前最大 15 分钟。
+
+`permit_id` 是可安全展示的关联标识；`permit_token` 才是执行凭据。ID 本身不能授权执行。签名密钥、`permit_token`、原始委托凭据和秘密参数不得进入 UI 或审计。调用方只能提交 64 位十六进制 SHA-256 凭据 fingerprint；Aegis 会把这一个已声明 fingerprint 再哈希为带算法标识的绑定值，然后才进入 CanonicalAction、Permit claims 与审计。这是纵深防御，不代表可以提交 bearer token。
+
+### Verification 与 replay defense
+
+执行边界验证签名、签发方、有效期、主体/Agent/workload、工具、资源、操作和动作摘要，并原子消费许可。只有 `VERIFIED` 可以继续调用上游工具。失败结果包括无效签名、过期、撤销、错绑、动作不匹配和重放；同一许可的两个并发消费尝试最多只能有一个成功。
+
+Permit 生命周期为 `ISSUED → CONSUMED`，也可从 `ISSUED` 进入 `EXPIRED` 或 `REVOKED`。
+
+## 唯一的 MVP Adapter：MCP
+
+聚焦版 MVP 只提供一个生产形态的执行边界：MCP 工具调用。
+
+```text
+MCP client
+  → Aegis MCP adapter/proxy
+  → normalize tools/call
+  → authorize exact action
+  → issue signed permit
+  → verify + consume immediately before forwarding
+  → upstream MCP server
+  → audit result metadata
+```
+
+任何验证失败都必须发生在上游 `tools/call` 之前。此里程碑不实现 HTTP、A2A、数据库、Shell 或云策略 Adapter。
+
+在现有 Server 上配置上游即可挂载 permit-gated `POST /mcp`：
+
+```bash
+go run ./cmd/server --mcp-upstream http://127.0.0.1:3001/mcp
+```
+
+`tools/call` 使用 `Authorization: AegisPermit <permit_token>`，并传入 `X-Aegis-Principal-Id`、`X-Aegis-Agent-Id`、`X-Aegis-Workload-Id`、`X-Aegis-Capability`、`X-Aegis-Resource`、`X-Aegis-Operation`；delegation fingerprint Header 可选。Tool 名称和 arguments 直接来自 JSON-RPC `params`，避免客户端用 Header 替换它们。Proxy 会剥离执行凭据、全部 `X-Aegis-*` Header、Cookie、内容编码、Session 上下文和任意扩展 Header；只转发规范 JSON 内容协商信息，以及从已验证正文重建的 MCP 路由 Header。`initialize`、`notifications/initialized`、`ping` 和 `tools/list` 只作为兼容协议方法透传；其他未支持方法 fail closed。
+
+对 MCP `2026-07-28` 请求，Proxy 还要求 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与 `params._meta`/JSON-RPC 正文精确一致，并根据已验证正文重建转发 Header；重复 JSON key 会在 Permit 验证前拒绝。`tools/call` 的 `_meta` 只接受已校验的协议版本，未绑定的扩展元数据会被拒绝。当前是刻意收窄的 HTTP `POST` 子集：支持 `server/discover`、`tools/list` 和 permit-gated `tools/call`，不声称完整 MCP conformance。MRTR 的 `inputResponses`/`requestState` 与需要 Schema 感知验证的 `Mcp-Param-*` 暂未纳入 CanonicalAction，因此会 fail closed；未声明现代版本的旧 `initialize` 路径只作为兼容能力保留。
+
+## Policy、Risk 与 obligations
+
+授权保持确定性，概念结果收敛为：
+
+- `AUTHORIZED`；
+- `DENIED`；
+- `REQUIRES_APPROVAL`。
+
+Risk 只提供可选的咨询元数据，不能推翻明确拒绝，也不定义产品。隔离、只读、禁止网络出口、人工批准和增强审计属于 decision/permit obligations，例如：
 
 ```json
 {
-  "allowed_capability": "config.read",
-  "allowed_tool": "config-reader",
-  "allowed_resource": "protected_config",
-  "allowed_operations": ["read"],
-  "constraints": {
-    "network_egress": "deny",
-    "secret_access": "deny",
-    "write_access": "deny"
-  }
+  "isolation_required": true,
+  "network_egress_denied": true,
+  "read_only": true,
+  "human_approval_required": false,
+  "enhanced_audit_required": true
 }
 ```
 
-Agent 声称的计划可以显示为调查上下文，但 `declared plan != authorization boundary`；真正的安全边界是签发的执行许可。
+`isolation_required: true` 只要求外部执行环境提供隔离；Aegis 本身不实现或声称提供沙箱。因此，当 `isolation_required` 或 `human_approval_required` 仍未满足时，focused MCP Proxy 会消费并拒绝这个有效 Permit，记录 `EXECUTION_OBLIGATION_UNSATISFIED`，而且绝不调用上游。`read_only` 与 `network_egress_denied` 仍是已签名要求：参考 Proxy 会绑定被请求的 operation，但无法证明任意上游 Tool 的内部行为，部署方仍需另行提供可信 executor/control 来落实这些语义。兼容响应中的 `ALLOW / RESTRICT / SANDBOX / DENY / ESCALATE` 只代表旧版分流或 obligation/profile hint。
 
-## 当前能力与证据真相
+## API 方向
 
-| 能力 | 当前状态 | 能证明什么 / 不能证明什么 |
-|---|---:|---|
-| 结构化动作授权 | MVP 已实现 | 对进入 API 的请求校验身份、委托、能力、工具、资源、操作和约束 |
-| 显式执行许可 | MVP 已实现 | 记录本次获准范围；拒绝/升级请求无许可 |
-| Policy 与 Risk 分离 | MVP 已实现 | 未授权先拒绝；风险只影响已授权动作的分流 |
-| Runtime Event 接收与许可核对 | MVP 已实现 | 评估由适配器提交、且绑定 Permit 的事件；Demo 事件由服务端夹具生成 |
-| 逐次审计与因果链 | MVP 已实现 | 记录进入控制点的请求、决定、风险、许可、证据来源和最终结论 |
-| Demo Lab 服务端夹具运行器 | 演示/回归 | 将无害的固定事件送入同一许可核对流程，并明确标记为 `simulated_demo`；它不是真实执行器或生产遥测 |
-| 本地 CLI wrapper | 实验性 | 可独立记录其启动的子进程生命周期；Agent JSONL 仍是自报证据 |
-| Agent Inventory / 配置发现 | 可选、已实现 | 查找限定目录内的配置/依赖线索并与本地登记表核对 |
-| OS 文件/进程全量传感器 | 未连接 | 不能独立看到任意进程或文件访问 |
-| 网络传感器 | 未连接 | 不能独立看到绕过 Router/Adapter 的外联 |
-| 真实沙箱隔离 | 未连接 | `SANDBOX` 是路由意图，不代表 Docker/gVisor/Firecracker 隔离 |
-| 企业认证、RBAC、多租户、中央策略分发 | 未实现 | 管理控制台只适合可信本机开发/演示 |
+聚焦 API：
 
-运行时事件必须显示证据来源和信任等级：
+- `POST /api/actions/authorize` — 授权规范动作；成功时返回 decision 和含 `permit_id`、`permit_token`、`expires_at` 的 permit 对象；
+- `POST /api/permits/verify` — 在可信执行边界验证并原子消费 Permit；
+- `POST /api/permits/{id}/revoke` — 撤销未消费 Permit；
+- `GET /api/permits`、`GET /api/permits/{id}` — 只返回安全元数据；
+- `GET /api/decisions`、`GET /api/audits` — 查看授权决定和审计回执。
 
-| `source` | `trust_level` | 含义 |
-|---|---|---|
-| `gateway_enforced` | `enforced` | 请求经过 Aegis 控制点 |
-| `instrumented_adapter` | `adapter_reported` | 调用方声明来自适配器；MVP 尚未认证 Adapter 身份 |
-| `agent_self_reported` | `self_reported` | Agent 或其日志自报 |
-| `os_sensor` / `network_sensor` | `independent_sensor` | 仅在对应传感器实际接入后使用 |
-| `simulated_demo` | `simulated` | Demo Lab 的合成事件 |
+MCP Adapter 直接复用同一 verifier。当前 `POST /api/actions/authorize` 评估的是调用方提供的结构化身份与委托元数据，本身不会认证真实用户、workload 或 bearer credential；用于真实部署前必须放在已认证的接入边界后面。`POST /api/permits/verify` 适合可信的受控集成，不等同于跨网络身份认证。`/api/authorize`、`/api/runtime-events` 和 `/api/route` 作为兼容入口暂时保留；它们不会把 `permit_id` 当作执行凭据，也不会把客户端自报事件升级成独立观察。
 
-未知覆盖必须保持 `UNKNOWN / not instrumented`，不能显示成“0 个缺口”。
+## UI
 
-当前 Event API 会校验来源/信任标签配对和 Permit 绑定，但尚无 Adapter 身份认证、加密完整性或防重放；因此标签表达证据声明，不等于独立证明。
+主导航只围绕 `Decisions / Permits / Audit / Demo`：
+
+- 首页显示 `AUTHORIZED`、`DENIED`、`PERMIT VIOLATIONS` 和 `REPLAY BLOCKS`；
+- Permit 详情显示 `permit_id`、state、principal、Agent/workload、tool、capability、resource、operation、`action_digest`、policy version、issued/expires/consumed time 与 verification result；
+- 页面永不显示 `permit_token`、原始 delegated credential、秘密值或原始敏感参数；
+- Inventory 默认不出现在主导航。
+
+## Demo Lab
+
+四个主场景直接验证执行许可：
+
+| 场景 | 预期结果 |
+|---|---|
+| Valid Permit | 精确动作 `VERIFIED`，上游被调用，Permit 变为 `CONSUMED` |
+| Action Mutation / TOCTOU | 授权后改变参数，得到 `PERMIT_ACTION_MISMATCH`，上游不调用 |
+| Permit Replay | 第一次成功，第二次得到 `PERMIT_REPLAY` |
+| Expired Permit | TTL 后执行得到 `PERMIT_EXPIRED` |
+
+历史安全场景可以作为 `Advanced regression fixtures` 保留。所有 Demo 遥测继续标为 `simulated_demo`，不能写成真实 Agent 或生产环境观察。
+
+## 实验性 Inventory
+
+Discovery 代码保留且可构建，但功能冻结、默认关闭，也不属于产品主叙事。只有显式启用后才暴露相关 Server API/UI：
+
+```bash
+go run ./cmd/server --enable-experimental-inventory
+```
+
+独立只读工具继续位于 `cmd/discover`。不规划进程、OAuth、CI/CD、云端或企业中央 Agent Inventory 扩展。发现证据不能证明运行时行为。
 
 ## 快速开始
 
@@ -132,109 +166,25 @@ Agent 声称的计划可以显示为调查上下文，但 `declared plan != auth
 go run ./cmd/server
 ```
 
-打开 [http://localhost:8080](http://localhost:8080)。也可以使用：
+打开 [http://localhost:8080](http://localhost:8080)。也可使用 `docker compose up --build`。需要 MCP enforcement 时，为同一 Server 增加 `--mcp-upstream <absolute-http(s)-url>`，再按[试点协议](docs/experiments/enterprise-agent-pilot.zh-CN.md)先连接无害的受控上游；不要直接连接生产工具或凭据。
 
-```bash
-docker compose up --build
-```
+## 审计与证据真相
 
-控制台以运行时信息为主：Overview、Decisions、Audit / Investigations、Policies、Agent Inventory 和 Demo Lab。首页不会展开大量 marketplace/cache 证据。
+每次动作形成可解释、脱敏的 receipt：request/decision/permit ID、principal、Agent、工具、资源、操作、动作摘要、策略版本、授权决定、Permit 状态、验证结果、时间和 evidence source。
 
-### API 方向
+运行时来源继续区分 `gateway_enforced`、`instrumented_adapter`、`agent_self_reported`、`os_sensor`、`network_sensor` 和 `simulated_demo`。运行时证据是辅助证据；未接入覆盖保持 `UNKNOWN / not instrumented`，且 `UNKNOWN != SAFE`、`UNKNOWN != ZERO`。
 
-新的主流程拆开“执行前授权”和“执行中证据”：
-
-```text
-POST /api/authorize
-  → policy decision + risk assessment + dispatch decision
-  → AuthorizationEnvelope / Permit（仅在可执行结果时）
-
-POST /api/runtime-events
-  → 绑定 request/permit 的事件
-  → permit 边界检查与违规判定
-
-POST /api/executions/{id}/complete
-  → 形成最终结论
-```
-
-读取接口：
-
-- `GET /api/decisions` — 最近逐次授权决定；
-- `GET /api/audits` — 调查和审计链；
-- `GET /api/runtime-coverage` — 每类遥测的真实覆盖状态；
-- `GET /api/agents` — Agent 资产登记；
-- `GET /api/scenarios` — Demo Lab 场景；
-- `GET /api/discoveries` — 可选发现证据。
-
-其他当前接口包括 `GET /api/health`、`GET /api/overview`、`GET /api/policies`、`POST /api/demo-lab/{id}/run` 及本地 Inventory 管理接口。`POST /api/route` 作为 `/api/authorize` 的兼容别名保留，但不会把客户端随请求提交的模拟动作当成独立观察结果。`POST /api/runtime-events` 只接受 `instrumented_adapter` 或 `agent_self_reported`；更强来源由受信任的内部集成保留。请以实际运行代码和 API 返回为准；MVP 接口仍可能演进。
-
-## Demo Lab
-
-六个场景都是确定性安全回归，不是生产事件：
-
-| 场景 | 核心结果 | 验证目标 |
-|---|---|---|
-| Safe code request | `ALLOW` + Permit | 合法身份、委托、工具、资源和操作；Demo 事件保持在许可内 |
-| Unauthorized finance access | `DENY`、无 Permit | code Scope 不能访问 finance；executor 不应被调用 |
-| Authorization-boundary violation | Permit 后违规 | 只允许 `config.read`；`secret.read` 或写入事件触发越界结论 |
-| Indirect prompt injection | `DENY/ESCALATE` | 不可信来源与副作用工具的确定性组合规则 |
-| Protected file read | 受限/沙箱路由 | 只记录分类元数据和预算，不记录正文或完整路径 |
-| Sensitive read followed by egress | `DENY` 或运行时违规 | 跨工具因果链和拒绝外联约束 |
-
-Demo Lab 的事件来源必须标记为 `simulated_demo`。只有适配器、网关或真实传感器生成的事件才可以使用相应的非演示来源标签。
-
-## Agent Inventory（可选）
-
-Discovery 默认关闭。只有需要 Inventory 时才使用可重复的 `--discovery-root` 指定一个或多个获准目录；未传入时，运行时首页不会加载仓库 Shadow 示例：
-
-```powershell
-.\dist\agent-governance-gateway.exe `
-  --addr "127.0.0.1:8080" `
-  --discovery-root "C:\允许扫描的Agent目录" `
-  --discovery-root "D:\另一个获准目录"
-```
-
-也可以单独运行只读扫描：
-
-```bash
-go run ./cmd/discover --path ./examples/shadow-agent-sample
-```
-
-发现模块：
-
-- 只读取明确指定的目录，遇到无权限子目录时记录 coverage gap 并继续；
-- 保存相对证据路径、类型、指纹与置信度，不保存文件内容；
-- 将 marketplace/catalog/cache/temp 线索归入 `Discovery Evidence / Available Integrations`；
-- 区分 `available`、`installed`、`configured` 和 `observed`；
-- 仅把有部署证据但无法与登记表匹配的工作负载称为 Shadow；
-- 不把依赖字符串或 MCP manifest 本身当作独立 Agent 身份；
-- 将“发现置信度/部署状态”与“某次动作的运行时风险”分开。
-
-本地资产登记可记录 `agent_id`、`workload_identity`、显示名、Owner、环境、框架、批准引用、到期日、状态和 `policy_profile`。登记不授予行为权限；每次进入 Aegis Router 的动作仍要独立授权和审计。
-
-## 隐私默认值
-
-正常 UI 和运行时审计不应展示原始 Windows 用户名或完整本地路径。资源应归一化为 `USER_PROFILE / AGENT_CONFIG`、`WORKSPACE / SOURCE`、`PROTECTED_CONFIG`、`SECRET_STORE` 等类别。Inventory 若需要相对证据路径，应与运行时审计明确分区。
-
-永不记录：原始 Token、秘密值、检索文档正文；除非用户明确进入本地 Demo 模式，也不记录 Prompt 正文。管理数据与审计均留在操作者批准的数据边界内。
-
-## 文档与试点
+## 文档与验证
 
 中文是语义工作源，英文在同一次变更中同步：
 
 | 主题 | 简体中文 | English |
 |---|---|---|
 | 产品说明 | [中文](docs/project-brief.zh-CN.md) | [English](docs/project-brief.md) |
-| 企业端点试点 | [中文](docs/experiments/enterprise-agent-pilot.zh-CN.md) | [English](docs/experiments/enterprise-agent-pilot.md) |
-| 调研、风险框架与产品迭代 | [中文](docs/research-product-mapping-iteration.zh-CN.md) | [English](docs/research-product-mapping-iteration.md) |
+| MCP 执行许可试点 | [中文](docs/experiments/enterprise-agent-pilot.zh-CN.md) | [English](docs/experiments/enterprise-agent-pilot.md) |
+| 调研与产品决定 | [中文](docs/research-product-mapping-iteration.zh-CN.md) | [English](docs/research-product-mapping-iteration.md) |
 | 参与贡献 | [中文](CONTRIBUTING.zh-CN.md) | [English](CONTRIBUTING.md) |
 | 安全策略 | [中文](SECURITY.zh-CN.md) | [English](SECURITY.md) |
-
-公司试点不是“安装后自动监控”。只有经过 Router 的动作或由已接入 Adapter/Sensor 提交的事件才可被评估；正式试点必须重新获得书面授权，并使用 synthetic 数据。详见[企业 Agent 端点试点](docs/experiments/enterprise-agent-pilot.zh-CN.md)。
-
-持续调研使用独立的 `$research-to-product` Skill；本项目只是该 Skill 的一个使用方。项目契约位于 [`.codex/research-to-product.json`](.codex/research-to-product.json)，且禁止自动发布、部署和使用生产数据。
-
-## 开发与验证
 
 ```bash
 npm install
@@ -245,46 +195,15 @@ go test -race ./...
 go vet ./...
 ```
 
-前端源文件位于 `web/src/app.ts`，编译后的 `web/static/app.js` 一并提交，因此只运行仓库二进制的低配置电脑不需要 Node.js。
-
-## 路线图
-
-### Runtime Gateway / Enforcement
-
-- [x] 默认拒绝的确定性策略与 Policy/Risk 分离
-- [x] 显式 Agent、委托、工具、资源与操作上下文
-- [x] `AuthorizationEnvelope` / Permit 与逐次授权审计
-- [x] Runtime Event 接收与许可边界核对
-- [ ] 真实 MCP/HTTP/工具代理接入点
-- [ ] 人工批准、Permit 撤销与一次性授权
-- [ ] 签名身份、企业认证、RBAC 与策略分发
-
-### Observation / Audit
-
-- [x] 带来源/信任标签的 Demo/Adapter 事件
-- [x] 许可内事件与越界事件的确定性判定
-- [x] 会话、父事件、输入来源和跨工具序列元数据
-- [ ] 独立 OS 与网络传感器
-- [ ] 防篡改审计链、持久化因果状态和 OpenTelemetry
-- [ ] 真实隔离 Executor 与可验证终止语义
-
-### Inventory / Discovery
-
-- [x] 限定目录扫描、指纹、去重和本地登记核对
-- [x] 可用集成与已部署工作负载分离
-- [ ] 进程、IdP/OAuth、CI/CD 和云审计连接器
-- [ ] 企业中央资产清单与完整生命周期
+前端源文件位于 `web/src/app.ts`，构建产物 `web/static/app.js` 一并提交。若当前环境缺少 race detector 所需工具链，必须原样报告，不能写成通过。
 
 ## 安全边界
 
-- Aegis Router 只能授权和审计进入其控制点的请求；
-- Adapter 或 Agent 自报事件可能不完整，必须保留来源标签；
-- 未接入的传感器状态是未知，不是零风险或零缺口；
-- `SANDBOX` 路由不是宿主机隔离，除非明确连接并验证隔离后端；
-- Discovery 线索可能误报或漏报，不能证明已经运行；
-- 本地 JSONL 审计尚不防篡改，也不是企业中央存储；
-- 管理端点的专用 Header 不是认证或 RBAC；
-- 在独立安全评审前，不要连接生产凭据、客户数据或不受控外网。
+- Aegis 只能保护实际经过其验证器/MCP 边界的动作；绕过边界的调用不会被自动发现或阻止；
+- 单进程内 PermitStore、密钥管理和本地审计不等于生产级高可用、防篡改或跨实例 replay defense；
+- MCP Adapter 的身份、上游传输和部署拓扑仍需要独立威胁模型与安全评审；
+- Aegis 不提供实际隔离、EDR 传感器、完整 IAM、SSO、RBAC 或多租户；
+- 在独立评审和正式获准试点前，不要使用生产凭据、客户数据或不受控外网目标。
 
 ## 许可证
 

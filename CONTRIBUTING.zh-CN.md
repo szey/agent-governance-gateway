@@ -2,59 +2,66 @@
 
 [English](CONTRIBUTING.md) | 简体中文
 
-感谢你帮助改进 **Aegis Router — A Policy-Driven Security Router for AI Agents**。仓库名称暂时仍是 `agent-governance-gateway`。
+感谢你改进 **Aegis Router — AI Agent 动作的执行许可**。仓库名称暂时仍是 `agent-governance-gateway`。
 
-## 先守住产品中心
+## 先守住一个安全属性
 
-新功能应优先强化一次动作的完整链路：
+每项核心改动都必须强化这条执行链：
 
 ```text
-Identity → Policy → Risk → Dispatch → Authorization Envelope / Permit → Runtime Events → Audit
+CanonicalAction → deterministic authorization → signed Permit
+  → pre-execution verify + atomic consume → MCP upstream → Audit Receipt
 ```
 
-Discovery 是辅助 Inventory 能力。除非改动确实针对资产可见性，否则不要让文件扫描、marketplace/cache 命中或 Shadow 数量占据首页和核心叙事。
+> 获得授权的动作，必须与实际执行的动作完全一致。
+
+不要把 Aegis 扩展成通用 Agent 权限平台、沙箱、EDR、IAM、Shadow Agent 管理、企业 Inventory 或泛风险仪表板。本里程碑只接受 MCP 执行边界；HTTP、A2A、数据库和 Shell Adapter 不在范围内。
 
 ## 安全不变量
 
 每个 Pull Request 都必须保持：
 
-- 资产登记不授予行为权限；所有进入控制点的动作逐次授权并审计；
-- Policy 先判断授权，Risk 只影响已授权动作的分流；
-- 未知身份、Agent、委托、能力、工具、资源或操作 fail closed；
-- `claimed_intent` 和 Agent 自报计划不是授权边界；
-- 只有 `ALLOW / RESTRICT / SANDBOX` 可以签发有时效且正确绑定的 Permit；
-- `DENY / ESCALATE` 不得产生可执行 Permit；
-- 运行时事件必须绑定 request/permit 并保留 source/trust；
-- 过期、错绑或超出 Permit 的事件必须拒绝或产生明确违规；
-- 不记录 raw bearer token、秘密值、Prompt/文档正文或完整个人路径；
-- `simulated_demo`、`agent_self_reported` 和独立传感器证据不得混称为“Observed”；
-- 未连接的覆盖是 `UNKNOWN / not instrumented`；
-- 未连接真实隔离后端时，`SANDBOX` 只能叫 `SANDBOX ROUTE`。
-
-概率模型可以作为咨询信号，但不能覆盖确定性的拒绝规则。
+- principal、Agent、workload、delegation fingerprint、tool、capability、resource、operation 和安全参数全部进入规范动作绑定；
+- canonical JSON 必须确定性生成；对象键顺序不得改变摘要，重复键必须拒绝，数组顺序必须保留；
+- 摘要为 SHA-256，原始敏感参数不得进入正常审计；
+- `permit_id` 只用于关联，`permit_token` 才是签名执行凭据；ID 本身不能授权；
+- Permit 必须短时、动作绑定且默认单次使用；验证与消费必须原子完成；
+- 验证签名、issuer、时效、Agent/workload、工具、资源、操作或摘要任一失败时，上游工具不得调用；
+- MCP `2026-07-28` 的版本、`Mcp-Method`、`Mcp-Name` 与正文必须一致；重复 key、任意 Header/Session 上下文、未绑定 Tool `_meta`、MRTR/`Mcp-Param-*` 输入必须在上游前 fail closed 或被剥离；
+- 两个并发消费尝试必须恰好一个成功，另一个明确返回 replay；
+- 已撤销或已过期 Permit 不得执行；
+- `permit_token`、签名私钥、raw bearer/delegated token、秘密值和原始敏感参数不得进入日志、UI 或错误消息；
+- authorization 保持确定性；risk 只提供咨询元数据或 obligations，不能覆盖明确拒绝；
+- `isolation_required` 是外部执行义务，不是 Aegis 已实现沙箱；隔离或人工批准尚未满足时，focused MCP Proxy 不得转发；
+- 运行时证据保留 source/trust；`agent_self_reported` 或 `simulated_demo` 不得冒充独立观察；
+- 未接入覆盖保持 `UNKNOWN / not instrumented`。
 
 ## 开发流程
 
-1. 在 Issue/PR 中写出可证伪的安全属性和失败方式；
-2. 优先为 baseline failure 增加安全 synthetic fixture；
-3. 实现最小确定性控制，并同时增加正向和负向测试；
-4. 检查误拒绝、延迟、隐私、存储和 operator burden；
-5. 同步 Capability/Limitations、调研登记和中英文文档；
-6. 报告真实结果，不把本地通过写成生产保证。
+1. 写出可证伪的安全属性以及“错误时上游是否会被调用”；
+2. 先增加安全 synthetic fixture 和负向测试；
+3. 实现最小确定性控制；
+4. 检查 replay 并发、过期/撤销、隐私、延迟和失败模式；
+5. 同步 API、能力边界、调研登记和中英文文档；
+6. 报告真实测试结果，不把本地回归写成生产保证。
 
-授权模型改动至少覆盖：unknown Agent、缺失 Scope、未授权能力、未允许工具、资源操作不匹配、安全请求签发 Permit、高风险已授权分流、许可内事件、密钥/写入/外联越界、过期 Permit、错绑事件和 Demo 来源标签。
+至少覆盖：有效 Permit、无效签名、过期、撤销、wrong agent/workload/tool/resource/operation、argument digest mismatch、单次 replay、并发 replay、审计不含 token，以及任何验证失败后 MCP upstream 调用次数为零。
 
-## 前端与 API
+## API、MCP 与兼容性
 
-前端源文件位于 `web/src/app.ts`，使用 TypeScript 与 esbuild 生成 `web/static/app.js`。修改前端后同时提交源文件与构建产物，以便低配置目标电脑不安装 Node.js 也能使用内嵌界面。
+新的主要授权入口是 `POST /api/actions/authorize`。Permit 列表/详情只能返回安全元数据。任何返回 `permit_token` 的响应都要避免缓存、日志和 UI 泄漏。
 
-API 改动应保持“执行前授权、运行时证据、最终完成”分离。兼容入口不得把客户端提供的动作数组伪装成独立观察。任何新事件来源都要定义信任含义和不可见范围。
+MCP Adapter 必须在转发 `tools/call` 前复用核心 canonicalizer 和 verifier；不要在 Adapter 内实现第二套摘要或许可语义。运行时事件 API 只是辅助证据路径，不能替代执行前验证。
 
-Discovery 修改必须只读、明确限定扫描根目录、保留可解释证据，并包含正向、负向、跳过目录和误报回归。依赖或 manifest 只能作为证据，不能直接创建 Agent 身份；发现风险/置信度不得冒充运行时动作风险。
+当前 Adapter 只声明 focused HTTP `POST` subset，不声明完整 MCP conformance。增加 MRTR 或 `Mcp-Param-*` 支持前，必须先把相应语义纳入同一动作绑定并增加 Header/body parser-differential 测试。
+
+旧 `/api/authorize`、`/api/route` 和 `/api/runtime-events` 可暂时兼容，但必须明确标注；兼容字段中的 `SANDBOX/RESTRICT` 只表达 obligation/profile hint，不得声称 Aegis 提供真实隔离。
+
+## 实验性 Discovery
+
+Discovery 功能冻结且默认关闭，只能在 `--enable-experimental-inventory` 下暴露相关 Server API/UI。`cmd/discover` 保持可构建的实验工具。不要增加进程、OAuth、CI/CD、云端或中央 Inventory 能力。
 
 ## 验证
-
-提交前运行：
 
 ```bash
 gofmt -w <changed-go-files>
@@ -65,14 +72,10 @@ npm run check:web
 npm run build:web
 ```
 
-如果环境缺少 race detector 所需工具链，应原样报告限制；不能把未运行写成通过。
+若环境缺少 race detector 所需工具链，应原样报告限制，不能把未运行写成通过。
 
-## 文档与调研规则
+## 文档与数据
 
-中文是语义工作源，英文必须在同一 PR 中同步。代码标识、端点、状态、日期、来源链接和能力边界必须一致，翻译不得强化或弱化声明。
+中文是语义工作源，英文必须在同一 PR 中同步。标识、端点、状态、日期、链接和能力边界必须一致。调研驱动变更使用 `$research-to-product` 与 [项目契约](.codex/research-to-product.json)，不得改变其中的发布、部署、生产数据或公司设备安全标志。
 
-调研驱动的变更使用 `$research-to-product` 和 [`.codex/research-to-product.json`](.codex/research-to-product.json)。产品负责人建议属于 `S4` 产品证据：可以形成方向和实验，但只有本项目 synthetic fixture/测试达到 `V2` 后，才可把控制写成已实现。项目契约中的安全标志不能为方便开发而修改。
-
-## Commit 范围
-
-优先提交小而独立的 Commit。不要提交凭据、生产审计、真实公司路径、员工活动、客户数据或从公司设备导出的原始日志。公司试点发现只能以脱敏结论或 synthetic fixture 回到公开仓库。
+不要提交凭据、签名密钥、Permit token、生产审计、真实公司路径、员工活动、客户数据或公司设备原始日志。公司试点发现只能以脱敏结论或 synthetic fixture 回到公开仓库。

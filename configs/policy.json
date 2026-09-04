@@ -1,4 +1,5 @@
 {
+  "version": "policy-v1",
   "agents": {
     "coder-agent": {
       "workload_ids": ["coder-agent", "coder-workload-v1"],
@@ -146,6 +147,29 @@
             "secret_access": "deny",
             "write_access": "deny",
             "allowed_side_effects": []
+          }
+        },
+        "payment_transfer": {
+          "allowed_tools": ["payment.send"],
+          "required_scopes": ["payment.transfer"],
+          "resources": {
+            "account-123": {
+              "allowed_operations": ["transfer"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "allow",
+                "allowed_side_effects": ["financial_transaction"],
+                "max_duration_ms": 10000
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "allow",
+            "allowed_side_effects": ["financial_transaction"],
+            "executor_profile": "external-executor"
           }
         }
       }
@@ -309,7 +333,8 @@
     "protected_config": {"sensitivity": "high", "required_scopes": ["config.read"]},
     "finance_data": {"sensitivity": "critical", "required_scopes": ["finance.read"]},
     "secrets_store": {"sensitivity": "critical", "required_scopes": ["secrets.read"]},
-    "external_network": {"sensitivity": "medium", "required_scopes": ["network.access"]}
+    "external_network": {"sensitivity": "medium", "required_scopes": ["network.access"]},
+    "account-123": {"sensitivity": "critical", "required_scopes": ["payment.transfer"]}
   },
   "sensitive_actions": ["read_config", "write_config", "read_finance_data", "read_secret", "invoke_admin_tool"],
   "restricted_actions": ["write_config", "external_request"],
@@ -328,6 +353,7 @@
     "allow_missing_operation": true
   },
   "permits": {
-    "ttl_seconds": 300
+    "ttl_seconds": 30,
+    "issuer": "aegis-router"
   }
 }

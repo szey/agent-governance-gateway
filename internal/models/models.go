@@ -1,11 +1,14 @@
 package models
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
 
 type Route string
+
+type AuthorizationStatus string
 
 const (
 	RouteAllow    Route = "allow"
@@ -13,6 +16,10 @@ const (
 	RouteSandbox  Route = "sandbox"
 	RouteDeny     Route = "deny"
 	RouteEscalate Route = "escalate"
+
+	AuthorizationStatusAuthorized       AuthorizationStatus = "AUTHORIZED"
+	AuthorizationStatusDenied           AuthorizationStatus = "DENIED"
+	AuthorizationStatusRequiresApproval AuthorizationStatus = "REQUIRES_APPROVAL"
 )
 
 // PrincipalContext identifies the human or service on whose behalf an action
@@ -55,12 +62,16 @@ type ToolContext struct {
 }
 
 type ActionRequest struct {
-	Capability     string       `json:"capability"`
-	Operation      string       `json:"operation"`
-	TargetResource string       `json:"target_resource"`
-	SideEffect     string       `json:"side_effect,omitempty"`
-	Destination    *Destination `json:"destination,omitempty"`
-	Bytes          int64        `json:"bytes,omitempty"`
+	Capability     string `json:"capability"`
+	Operation      string `json:"operation"`
+	TargetResource string `json:"target_resource"`
+	// Arguments contains the complete tool argument object used to derive the
+	// canonical action digest. It is evaluated in memory and removed before the
+	// request is written to the normal audit log.
+	Arguments   json.RawMessage `json:"arguments,omitempty"`
+	SideEffect  string          `json:"side_effect,omitempty"`
+	Destination *Destination    `json:"destination,omitempty"`
+	Bytes       int64           `json:"bytes,omitempty"`
 }
 
 type ResourceGrant struct {
@@ -98,10 +109,12 @@ type CompatibilityPolicy struct {
 }
 
 type PermitPolicy struct {
-	TTLSeconds int `json:"ttl_seconds"`
+	TTLSeconds int    `json:"ttl_seconds"`
+	Issuer     string `json:"issuer,omitempty"`
 }
 
 type PolicyConfig struct {
+	Version           string                    `json:"version"`
 	Agents            map[string]AgentPolicy    `json:"agents"`
 	Resources         map[string]ResourcePolicy `json:"resources"`
 	SensitiveActions  []string                  `json:"sensitive_actions"`
@@ -259,10 +272,22 @@ type MatchedAuthorizationGrant struct {
 
 type PolicyDecision struct {
 	Authorized bool                       `json:"authorized"`
+	Status     AuthorizationStatus        `json:"status"`
 	Route      Route                      `json:"route"`
 	Reasons    []string                   `json:"reasons"`
 	Rules      []string                   `json:"matched_rules"`
 	Grant      *MatchedAuthorizationGrant `json:"matched_grant,omitempty"`
+}
+
+// ExecutionObligations are requirements for an executor. Aegis verifies that
+// the exact authorized action is presented; it does not itself provide an
+// isolation or network sandbox backend.
+type ExecutionObligations struct {
+	IsolationRequired     bool `json:"isolation_required"`
+	NetworkEgressDenied   bool `json:"network_egress_denied"`
+	ReadOnly              bool `json:"read_only"`
+	HumanApprovalRequired bool `json:"human_approval_required"`
+	EnhancedAuditRequired bool `json:"enhanced_audit_required"`
 }
 
 type RiskAssessment struct {
@@ -291,11 +316,65 @@ type AuthorizationEnvelope struct {
 	AllowedCapability              string                   `json:"allowed_capability"`
 	AllowedTool                    string                   `json:"allowed_tool"`
 	AllowedResource                string                   `json:"allowed_resource"`
+	AllowedOperation               string                   `json:"allowed_operation"`
 	AllowedOperations              []string                 `json:"allowed_operations"`
+	ActionDigest                   string                   `json:"action_digest"`
+	PolicyVersion                  string                   `json:"policy_version"`
+	Issuer                         string                   `json:"issuer"`
+	SingleUse                      bool                     `json:"single_use"`
+	State                          string                   `json:"state"`
+	Obligations                    ExecutionObligations     `json:"obligations"`
 	Constraints                    AuthorizationConstraints `json:"constraints"`
 	IssuedAt                       time.Time                `json:"issued_at"`
 	ExpiresAt                      time.Time                `json:"expires_at"`
 	Route                          Route                    `json:"route"`
+}
+
+// PermitCredential is returned only to the caller that requested a new
+// authorization. PermitToken is never embedded in AuditRecord or PermitView.
+type PermitCredential struct {
+	PermitID    string    `json:"permit_id"`
+	PermitToken string    `json:"permit_token"`
+	IssuedAt    time.Time `json:"issued_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	SingleUse   bool      `json:"single_use"`
+}
+
+type ActionAuthorizationResponse struct {
+	Decision AuditRecord       `json:"decision"`
+	Permit   *PermitCredential `json:"permit,omitempty"`
+}
+
+type PermitVerification struct {
+	PermitID       string               `json:"permit_id,omitempty"`
+	RequestID      string               `json:"request_id,omitempty"`
+	Outcome        string               `json:"verification_result"`
+	Verified       bool                 `json:"verified"`
+	State          string               `json:"permit_state,omitempty"`
+	Obligations    ExecutionObligations `json:"obligations"`
+	VerifiedAt     time.Time            `json:"verified_at"`
+	EvidenceSource string               `json:"evidence_source"`
+}
+
+type ExecutionReceipt struct {
+	RequestID             string              `json:"request_id"`
+	DecisionID            string              `json:"decision_id"`
+	PermitID              string              `json:"permit_id,omitempty"`
+	PrincipalID           string              `json:"principal_id"`
+	AgentID               string              `json:"agent_id"`
+	WorkloadID            string              `json:"workload_id"`
+	Tool                  string              `json:"tool"`
+	Capability            string              `json:"capability"`
+	Resource              string              `json:"resource"`
+	Operation             string              `json:"operation"`
+	ActionDigest          string              `json:"action_digest,omitempty"`
+	PolicyVersion         string              `json:"policy_version"`
+	AuthorizationDecision AuthorizationStatus `json:"authorization_decision"`
+	PermitState           string              `json:"permit_state,omitempty"`
+	VerificationOutcome   string              `json:"verification_outcome,omitempty"`
+	ExecutionOutcome      string              `json:"execution_outcome,omitempty"`
+	Timestamp             time.Time           `json:"timestamp"`
+	EvidenceSource        RuntimeEventSource  `json:"evidence_source"`
 }
 
 type RuntimeEventSource string
@@ -398,14 +477,17 @@ type CausalContext struct {
 }
 
 type ExecutionCompletion struct {
-	RequestID   string    `json:"request_id"`
-	PermitID    string    `json:"permit_id"`
-	Status      string    `json:"status"`
-	CompletedAt time.Time `json:"completed_at,omitempty"`
+	RequestID       string    `json:"request_id"`
+	PermitID        string    `json:"permit_id"`
+	Status          string    `json:"status"`
+	BoundaryOutcome string    `json:"boundary_outcome,omitempty"`
+	CompletedAt     time.Time `json:"completed_at,omitempty"`
 }
 
 type AuditRecord struct {
 	RequestID             string                 `json:"request_id"`
+	DecisionID            string                 `json:"decision_id"`
+	AuthorizationStatus   AuthorizationStatus    `json:"authorization_status"`
 	CreatedAt             time.Time              `json:"created_at"`
 	CompletedAt           *time.Time             `json:"completed_at,omitempty"`
 	Request               Request                `json:"request"`
@@ -413,6 +495,7 @@ type AuditRecord struct {
 	RiskAssessment        RiskAssessment         `json:"risk_assessment"`
 	DispatchDecision      DispatchDecision       `json:"dispatch_decision"`
 	AuthorizationEnvelope *AuthorizationEnvelope `json:"authorization_envelope,omitempty"`
+	ExecutionReceipt      *ExecutionReceipt      `json:"execution_receipt,omitempty"`
 	SelectedExecutor      string                 `json:"selected_executor"`
 	RuntimeObservation    RuntimeObservation     `json:"runtime_observation"`
 	SecurityFindings      []SecurityFinding      `json:"security_findings"`

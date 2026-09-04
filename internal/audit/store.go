@@ -35,11 +35,12 @@ func (s *Store) Append(record models.AuditRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.persist(record); err != nil {
+	stored := cloneAuditRecord(record)
+	if err := s.persist(stored); err != nil {
 		return err
 	}
 
-	s.records = append(s.records, record)
+	s.records = append(s.records, stored)
 	if len(s.records) > 100 {
 		s.records = append([]models.AuditRecord(nil), s.records[len(s.records)-100:]...)
 	}
@@ -65,11 +66,45 @@ func (s *Store) Update(record models.AuditRecord) error {
 	if indexToUpdate < 0 {
 		return fmt.Errorf("audit record %q not found", record.RequestID)
 	}
-	if err := s.persist(record); err != nil {
+	stored := cloneAuditRecord(record)
+	if err := s.persist(stored); err != nil {
 		return err
 	}
-	s.records[indexToUpdate] = record
+	s.records[indexToUpdate] = stored
 	return nil
+}
+
+// Mutate atomically reads, changes, persists, and replaces the latest revision
+// for one request. Use it for concurrent verification paths so two callers
+// cannot race through a shallow read/modify/write sequence.
+func (s *Store) Mutate(requestID string, mutate func(*models.AuditRecord) error) (models.AuditRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if requestID == "" {
+		return models.AuditRecord{}, fmt.Errorf("audit record request_id is required")
+	}
+	indexToUpdate := -1
+	for index := len(s.records) - 1; index >= 0; index-- {
+		if s.records[index].RequestID == requestID {
+			indexToUpdate = index
+			break
+		}
+	}
+	if indexToUpdate < 0 {
+		return models.AuditRecord{}, fmt.Errorf("audit record %q not found", requestID)
+	}
+	record := cloneAuditRecord(s.records[indexToUpdate])
+	if mutate != nil {
+		if err := mutate(&record); err != nil {
+			return models.AuditRecord{}, err
+		}
+	}
+	stored := cloneAuditRecord(record)
+	if err := s.persist(stored); err != nil {
+		return models.AuditRecord{}, err
+	}
+	s.records[indexToUpdate] = stored
+	return cloneAuditRecord(stored), nil
 }
 
 func (s *Store) Get(requestID string) (models.AuditRecord, bool) {
@@ -77,7 +112,7 @@ func (s *Store) Get(requestID string) (models.AuditRecord, bool) {
 	defer s.mu.RUnlock()
 	for index := len(s.records) - 1; index >= 0; index-- {
 		if s.records[index].RequestID == requestID {
-			return s.records[index], true
+			return cloneAuditRecord(s.records[index]), true
 		}
 	}
 	return models.AuditRecord{}, false
@@ -91,9 +126,25 @@ func (s *Store) Recent(limit int) []models.AuditRecord {
 	}
 	result := make([]models.AuditRecord, 0, limit)
 	for i := len(s.records) - 1; i >= len(s.records)-limit; i-- {
-		result = append(result, s.records[i])
+		result = append(result, cloneAuditRecord(s.records[i]))
 	}
 	return result
+}
+
+// cloneAuditRecord prevents callers from mutating the Store's nested slices
+// and pointers after the lock has been released. Audit records contain only
+// JSON data, so a JSON round trip is a compact, deterministic deep copy for
+// this low-volume reference implementation.
+func cloneAuditRecord(record models.AuditRecord) models.AuditRecord {
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		panic(fmt.Sprintf("clone audit record: %v", err))
+	}
+	var clone models.AuditRecord
+	if err := json.Unmarshal(encoded, &clone); err != nil {
+		panic(fmt.Sprintf("clone audit record: %v", err))
+	}
+	return clone
 }
 
 func (s *Store) load() error {

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"agent-governance-gateway/internal/models"
+	"agent-governance-gateway/internal/permit"
 )
 
 func Load(path string) (models.PolicyConfig, error) {
@@ -23,7 +25,13 @@ func Load(path string) (models.PolicyConfig, error) {
 		return models.PolicyConfig{}, fmt.Errorf("policy config must define agents and resources")
 	}
 	if cfg.Permits.TTLSeconds <= 0 {
-		cfg.Permits.TTLSeconds = 300
+		cfg.Permits.TTLSeconds = int(permit.DefaultTTL / time.Second)
+	}
+	if strings.TrimSpace(cfg.Version) == "" {
+		cfg.Version = "policy-v1"
+	}
+	if strings.TrimSpace(cfg.Permits.Issuer) == "" {
+		cfg.Permits.Issuer = "aegis-router"
 	}
 	for agentID, agent := range cfg.Agents {
 		if strings.TrimSpace(agentID) == "" {

@@ -21,9 +21,18 @@ jobs:
           go-version: "1.26.x"
           check-latest: true
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.x"
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
       - name: Check formatting
         shell: bash
-        run: test -z "$(gofmt -l ./cmd ./internal ./web)"
+        run: test -z "$(gofmt -l $(find cmd internal web -type f -name '*.go'))"
 
       - name: Vet
         run: go vet ./...
@@ -33,6 +42,15 @@ jobs:
 
       - name: Build
         run: go build -trimpath ./cmd/server ./cmd/discover ./cmd/observe
+
+      - name: Type-check frontend
+        run: npm run check:web
+
+      - name: Build frontend
+        run: npm run build:web -- --log-level=warning
+
+      - name: Verify generated frontend is committed
+        run: git diff --exit-code -- web/static/app.js
 
   container:
     runs-on: ubuntu-latest

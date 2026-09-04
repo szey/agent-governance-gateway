@@ -2,59 +2,66 @@
 
 English | [简体中文](CONTRIBUTING.zh-CN.md)
 
-Thank you for improving **Aegis Router — A Policy-Driven Security Router for AI Agents**. The repository remains named `agent-governance-gateway` for now.
+Thank you for improving **Aegis Router — Execution Permits for AI Agent Actions**. The repository is still named `agent-governance-gateway`.
 
-## Preserve the product center
+## Preserve one security property
 
-New work should primarily strengthen the per-action chain:
+Every core change must strengthen this execution path:
 
 ```text
-Identity → Policy → Risk → Dispatch → Authorization Envelope / Permit → Runtime Events → Audit
+CanonicalAction → deterministic authorization → signed Permit
+  → pre-execution verify + atomic consume → MCP upstream → Audit Receipt
 ```
 
-Discovery supports Inventory. Unless a change specifically targets asset visibility, filesystem scans, marketplace/cache matches, and Shadow counts should not dominate the home page or core narrative.
+> The action that was authorized must be exactly the action that executes.
+
+Do not expand Aegis into a generic Agent permission platform, sandbox, EDR, IAM system, Shadow Agent manager, enterprise Inventory, or broad risk dashboard. MCP is the only adapter in this milestone; HTTP, A2A, database, and shell adapters are out of scope.
 
 ## Security invariants
 
-Every pull request must preserve these rules:
+Every pull request must preserve:
 
-- Asset registration grants no behavioral permission; every action entering the control point is authorized and audited.
-- Policy decides authorization first; Risk only affects dispatch for authorized actions.
-- Unknown identities, Agents, delegations, capabilities, tools, resources, or operations fail closed.
-- `claimed_intent` and an Agent's self-declared plan are not the authorization boundary.
-- Only `ALLOW / RESTRICT / SANDBOX` can issue a correctly bound, time-limited permit.
-- `DENY / ESCALATE` never produce an executable permit.
-- Runtime events bind to a request/permit and retain source/trust.
-- Expired, mismatched, or out-of-permit events are rejected or produce an explicit violation.
-- Never retain raw bearer tokens, secret values, prompt/document contents, or full personal paths.
-- Never collapse `simulated_demo`, `agent_self_reported`, and independent sensor evidence into an unlabeled “Observed” state.
-- Unconnected coverage remains `UNKNOWN / not instrumented`.
-- Without a connected isolation backend, `SANDBOX` is only a `SANDBOX ROUTE`.
-
-A probabilistic model may be advisory, but must not override deterministic denial rules.
+- principal, Agent, workload, delegation fingerprint, tool, capability, resource, operation, and security-relevant arguments all participate in the canonical-action binding;
+- canonical JSON is deterministic: object key order cannot change the digest, duplicate keys are rejected, and array order is preserved;
+- the digest uses SHA-256 and normal audit does not retain raw sensitive arguments;
+- `permit_id` is correlation only while `permit_token` is the signed execution credential; an ID alone cannot authorize;
+- permits are short-lived, action-bound, and single-use by default; verification and consumption are atomic;
+- any failed signature, issuer, time, Agent/workload, tool, resource, operation, or digest check prevents the upstream tool call;
+- MCP `2026-07-28` version, `Mcp-Method`, and `Mcp-Name` must match the body; duplicate keys, arbitrary headers/session context, unbound tool `_meta`, MRTR, or `Mcp-Param-*` inputs not bound into the canonical action must fail closed or be stripped before upstream;
+- exactly one of two concurrent consumption attempts succeeds and the other receives an explicit replay result;
+- revoked and expired permits cannot execute;
+- `permit_token`, signing private keys, raw bearer/delegated tokens, secret values, and raw sensitive arguments never enter logs, UI, or error messages;
+- authorization stays deterministic; risk is advisory metadata or obligations and cannot override an explicit denial;
+- `isolation_required` is an external execution obligation, not an Aegis sandbox claim; the focused MCP proxy must not forward while isolation or human approval is unsatisfied;
+- runtime evidence retains source/trust, and `agent_self_reported` or `simulated_demo` never masquerades as independent observation;
+- uninstrumented coverage remains `UNKNOWN / not instrumented`.
 
 ## Development workflow
 
-1. State a falsifiable security property and failure mode in the issue/PR.
-2. Prefer a safe synthetic fixture that reproduces the baseline failure.
-3. Implement the smallest deterministic control with positive and negative tests.
-4. Check false denial, latency, privacy, storage, and operator burden.
-5. Synchronize capability/limitation tables, the research register, and both languages.
-6. Report actual results; never turn local success into a production guarantee.
+1. State a falsifiable security property and whether a failure could call the upstream tool.
+2. Add a safe synthetic fixture and negative test first.
+3. Implement the smallest deterministic control.
+4. Check replay concurrency, expiry/revocation, privacy, latency, and failure modes.
+5. Synchronize APIs, capability boundaries, research register, and bilingual docs.
+6. Report actual test results; do not turn local regression results into a production claim.
 
-Authorization changes should cover unknown Agent, missing scope, ungranted capability, disallowed tool, disallowed resource operation, safe permit issuance, authorized high-risk dispatch, in-permit event, secret/write/egress violation, expired permit, wrong binding, and Demo source labeling.
+Minimum coverage includes a valid permit, invalid signature, expiry, revocation, wrong agent/workload/tool/resource/operation, argument digest mismatch, sequential replay, concurrent replay, token-free audit, and zero MCP upstream calls after every verification failure.
 
-## Frontend and API
+## API, MCP, and compatibility
 
-Frontend source lives in `web/src/app.ts`; TypeScript and esbuild generate `web/static/app.js`. Commit source and built output together so low-spec runtime hosts do not need Node.js for the embedded UI.
+The primary authorization entry point is `POST /api/actions/authorize`. Permit lists and details return safe metadata only. Any response containing `permit_token` must avoid caches, logs, and UI exposure.
 
-API changes should preserve the separation between pre-execution authorization, runtime evidence, and completion. A compatibility endpoint must not present client-provided action arrays as independently observed behavior. Every new event source needs a documented trust meaning and blind spot.
+The MCP adapter must reuse the core canonicalizer and verifier before forwarding `tools/call`; do not create a second digest or permit implementation inside the adapter. The Runtime Event API is a secondary evidence path, not a substitute for pre-execution verification.
 
-Discovery changes must remain read-only, explicitly scoped, and explainable, with positive, negative, skipped-directory, and false-positive regressions. A dependency or manifest is evidence, not an Agent identity. Discovery confidence/risk must not be presented as runtime action risk.
+The current adapter claims only a focused HTTP `POST` subset, not full MCP conformance. Before adding MRTR or `Mcp-Param-*`, bind its semantics into the same action and add header/body parser-differential tests.
+
+Legacy `/api/authorize`, `/api/route`, and `/api/runtime-events` may remain temporarily but must be labeled clearly. `SANDBOX/RESTRICT` in compatibility fields are obligation/profile hints and must not imply that Aegis supplies real isolation.
+
+## Experimental Discovery
+
+Discovery is frozen and disabled by default. Related Server API/UI is available only with `--enable-experimental-inventory`; `cmd/discover` remains a buildable experimental utility. Do not add process, OAuth, CI/CD, cloud, or central Inventory features.
 
 ## Verification
-
-Run before submitting:
 
 ```bash
 gofmt -w <changed-go-files>
@@ -65,14 +72,10 @@ npm run check:web
 npm run build:web
 ```
 
-If the environment lacks the toolchain required by the race detector, report that limitation exactly; an unrun check is not a pass.
+If the race-detector toolchain is unavailable, report that limitation exactly instead of claiming an unrun check passed.
 
-## Documentation and research rules
+## Documentation and data
 
-Chinese is the semantic working source; synchronize English in the same PR. Code identifiers, endpoints, statuses, dates, source links, and capability boundaries must match. Translation may neither strengthen nor weaken a claim.
+Chinese is the semantic working source and English must change in the same PR. Identifiers, endpoints, statuses, dates, links, and capability boundaries must match. Research-driven changes use `$research-to-product` and the [project contract](.codex/research-to-product.json); do not alter its publish, deploy, production-data, or company-device safety flags.
 
-Research-driven changes use `$research-to-product` and [`.codex/research-to-product.json`](.codex/research-to-product.json). Product-owner guidance is `S4` product evidence: it may define direction and an experiment, but a control becomes implemented only after a project-specific synthetic fixture/test reaches `V2`. Never change the contract's safety flags for development convenience.
-
-## Commit scope
-
-Prefer small, independent commits. Do not commit credentials, production audit, real company paths, employee activity, customer data, or raw logs exported from a company device. Company-pilot findings may return to the public repository only as sanitized conclusions or synthetic fixtures.
+Never commit credentials, signing keys, Permit tokens, production audit, real company paths, employee activity, customer data, or raw company-device logs. Only redacted conclusions or synthetic fixtures may return from a company pilot to the public repository.

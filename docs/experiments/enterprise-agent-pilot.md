@@ -1,150 +1,139 @@
-# Aegis Router Enterprise Agent Endpoint Pilot
+# Aegis Router MCP Execution-Permit Pilot
 
 English | [简体中文](enterprise-agent-pilot.zh-CN.md)
 
-Status: **paused after exploratory configuration discovery; the formal controlled runtime pilot is incomplete.**
+Status: **the prior Discovery exploration is complete; the new controlled MCP execution-permit pilot has not started.**
 
-An earlier company-endpoint trial showed that the server starts and scoped discovery produces evidence. It also exposed access-denied scan aborts, marketplace/cache noise, stale UI snapshots, and a missing registry workflow. Synthetic fixtures drove local fixes, but the trial did not prove that Aegis Router independently observes or stops the company's real Agent behavior and did not reach `V3 pilot_verified`. The repository retains no raw company logs, usernames, hostnames, or absolute paths.
+The old company-endpoint trial showed only that a bounded scan could produce configuration evidence, and exposed permission errors, cache noise, and UI refresh problems. It did not validate signed Permits, pre-execution MCP blocking, or replay defense. It is neither the success baseline for this pilot nor `V3 pilot_verified`.
 
-## What the pilot must now prove
+## This pilot proves only one thing
 
-The primary objective changes from “find an Agent” to validating one controlled action chain:
+> The authorized MCP action must be exactly the action forwarded upstream.
 
 ```text
-Controlled adapter submits ActionRequest
-  → Aegis verifies Principal / Agent / Delegation / Tool / Resource / Operation
-  → Policy Decision remains separate from Risk Assessment
-  → Dispatch Decision
-  → executable result receives AuthorizationEnvelope / Permit
-  → adapter or server-owned Demo fixture submits a provenance-labeled RuntimeEvent
-  → event is evaluated against the permit
-  → explainable Audit / Final Verdict
+Controlled MCP client proposes tools/call
+  → Aegis derives CanonicalAction
+  → Policy authorizes exact action
+  → issue short-lived Ed25519 Permit
+  → MCP boundary verifies + consumes before side effect
+  → forward to controlled upstream only after VERIFIED
+  → write redacted Audit Receipt
 ```
 
-Showing hand-written JSON in the control desk is not a real integration. “The action crossed the enforcement point” can be tested only when an adapter actually sits between the Agent and the test tool. Configuration discovery proves an artifact; an Agent log proves only what the Agent reports. Neither is independent endpoint observation.
+This pilot does not evaluate generic Agent management, Shadow discovery, sandboxing, EDR, IAM, or full-endpoint visibility. If the company Agent has no approved MCP/tool-proxy entry point, directory scanning or Agent self-reporting cannot substitute for a real execution boundary; stop the pilot.
 
 ## Questions that must be answered
 
-1. Can every action identify the human/service principal, Agent/workload, and delegated authority?
-2. Does a raw bearer token stay out of requests, logs, and UI?
-3. Does any capability, tool, resource operation, or scope mismatch deny before execution and issue no permit?
-4. Are unapproved actions by an approved Agent still denied and audited?
-5. Does high risk change only dispatch—not the authorization fact—for an authorized action?
-6. Are in-permit events, secret reads, writes under read-only permits, and denied egress reliably separated?
-7. Are expired permits and events bound to the wrong principal/Agent/request rejected?
-8. Does the UI separate `instrumented_adapter`, `agent_self_reported`, and `simulated_demo`?
-9. Are unconnected filesystem/network/OS surfaces shown as `UNKNOWN / not instrumented`?
-10. Do CPU, memory, latency, log growth, and false denial remain inside pre-agreed limits?
-
-## Exploratory feedback already received
-
-| Observation | Conclusion | Product response already taken |
-|---|---|---|
-| Health check passed and a scoped scan found Agent/MCP evidence | Configuration discovery runs, but is not runtime proof | Retain evidence grades and coverage limits |
-| A system-drive scan aborted at inaccessible directories | Full-disk scanning is neither compliant nor reliable | Require scoped roots; record denied children as gaps and continue |
-| Marketplace/cache/temp produced many matches | Available is not installed, deployed, or running | Separate available/installed/configured/observed and collapse integrations |
-| New CLI scan did not reach the running UI | Startup snapshots do not fit the workflow | Add scoped rescan and immediate reconciliation |
-| No visible approved registry | Shadow results lacked an actionable explanation | Add a local registration workflow |
-| “Approved” was read as “all behavior approved” | Asset admission and behavior authorization must be separate | Center the runtime UI/docs on per-action authorization |
-
-These are product feedback and scoped system output, not enterprise-deployment proof.
+1. Do principal, Agent, workload, delegation fingerprint, tool, capability, resource, operation, and security-relevant arguments enter the same canonical action?
+2. Do equivalent JSON key orders produce the same digest, while amount/resource/tool/operation changes produce a different digest?
+3. Does the Permit validate signature, issuer, TTL, and every binding?
+4. Are `permit_id` and `permit_token` always separate, with the ID never authorizing by itself?
+5. Does a valid Permit call upstream exactly once and become `CONSUMED`?
+6. Do invalid signature, expiry, revocation, wrong binding, action mismatch, and replay all leave the upstream-call count at zero?
+7. Does exactly one of two concurrent replay attempts succeed?
+8. Do UI, audit, errors, and upstream metadata all exclude `permit_token`, raw delegated tokens, and raw sensitive arguments?
+9. Does Demo remain `simulated_demo`, with RuntimeEvent clearly secondary evidence?
+10. Are CPU, memory, latency, and audit growth within the pre-approved envelope?
 
 ## Authorization and prohibited scope
 
-Before continuing, renew written approval from the device owner, IT/security, and relevant data owners. Define device, operator, Agent, adapter, test directories, time window, allowed fields, retention, destinations, rollback, and accountable owner.
+Before starting, obtain written approval from the device owner, IT/security, and data owner. Name the device, operator, MCP client/Agent, Proxy, upstream, test tool, argument classes, time window, network target, retention, rollback, and accountable owner.
 
-Prohibited:
+Use only synthetic arguments, test credentials, harmless local tools, and approved loopback/internal test targets. Never:
 
-- scanning unapproved employee directories, mail, chat, browser data, customer data, or shared drives;
-- capturing other employees' sessions or company-wide traffic;
-- bypassing EDR, DLP, antivirus, proxy, certificate policy, or application allowlists;
-- using production tokens, real secrets, customer data, or real company systems as violation bait;
-- uploading company logs, paths, or device identifiers to personal GitHub/cloud storage/external AI services;
-- treating `SANDBOX ROUTE` as real isolation;
-- using this project as the sole production blocking control.
+- use production tokens, real secrets, customer/employee data, or real payment/deletion/publication actions;
+- capture coworker sessions, scan unapproved directories, or monitor company-wide traffic;
+- bypass EDR, DLP, antivirus, proxy, certificate, or application-allowlist controls;
+- upload company logs, paths, device identifiers, or Permit tokens to personal GitHub/cloud storage/external AI services;
+- interpret `isolation_required` or a legacy `SANDBOX` field as isolation supplied by Aegis;
+- use Aegis as the sole production blocking control.
 
-If company policy does not allow a self-built binary or adapter, stop at design and Demo Lab. IT decides the approved signing and distribution path.
+The project contract still has `allow_deploy=false` and requires explicit company-device authorization. This protocol does not itself grant deployment authority.
 
-## Staged pilot
+## Gate 0: local P0 regression
 
-### Gate 0: local synthetic regression
+Before any company-device work, the development environment must pass:
 
-All authorization and runtime negative tests pass in development first. At minimum cover unknown Agent, missing scope, ungranted capability, disallowed tool, disallowed resource operation, safe permit, authorized high-risk dispatch, in-permit event, secret/write/egress violation, expired permit, wrong binding, and Demo label.
+- valid Permit;
+- invalid signature;
+- expired and revoked Permit;
+- wrong principal/agent/workload/tool/resource/operation;
+- argument digest mismatch;
+- sequential and concurrent replay;
+- audit/token privacy;
+- zero MCP upstream calls after failed verification;
+- MCP `2026-07-28` header/body/version mismatch, duplicate JSON keys, arbitrary headers/session context, unbound tool `_meta`, MRTR, or `Mcp-Param-*` inputs fail closed or are stripped before upstream;
+- a Permit carrying unsatisfied isolation or human-approval obligations produces `EXECUTION_OBLIGATION_UNSATISFIED`, with zero upstream calls;
+- Demo telemetry remains `simulated_demo`;
+- `go test ./...`, `go test -race ./...`, `go vet ./...`, and frontend check/build.
 
-Any failure blocks company-endpoint work.
+If the race toolchain is unavailable, report it as an open gate rather than a pass.
 
-### Gate 1: company endpoint baseline
+## Gate 1: minimal company-endpoint baseline
 
-- Bind only to `127.0.0.1`.
-- Use the company-approved source/binary transfer path and verify SHA-256.
-- Do not start the real Agent; measure Aegis idle CPU, memory, disk, and listeners.
-- Runtime Coverage must expose unconnected OS/filesystem/network sensors.
-- Optional Discovery scans only one or two explicitly approved fixture directories.
+- reconfirm the written scope;
+- transfer source/binary through the approved company method and verify SHA-256;
+- listen only on approved interfaces, preferring `127.0.0.1` by default;
+- use a temporary test signing key, never a production or personal long-lived key;
+- use a harmless local upstream MCP fixture;
+- record idle CPU, memory, ports, and audit directory;
+- do not enable `--enable-experimental-inventory` without a separate written need.
 
-### Gate 2: instrumented synthetic executor
+Discovery is not an acceptance item for this Gate.
 
-Run only Demo Lab on the company machine:
+## Gate 2: four focused Demos
 
-| Case | Request | Expected result |
+| Scenario | Action | Expected result |
 |---|---|---|
-| Safe code | valid delegation + code tool + workspace read | `ALLOW` + permit; `simulated_demo` event remains inside |
-| Finance denial | coder requests finance read | `DENY`; no permit, no executor |
-| Boundary violation | permit allows config read, then secret read arrives | `AUTHORIZATION_BOUNDARY_VIOLATION` |
-| Read-only violation | read-only permit followed by write | violation |
-| Egress violation | no-egress permit followed by external destination | violation |
-| Expiry/binding | expired or mismatched event | rejected outside normal event chain |
+| Valid Permit | Authorize and execute the same `config.read` | `VERIFIED`; one upstream call; Permit is `CONSUMED` |
+| Action Mutation / TOCTOU | Authorize `amount=100`, execute `10000` | `PERMIT_ACTION_MISMATCH`; zero upstream calls |
+| Permit Replay | Use the same token twice | First is `VERIFIED`; second is `PERMIT_REPLAY` |
+| Expired Permit | Execute after TTL | `PERMIT_EXPIRED`; zero upstream calls |
 
-This gate still proves only Aegis's internal protocol and deterministic control path.
+These Server fixtures are `simulated_demo` and prove only the local deterministic path.
 
-### Gate 3: one controlled real adapter
+## Gate 3: controlled real MCP boundary
 
-Proceed only when the Agent/tool system exposes a company-approved CLI, plugin, MCP/HTTP proxy, or event API. The adapter first calls authorization; only a returned permit allows a harmless fixture action. It then returns an `instrumented_adapter` event.
+Proceed only if the company Agent/tool system supports an approved MCP client or Proxy configuration:
 
-If WorkBuddy is a GUI/IDE Agent without an approved adapter/tool proxy, directory scanning cannot stand in for runtime testing. Keep the Inventory result, mark Runtime Coverage unconnected, and wait for a suitable adapter or independent sensor.
+1. Use one harmless upstream MCP test server with a call counter.
+2. Derive a canonical action for one `tools/call` and call the authorization API.
+3. Put `permit_token` only in the controlled client-to-Proxy execution channel, never command history or screenshots.
+4. The Proxy reuses the core verifier and atomically consumes before forwarding.
+5. On `2026-07-28`, also verify that `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` match the body, and forward only after `VERIFIED`.
+6. Retain a redacted receipt and upstream call counter.
+7. Repeat each negative outcome and confirm the counter remains zero.
 
-### Gate 4: evidence review and exit
+If WorkBuddy or another Agent cannot configure an approved MCP boundary, this Gate does not pass. Do not modify the company Agent, bypass policy, or collect whole-machine behavior to “complete” the test.
 
-Audit answers: principal, Agent/workload, delegation fingerprint/scopes, tool, resource class, operation, Policy, Risk, Dispatch, Permit, event source/trust, violation reason, final verdict, duration, and coverage gaps.
+## Gate 4: evidence review and exit
 
-Then stop Aegis and test processes, revoke test credentials/permits, and let the company owner decide whether audit is retained or deleted. Only sanitized conclusions and synthetic minimal reproductions return to the public repository.
+Audit must answer request/decision/permit ID, principal, Agent/workload, tool, resource, operation, action digest, policy version, authorization decision, Permit state, verification outcome, timestamp, evidence source, and upstream call count. It contains no token or raw sensitive arguments.
 
-## Evidence trust table
+At exit, stop Aegis, the Proxy, and test upstream; revoke every unconsumed Permit; remove temporary private keys and synthetic payloads; and let the company owner decide local audit retention/deletion. Only redacted conclusions and a synthetic minimal reproduction may return to the public repository.
 
-| Source | Current meaning | Must not be generalized into |
+## Evidence trust
+
+| Source | What it proves | What it cannot prove |
 |---|---|---|
-| `gateway_enforced` | Request actually entered an Aegis authorization point | All Agent actions crossed it |
-| `instrumented_adapter` | Connected adapter reported one test action | Independent OS proof or endpoint-wide coverage |
-| `agent_self_reported` | Agent/log claims an event occurred | Complete, tamper-proof fact |
-| `simulated_demo` | Server-owned Demo fixture generated and submitted a synthetic event | Real executor, real Agent, or production telemetry |
-| `os_sensor` | Use only after an OS sensor is connected and verified | File-content safety or valid business intent |
-| `network_sensor` | Use only after a network sensor is connected and verified | Full TLS semantics or offline activity |
+| `gateway_enforced` / MCP Proxy receipt | A specific call crossed the verification boundary and its outcome | Every action by the company Agent crossed Aegis |
+| upstream call counter | Whether the controlled test server was invoked | A real business system or arbitrary MCP Server is safe |
+| `instrumented_adapter` | Test metadata reported by the adapter | Independent OS observation or full-endpoint coverage |
+| `simulated_demo` | A Demo fixture traversed the code path | A real Agent, executor, or production telemetry |
+| `agent_self_reported` | The Agent claims an action occurred | A complete, unforgeable fact |
 
-## Privacy and low-spec target
+Uninstrumented capability remains `UNKNOWN / not instrumented`. `UNKNOWN != SAFE` and does not mean zero events.
 
-By default retain only classified metadata—not prompt, command/output content, file contents, raw tokens, secrets, cookies, full paths, or usernames. Use resource classes such as `WORKSPACE / SOURCE`, `PROTECTED_CONFIG`, and `SECRET_STORE`.
+## Performance and acceptance gate
 
-The first pilot needs no Docker, Kubernetes, database, service installation, or auto-start. These are **unverified targets, not achieved commitments**:
+These are pilot goals to approve before the run, not current promises:
 
-| Metric | Pilot target |
+| Metric | Initial target |
 |---|---:|
-| Aegis average idle CPU | < 2% |
-| Average CPU increase during test | < 5% |
+| Average idle Aegis CPU | < 2% |
 | Aegis process memory | < 100 MB |
-| One pilot audit file | < 50 MB |
-| Median adapter-action latency increase | < 10% |
+| Median Permit verify+consume increment | < 10 ms |
+| Median Proxy end-to-end latency increment | < 10% |
+| Audit file for one pilot | < 50 MB |
 
-## Acceptance gate
-
-The pilot reaches `V3 pilot_verified` only when all are true:
-
-- written scope matches actual execution;
-- actions actually cross an approved adapter/enforcement point;
-- authorization and all negative permit cases pass repeatably;
-- Demo, self-reported, and independent evidence are never conflated in UI/API;
-- unconnected coverage remains UNKNOWN;
-- no real sensitive data or unapproved target is touched;
-- performance/privacy have raw local measurements and sanitized conclusions;
-- audit stays inside the company-approved data boundary;
-- rollback and cleanup complete.
-
-Until then, status remains “local implementation / synthetic `V2` where tests support it,” never production-ready or company-pilot verified.
+Mark the pilot `V3 pilot_verified` only when the written scope matches execution; P0/race regression passes; a real MCP boundary is demonstrably before the side effect; every negative result leaves upstream uncalled; exactly one concurrent replay succeeds; no token/sensitive argument leaks; performance/privacy evidence stays inside the approved boundary; and cleanup completes.

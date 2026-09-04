@@ -2,12 +2,42 @@ package audit_test
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"agent-governance-gateway/internal/audit"
 	"agent-governance-gateway/internal/models"
 )
+
+func TestStoreReturnsDeepCopiesOfNestedAuditState(t *testing.T) {
+	store, err := audit.NewStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := models.AuditRecord{
+		RequestID: "req-copy", FinalVerdict: "AUTHORIZED",
+		AuthorizationEnvelope: &models.AuthorizationEnvelope{PermitID: "p-copy", AllowedOperations: []string{"read"}},
+		ExecutionReceipt:      &models.ExecutionReceipt{VerificationOutcome: "VERIFIED"},
+		SecurityFindings:      []models.SecurityFinding{{Evidence: []string{"safe"}}},
+	}
+	if err := store.Append(record); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := store.Get("req-copy")
+	if !ok {
+		t.Fatal("record missing")
+	}
+	got.AuthorizationEnvelope.AllowedOperations[0] = "write"
+	got.ExecutionReceipt.VerificationOutcome = "REPLAYED"
+	got.SecurityFindings[0].Evidence[0] = "changed"
+	again, _ := store.Get("req-copy")
+	want := []string{"read", "VERIFIED", "safe"}
+	have := []string{again.AuthorizationEnvelope.AllowedOperations[0], again.ExecutionReceipt.VerificationOutcome, again.SecurityFindings[0].Evidence[0]}
+	if !reflect.DeepEqual(have, want) {
+		t.Fatalf("stored nested state was mutated: have=%v want=%v", have, want)
+	}
+}
 
 func TestUpdateKeepsOneLatestDecisionChainAndReloadsIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")

@@ -1,150 +1,139 @@
-# Aegis Router 企业 Agent 端点试点
+# Aegis Router MCP 执行许可试点
 
 [English](enterprise-agent-pilot.md) | 简体中文
 
-状态：**探索性配置发现后暂停；正式受控运行时试点未完成。**
+状态：**此前 Discovery 探索已结束；新的受控 MCP execution-permit 试点尚未开始。**
 
-此前一次公司端点试用证明 Server 可以启动、限定目录发现可以产生证据，也暴露了无权限目录中断、marketplace/cache 噪声、网页快照不刷新和批准清单缺少入口的问题。这些反馈已用 synthetic fixture 推动本地修复，但没有证明 Aegis Router 能独立观察或阻止公司的真实 Agent 行为，也没有达到 `V3 pilot_verified`。仓库不保存原始公司日志、用户名、主机名或绝对路径。
+旧公司端点试用只证明限定目录扫描可产生配置证据，并暴露了权限错误、cache 噪声和 UI 刷新问题。它没有验证签名 Permit、MCP 执行前阻断或 replay defense，因此不是本试点的成功基线，也没有达到 `V3 pilot_verified`。
 
-## 试点现在要证明什么
+## 本试点只证明一件事
 
-本试点的主目标从“找到 Agent”改为验证一条受控动作链：
+> 获得授权的 MCP 动作，必须与实际转发给上游的动作完全一致。
 
 ```text
-受控 Adapter 提交 ActionRequest
-  → Aegis 验证 Principal / Agent / Delegation / Tool / Resource / Operation
-  → Policy Decision 与 Risk Assessment 分离
-  → Dispatch Decision
-  → 可执行时签发 AuthorizationEnvelope / Permit
-  → Adapter 或服务端 Demo 夹具提交带来源的 RuntimeEvent
-  → 事件与 Permit 核对
-  → 形成可解释 Audit / Final Verdict
+受控 MCP client 提议 tools/call
+  → Aegis 生成 CanonicalAction
+  → Policy 授权精确动作
+  → 签发短时 Ed25519 Permit
+  → MCP boundary 在副作用前 verify + consume
+  → VERIFIED 才转发给受控 upstream
+  → 写入脱敏 Audit Receipt
 ```
 
-只在控制台显示手写 JSON 不算完成真实接入。只有 Adapter 真正位于 Agent 与测试工具之间时，才能验证“动作经过控制点”。配置发现只证明痕迹；Agent 自报日志只证明它声称发生过某事；两者都不等于独立端点观察。
+本试点不评估通用 Agent 管理、Shadow discovery、sandbox、EDR、IAM 或全端点可见性。若公司 Agent 没有获准 MCP/工具代理入口，就不能用目录扫描或 Agent 自报日志替代真实执行边界；试点应暂停。
 
 ## 必须回答的问题
 
-1. 每个动作能否明确关联 human/service principal、Agent/workload 和 delegated authority？
-2. raw bearer token 是否始终不会进入请求、日志和界面？
-3. 能力、工具、资源操作和 Scope 任一不匹配时能否执行前拒绝且不签发 Permit？
-4. 已批准 Agent 的未批准行为是否仍会拒绝并进入审计？
-5. 高风险但已授权动作是否只改变分流，不改变授权事实？
-6. 许可内事件、密钥读取、只读许可下写入、禁网许可下外联能否稳定区分？
-7. 过期 Permit 和错绑 principal/Agent/request 的事件能否拒绝？
-8. 页面能否区分 `instrumented_adapter`、`agent_self_reported` 与 `simulated_demo`？
-9. 未连接的 filesystem/network/OS 覆盖是否显示 `UNKNOWN / not instrumented`？
-10. CPU、内存、延迟、日志增长和误拒绝是否在预先约定范围？
-
-## 已获得的探索性反馈
-
-| 观察 | 结论 | 已采取的产品响应 |
-|---|---|---|
-| 健康检查成功，限定目录扫描得到 Agent/MCP 证据 | 配置发现可运行，但不是运行行为证明 | 保留证据等级和覆盖限制 |
-| 扫描系统盘在无权限目录处中断 | 全盘扫描既不合规也不可靠 | 要求限定目录；拒绝访问记为 coverage gap 并继续 |
-| marketplace/cache/temp 大量命中 | 可获得不等于已安装、已部署或正在运行 | 分开 available/installed/configured/observed；可用集成折叠显示 |
-| CLI 新扫描未进入已运行网页 | 启动快照不符合操作流程 | 增加限定目录 rescan 和即时核对 |
-| 没有可见批准清单 | Shadow 结果缺少可操作解释 | 增加本地登记工作流 |
-| “已批准”被误解为“所有行为批准” | 资产准入与行为授权必须分离 | 运行时页面和文档以逐次授权为中心 |
-
-这些是产品反馈和限定范围的系统输出，不是企业部署证明。
+1. Principal、Agent、workload、delegation fingerprint、tool、capability、resource、operation 与安全参数是否进入同一规范动作？
+2. 等价 JSON 键顺序是否产生同一 digest，金额/资源/工具/操作变化是否产生不同 digest？
+3. Permit 是否验证签名、issuer、TTL 和所有绑定字段？
+4. `permit_id` 能否始终与 `permit_token` 分离，前者绝不单独授权？
+5. valid Permit 是否恰好调用一次 upstream 并转为 `CONSUMED`？
+6. invalid signature、expired、revoked、wrong binding、action mismatch 或 replay 是否都使 upstream 调用次数为零？
+7. 两个并发 replay 是否恰好一个成功？
+8. UI、audit、errors 和 upstream metadata 是否都不泄漏 `permit_token`、raw delegated token 或原始敏感参数？
+9. Demo 是否始终标记 `simulated_demo`，RuntimeEvent 是否明确只是辅助证据？
+10. CPU、内存、延迟和审计增长是否在预先批准范围？
 
 ## 授权与禁止范围
 
-继续试点前必须重新取得设备负责人、IT/安全和相关数据负责人的书面批准，明确设备、操作者、Agent、Adapter、测试目录、时间窗、允许字段、保留时间、目标地址、回滚方式和负责人。
+开始前必须取得设备负责人、IT/安全和数据负责人的书面批准，明确设备、操作者、MCP client/Agent、Proxy、upstream、测试工具、参数类别、时间窗、网络目标、保留时间、回滚和负责人。
 
-禁止：
+只允许 synthetic 参数、测试凭据、无害本地工具和批准的 loopback/内网测试目标。禁止：
 
-- 扫描未获准员工目录、邮件、聊天、浏览器资料、客户数据或共享盘；
-- 捕获其他员工会话或公司全网流量；
+- 使用生产 Token、真实密钥、客户数据、员工数据或真实付款/删除/发布动作；
+- 捕获其他员工会话、扫描未批准目录或监控公司全网流量；
 - 绕过 EDR、DLP、防病毒、代理、证书策略或应用白名单；
-- 使用生产 Token、真实密钥、客户数据或真实公司系统作为越界诱饵；
-- 把公司日志、路径或设备标识上传到个人 GitHub、个人云盘或外部 AI 服务；
-- 把 `SANDBOX ROUTE` 当作真实隔离；
-- 把本项目当作生产唯一阻断点。
+- 将公司日志、路径、设备标识或 Permit token 上传到个人 GitHub、云盘或外部 AI 服务；
+- 把 `isolation_required` 或旧 `SANDBOX` 字段当作 Aegis 已提供隔离；
+- 将 Aegis 当作生产唯一阻断点。
 
-如果公司不允许运行自编译程序或 Adapter，试点停在设计和 Demo Lab 阶段，由 IT 决定签名与分发方式。
+项目契约中的 `allow_deploy=false` 与 company-device 显式授权要求保持不变；本协议不自行授予部署权限。
 
-## 分阶段试点
+## Gate 0：本地 P0 回归
 
-### Gate 0：本地 synthetic 回归
+任何公司设备工作前，开发环境必须通过：
 
-在开发环境先让全部授权和运行时负向测试通过。至少覆盖：unknown Agent、missing Scope、ungranted capability、disallowed tool、disallowed resource operation、安全 Permit、高风险已授权分流、许可内事件、secret/write/egress 越界、expired Permit、wrong binding 和 Demo 标签。
+- valid Permit；
+- invalid signature；
+- expired 与 revoked Permit；
+- wrong principal/agent/workload/tool/resource/operation；
+- argument digest mismatch；
+- sequential 与 concurrent replay；
+- audit/token privacy；
+- failed verification 后 MCP upstream 调用次数为零；
+- MCP `2026-07-28` Header/body/version mismatch、重复 JSON key、任意 Header/Session 上下文、未绑定 Tool `_meta`、MRTR 或 `Mcp-Param-*` 输入在上游前 fail closed 或被剥离；
+- Permit 含尚未满足的隔离或人工批准 obligation 时，产生 `EXECUTION_OBLIGATION_UNSATISFIED`，上游调用次数为 0；
+- Demo telemetry 始终为 `simulated_demo`；
+- `go test ./...`、`go test -race ./...`、`go vet ./...` 与前端检查/构建。
 
-任何用例失败都不能进入公司端点。
+Race 工具链缺失必须作为未关闭门槛报告，不能写成通过。
 
-### Gate 1：公司端点基线
+## Gate 1：公司端点最小基线
 
-- 只绑定 `127.0.0.1`；
-- 使用公司批准的源码/二进制传输方式并校验 SHA-256；
-- 不启动真实 Agent，记录 Aegis 空闲 CPU、内存、磁盘和监听端口；
-- Runtime Coverage 必须显示未连接的 OS/filesystem/network 传感器；
-- 可选 Discovery 只扫描一到两个明确批准的 fixture 目录。
+- 再次确认书面范围；
+- 按公司批准方式传输源码/二进制并核对 SHA-256；
+- Server/Proxy 只监听获准接口，默认优先 `127.0.0.1`；
+- 使用临时测试签名密钥，不复用生产/个人长期密钥；
+- 使用本地无害 upstream MCP fixture；
+- 记录空闲 CPU、内存、端口和审计目录；
+- 不启用 `--enable-experimental-inventory`，除非另有独立书面需要。
 
-### Gate 2：instrumented synthetic executor
+Discovery 不属于这个 Gate 的验收内容。
 
-在公司电脑上只运行 Demo Lab：
+## Gate 2：四个 focused Demo
 
-| 用例 | 请求 | 预期结果 |
+| 场景 | 操作 | 预期结果 |
 |---|---|---|
-| Safe code | 合法 delegation + code tool + workspace read | `ALLOW` + Permit；`simulated_demo` 事件在许可内 |
-| Finance denial | coder 请求 finance read | `DENY`；无 Permit、无 executor |
-| Boundary violation | Permit 只允许 config read，随后提交 secret read | `AUTHORIZATION_BOUNDARY_VIOLATION` |
-| Read-only violation | Permit 只读，随后提交 write | 违规 |
-| Egress violation | Permit 禁止外联，随后提交 external destination | 违规 |
-| Expiry/binding | 过期或错绑事件 | 拒绝，不进入正常事件链 |
+| Valid Permit | 授权并原样执行 `config.read` | `VERIFIED`；upstream 调用一次；Permit `CONSUMED` |
+| Action Mutation / TOCTOU | 授权 `amount=100`，执行改为 `10000` | `PERMIT_ACTION_MISMATCH`；upstream 调用零次 |
+| Permit Replay | 同一 token 使用两次 | 第一次 `VERIFIED`，第二次 `PERMIT_REPLAY` |
+| Expired Permit | 过 TTL 后执行 | `PERMIT_EXPIRED`；upstream 调用零次 |
 
-此阶段仍只证明 Aegis 内部协议和确定性控制路径。
+这些服务端 fixture 是 `simulated_demo`，只能证明本地确定性路径。
 
-### Gate 3：一个真实 Adapter 的受控接入
+## Gate 3：真实 MCP 边界的受控接入
 
-仅在 Agent 或其工具系统支持公司批准的 CLI、插件、MCP/HTTP proxy 或事件 API 时进行。Adapter 必须先调用授权接口，只有拿到 Permit 才执行无害 fixture 动作，再回传 `instrumented_adapter` 事件。
+仅当公司 Agent/工具系统支持批准的 MCP client 或 Proxy 配置时进行：
 
-若 WorkBuddy 是 GUI/IDE Agent 且没有批准的 Adapter/工具代理入口，不能通过扫描目录假装完成运行时试点。可以保留 Inventory 发现，同时把 Runtime Coverage 明确写成未接入；等待合适 Adapter 或独立传感器。
+1. 使用一个无害、可计数调用次数的 upstream MCP test server；
+2. 对一次 `tools/call` 生成规范动作并调用授权 API；
+3. 将 `permit_token` 仅放在受控 client→Proxy 执行通道，不写入命令历史或截图；
+4. Proxy 在转发前复用核心 verifier 并原子消费；
+5. 使用 `2026-07-28` 时同时验证 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与正文一致，并只在 `VERIFIED` 后转发；
+6. 保存脱敏 receipt 和 upstream call counter；
+7. 对每种负向结果重复验证 counter 为零。
 
-### Gate 4：证据复核和退出
+若 WorkBuddy 或其他 Agent 无法配置获准 MCP 边界，本 Gate 不通过。不能通过修改公司 Agent、绕过策略或采集全机行为“补齐”测试。
 
-审计必须回答：主体、Agent/workload、delegation fingerprint/scopes、工具、资源类、操作、Policy、Risk、Dispatch、Permit、事件来源/信任、越界原因、最终结论、持续时间和覆盖缺口。
+## Gate 4：证据复核与退出
 
-结束后停止 Aegis 和测试进程，撤销测试凭据/Permit，由公司负责人决定审计保留或删除。只有脱敏结论和 synthetic 最小复现可以返回公开仓库。
+审计必须回答 request/decision/permit ID、principal、Agent/workload、tool、resource、operation、action digest、policy version、authorization decision、Permit state、verification outcome、timestamp、evidence source 与 upstream call count；不得含 token 或原始敏感参数。
 
-## 证据信任表
+结束后停止 Aegis、Proxy 和测试 upstream，撤销所有未消费 Permit，删除临时私钥与 synthetic payload，并由公司负责人决定本地审计保留/删除。只有脱敏结论与 synthetic 最小复现可以返回公开仓库。
 
-| 来源 | 当前含义 | 不能外推为 |
+## 证据信任
+
+| 来源 | 能证明 | 不能证明 |
 |---|---|---|
-| `gateway_enforced` | 请求实际进入 Aegis 授权点 | Agent 的所有动作都经过它 |
-| `instrumented_adapter` | 已接入 Adapter 报告某个测试动作 | OS 独立证明或全端点覆盖 |
-| `agent_self_reported` | Agent/日志声称发生事件 | 完整、不可伪造的事实 |
-| `simulated_demo` | 服务端 Demo 夹具生成并提交合成事件 | 真实执行器、真实 Agent 或生产遥测 |
-| `os_sensor` | 仅连接并验证 OS Sensor 后使用 | 文件内容安全或业务意图正确 |
-| `network_sensor` | 仅连接并验证网络 Sensor 后使用 | TLS 内完整语义或离线行为 |
+| `gateway_enforced` / MCP Proxy receipt | 某次调用经过验证边界及其结果 | 公司 Agent 的所有动作都经过 Aegis |
+| upstream call counter | 受控 test server 是否被调用 | 真实业务系统或任意 MCP Server 都安全 |
+| `instrumented_adapter` | Adapter 报告的测试 metadata | OS 独立观察或全端点覆盖 |
+| `simulated_demo` | Demo fixture 走过代码路径 | 真实 Agent、执行器或生产遥测 |
+| `agent_self_reported` | Agent 声称发生某动作 | 完整、不可伪造事实 |
 
-## 隐私和低配置目标
+未接入能力保持 `UNKNOWN / not instrumented`。`UNKNOWN != SAFE`，也不等于零事件。
 
-默认只保留分类元数据，不保留 Prompt、命令/输出正文、文件内容、原始 Token、Secret、Cookie、完整路径或用户名。资源使用 `WORKSPACE / SOURCE`、`PROTECTED_CONFIG`、`SECRET_STORE` 等类别。
+## 性能与通过门槛
 
-第一轮不要求 Docker、Kubernetes、数据库、服务安装或开机启动。下列是**待验证目标，不是已达成承诺**：
+以下是需要在授权前确认的试点目标，不是当前承诺：
 
-| 指标 | 试点目标 |
+| 指标 | 初始目标 |
 |---|---:|
 | Aegis 空闲平均 CPU | < 2% |
-| 测试期间平均 CPU 增量 | < 5% |
 | Aegis 进程内存 | < 100 MB |
+| Permit verify+consume 中位增量 | < 10 ms |
+| Proxy 端到端中位延迟增量 | < 10% |
 | 单次试点审计文件 | < 50 MB |
-| Adapter 动作中位延迟增量 | < 10% |
 
-## 通过门槛
-
-正式试点只有同时满足以下条件才可标为 `V3 pilot_verified`：
-
-- 书面范围与实际执行一致；
-- 动作真正经过批准的 Adapter/控制点；
-- 授权与所有负向 Permit 用例可重复通过；
-- Demo、自报和独立证据在 UI/API 中没有混淆；
-- 未接入覆盖保持 UNKNOWN；
-- 未触及真实敏感数据或未批准目标；
-- 性能/隐私指标有原始本地测量和脱敏结论；
-- 审计未离开公司批准的数据边界；
-- 回滚与清理完成。
-
-在这些条件满足前，当前状态保持“本地实现 / synthetic `V2`（以测试结果为准）”，不得写成生产就绪或公司试点验证。
+只有书面范围一致、P0/race 回归通过、真实 MCP 边界确实位于副作用前、所有负向结果 upstream 调用为零、并发 replay 只有一次成功、无 Token/敏感参数泄漏、性能/隐私数据留在批准边界且清理完成时，才可标为 `V3 pilot_verified`。

@@ -1,0 +1,219 @@
+// Package verifier is the pre-execution reference monitor. Executors must call
+// VerifyAndConsume immediately before a real side effect and proceed only when
+// the returned outcome is VERIFIED.
+package verifier
+
+import (
+	"crypto/ed25519"
+	"crypto/subtle"
+	"errors"
+	"fmt"
+	"time"
+
+	"agent-governance-gateway/internal/canonicalaction"
+	"agent-governance-gateway/internal/permit"
+)
+
+type Outcome string
+
+const (
+	OutcomeVerified         Outcome = "VERIFIED"
+	OutcomeExpired          Outcome = "EXPIRED"
+	OutcomeInvalidSignature Outcome = "INVALID_SIGNATURE"
+	OutcomeActionMismatch   Outcome = "ACTION_MISMATCH"
+	OutcomeWrongPrincipal   Outcome = "WRONG_PRINCIPAL"
+	OutcomeWrongAgent       Outcome = "WRONG_AGENT"
+	OutcomeWrongWorkload    Outcome = "WRONG_WORKLOAD"
+	OutcomeWrongDelegation  Outcome = "WRONG_DELEGATION"
+	OutcomeWrongTool        Outcome = "WRONG_TOOL"
+	OutcomeWrongCapability  Outcome = "WRONG_CAPABILITY"
+	OutcomeWrongResource    Outcome = "WRONG_RESOURCE"
+	OutcomeWrongOperation   Outcome = "WRONG_OPERATION"
+	OutcomeReplayed         Outcome = "REPLAYED"
+	OutcomeRevoked          Outcome = "REVOKED"
+	OutcomeInvalidIssuer    Outcome = "INVALID_ISSUER"
+	OutcomeUnknownPermit    Outcome = "UNKNOWN_PERMIT"
+	OutcomeInvalidPermit    Outcome = "INVALID_PERMIT"
+	OutcomeInvalidAction    Outcome = "INVALID_ACTION"
+	OutcomeNotYetValid      Outcome = "NOT_YET_VALID"
+)
+
+var ErrInvalidConfiguration = errors.New("invalid verifier configuration")
+
+// Result is safe to audit or serialize. It contains signed metadata but never
+// the permit token or raw arguments.
+type Result struct {
+	Outcome    Outcome        `json:"outcome"`
+	Verified   bool           `json:"verified"`
+	PermitID   string         `json:"permit_id,omitempty"`
+	RequestID  string         `json:"request_id,omitempty"`
+	State      permit.State   `json:"state,omitempty"`
+	Claims     *permit.Claims `json:"claims,omitempty"`
+	VerifiedAt time.Time      `json:"verified_at"`
+}
+
+func (r Result) Allowed() bool { return r.Outcome == OutcomeVerified && r.Verified }
+
+type Option func(*Verifier)
+
+func WithClock(clock func() time.Time) Option {
+	return func(verifier *Verifier) {
+		if clock != nil {
+			verifier.clock = clock
+		}
+	}
+}
+
+type Verifier struct {
+	publicKey      ed25519.PublicKey
+	expectedIssuer string
+	store          permit.Store
+	clock          func() time.Time
+}
+
+func New(publicKey ed25519.PublicKey, expectedIssuer string, store permit.Store, options ...Option) (*Verifier, error) {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("%w: Ed25519 public key", ErrInvalidConfiguration)
+	}
+	if expectedIssuer == "" {
+		return nil, fmt.Errorf("%w: expected issuer is required", ErrInvalidConfiguration)
+	}
+	if store == nil {
+		return nil, fmt.Errorf("%w: permit store is required", ErrInvalidConfiguration)
+	}
+	result := &Verifier{
+		publicKey:      append(ed25519.PublicKey(nil), publicKey...),
+		expectedIssuer: expectedIssuer,
+		store:          store,
+		clock:          time.Now,
+	}
+	for _, option := range options {
+		option(result)
+	}
+	return result, nil
+}
+
+// VerifyAndConsume authenticates the credential, verifies every action
+// binding, and atomically consumes the permit. Binding failures do not consume
+// an otherwise active permit. A second valid use returns REPLAYED.
+func (v *Verifier) VerifyAndConsume(permitToken string, action canonicalaction.Action) Result {
+	now := v.clock().UTC()
+	result := Result{Outcome: OutcomeInvalidSignature, VerifiedAt: now}
+	claims, err := permit.VerifyToken(v.publicKey, permitToken)
+	if err != nil {
+		return result
+	}
+	result.PermitID = claims.PermitID
+	result.RequestID = claims.RequestID
+	result.Claims = copyClaims(claims)
+
+	if claims.Issuer != v.expectedIssuer {
+		result.Outcome = OutcomeInvalidIssuer
+		return result
+	}
+	record, exists := v.store.Get(claims.PermitID, now)
+	if !exists {
+		result.Outcome = OutcomeUnknownPermit
+		return result
+	}
+	result.State = record.State
+	if record.Claims != claims {
+		result.Outcome = OutcomeInvalidPermit
+		return result
+	}
+	if now.Before(claims.IssuedTime()) {
+		result.Outcome = OutcomeNotYetValid
+		return result
+	}
+	switch record.State {
+	case permit.StateExpired:
+		result.Outcome = OutcomeExpired
+		return result
+	case permit.StateConsumed:
+		result.Outcome = OutcomeReplayed
+		return result
+	case permit.StateRevoked:
+		result.Outcome = OutcomeRevoked
+		return result
+	case permit.StateIssued:
+		// Continue to the action binding checks.
+	default:
+		result.Outcome = OutcomeInvalidPermit
+		return result
+	}
+
+	if err := action.Validate(); err != nil {
+		result.Outcome = OutcomeInvalidAction
+		return result
+	}
+	if action.PrincipalID != claims.PrincipalID {
+		result.Outcome = OutcomeWrongPrincipal
+		return result
+	}
+	if action.AgentID != claims.AgentID {
+		result.Outcome = OutcomeWrongAgent
+		return result
+	}
+	if action.WorkloadID != claims.WorkloadID {
+		result.Outcome = OutcomeWrongWorkload
+		return result
+	}
+	if action.DelegatedAuthorityFingerprint != claims.DelegatedAuthorityFingerprint {
+		result.Outcome = OutcomeWrongDelegation
+		return result
+	}
+	if action.Tool != claims.Tool {
+		result.Outcome = OutcomeWrongTool
+		return result
+	}
+	if action.Capability != claims.Capability {
+		result.Outcome = OutcomeWrongCapability
+		return result
+	}
+	if action.Resource != claims.Resource {
+		result.Outcome = OutcomeWrongResource
+		return result
+	}
+	if action.Operation != claims.Operation {
+		result.Outcome = OutcomeWrongOperation
+		return result
+	}
+	digest, err := action.Digest()
+	if err != nil {
+		result.Outcome = OutcomeInvalidAction
+		return result
+	}
+	if subtle.ConstantTimeCompare([]byte(digest), []byte(claims.ActionDigest)) != 1 {
+		result.Outcome = OutcomeActionMismatch
+		return result
+	}
+
+	// Re-read the clock at the actual consume boundary: canonicalization and
+	// signature checks must not let a permit slip past its expiry.
+	consumeTime := v.clock().UTC()
+	if consumeTime.Before(now) {
+		consumeTime = now
+	}
+	result.VerifiedAt = consumeTime
+	consumed := v.store.Consume(claims.PermitID, consumeTime)
+	result.State = consumed.Record.State
+	switch consumed.Outcome {
+	case permit.ConsumeSucceeded:
+		result.Outcome = OutcomeVerified
+		result.Verified = true
+	case permit.ConsumeExpired:
+		result.Outcome = OutcomeExpired
+	case permit.ConsumeReplayed:
+		result.Outcome = OutcomeReplayed
+	case permit.ConsumeRevoked:
+		result.Outcome = OutcomeRevoked
+	default:
+		result.Outcome = OutcomeUnknownPermit
+	}
+	return result
+}
+
+func copyClaims(claims permit.Claims) *permit.Claims {
+	copy := claims
+	return &copy
+}

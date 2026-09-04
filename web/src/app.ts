@@ -1,247 +1,152 @@
 type Locale = "zh-CN" | "en";
-type ViewName = "overview" | "decisions" | "investigations" | "policies" | "inventory" | "demo";
+type ViewName = "decisions" | "permits" | "audit" | "demo" | "inventory";
 type JsonObject = Record<string, unknown>;
+type ScenarioKind = "valid" | "mutation" | "replay" | "expired" | "advanced";
 
-interface Scenario {
+interface Permit {
   id: string;
-  title: string;
-  description: string;
-  expectedRoute: string;
-  request: JsonObject;
-}
-
-interface RuntimeEvidence {
-  id: string;
-  source: string;
-  trust: string;
-  capability: string;
-  tool: string;
-  operation: string;
-  resource: string;
-  timestamp: string;
-  violation: boolean;
-}
-
-interface Envelope {
-  permitId: string;
+  state: string;
+  requestId: string;
   principal: string;
   agent: string;
-  capability: string;
+  workload: string;
+  delegationFingerprint: string;
   tool: string;
+  capability: string;
   resource: string;
-  operations: string[];
-  constraints: Record<string, string>;
+  operation: string;
+  actionDigest: string;
+  policyVersion: string;
+  issuer: string;
   issuedAt: string;
   expiresAt: string;
+  consumedAt: string;
+  verification: string;
+  obligations: string[];
+  format: string;
+  singleUse: boolean | null;
 }
 
 interface Decision {
-  raw: JsonObject;
+  id: string;
   requestId: string;
   createdAt: string;
   principal: string;
-  principalType: string;
   agent: string;
   workload: string;
-  delegatedIssuer: string;
-  delegatedSubject: string;
-  scopes: string[];
-  credentialFingerprint: string;
-  capability: string;
-  action: string;
-  operation: string;
   tool: string;
+  capability: string;
   resource: string;
-  sideEffect: string;
-  policyRoute: string;
-  route: string;
+  operation: string;
+  actionDigest: string;
+  authorization: string;
+  policyVersion: string;
   policyReasons: string[];
-  matchedRules: string[];
-  riskLevel: string;
-  riskScore: number | null;
-  riskSignals: string[];
-  executor: string;
-  isolationStatus: string;
-  envelope: Envelope | null;
-  events: RuntimeEvidence[];
-  violations: string[];
-  finalVerdict: string;
-  durationMs: number | null;
+  obligations: string[];
+  verification: string;
+  verdict: string;
+  evidenceSources: string[];
+  permit: Permit | null;
 }
 
-interface CoverageSource {
-  key: string;
-  name: string;
-  status: string;
-  evidence: string;
-}
-
-interface DiscoveryEvidence {
-  source: string;
-  indicator: string;
-  confidence: number | null;
-}
-
-interface InventoryAgent {
-  fingerprint: string;
-  name: string;
-  agentType: string;
-  deploymentState: string;
-  status: string;
-  owner: string;
-  approvalId: string;
-  confidence: number | null;
-  evidence: DiscoveryEvidence[];
-  exposure: string;
-  potentialCapabilities: string[];
-  exposureFactors: string[];
-}
-
-interface ApprovedAgent {
+interface Scenario {
   id: string;
-  agent_id?: string;
-  workload_identity?: string;
-  name: string;
-  display_name?: string;
-  agent_type: string;
-  fingerprint?: string;
-  path_contains: string;
-  owner: string;
-  environment?: string;
-  framework?: string;
-  approval_ref?: string;
-  expires_on?: string;
-  state?: string;
-  status?: string;
-  policy_profile?: string;
+  kind: ScenarioKind;
+  title: string;
+  description: string;
+  expected: string;
+  principal: string;
+  agent: string;
+  tool: string;
+  capability: string;
+  resource: string;
+  operation: string;
+  actionDigest: string;
+  available: boolean;
 }
 
-interface InventoryState {
-  agents: InventoryAgent[];
-  approvals: ApprovedAgent[];
-  governedCount: number;
-  agentTypes: string[];
-  scannedAt: string;
-  rootCount: number;
-  gaps: Array<{ source: string; reason: string }>;
-  truncated: boolean;
+interface DemoOutcome {
+  result: string;
+  permitId: string;
+  state: string;
+  actionDigest: string;
+  upstreamInvoked: boolean | null;
+  evidenceSource: string;
+  attempts: string[];
 }
 
 const copy: Record<Locale, Record<string, string>> = {
   "zh-CN": {
-    skipContent: "跳到主要内容", brandSubtitle: "AI Agent 策略驱动安全路由器", navOverview: "总览", navDecisions: "裁决",
-    navInvestigations: "审计 / 调查", navPolicies: "策略", navInventory: "Agent 清单", navDemo: "演示实验室", doctrineLabel: "零信任原则",
-    doctrine: "批准 Agent 存在，不代表批准它的行为。", controlPlane: "安全控制平面", checking: "检查中", online: "策略引擎在线", offline: "控制平面不可达", refresh: "刷新",
-    overviewTitle: "运行时态势", decisionsTitle: "逐动作裁决", investigationsTitle: "审计与调查", policiesTitle: "授权策略", inventoryTitle: "Agent 清单", demoTitle: "演示实验室",
-    runtimeFirst: "运行时强制优先", overviewHero: "每个动作先获准，再越过安全边界。", overviewCopy: "Aegis 在 Agent 与工具、资源之间核验身份、委托权限和动作约束，并用授权信封约束后续执行。",
-    identity: "身份", policy: "策略", risk: "风险", dispatch: "分派", observation: "观察", audit: "审计", securityBoundary: "安全边界", envelopeIsBoundary: "授权信封，而非 Agent 自述计划", governedIdentities: "受治理身份",
-    allowedActions: "已允许动作", restrictedActions: "受限执行", sandboxRoutes: "沙箱路由", blockedActions: "执行前阻断", needsReview: "等待复核",
-    decisionStream: "裁决流", recentDecisions: "最近裁决", viewAll: "查看全部", attentionQueue: "关注队列", blockedAndViolations: "阻断与越界",
-    evidencePlane: "证据平面", runtimeCoverage: "运行时覆盖", unknownNotZero: "UNKNOWN ≠ 0", coverageCopy: "仅显示已接入且有来源标识的证据；未接入的传感器保持未知。",
-    identityPlane: "身份平面", workloadIdentities: "Agent 工作负载", openInventory: "打开清单", registered: "已登记", evidenceOnly: "仅证据",
-    identityBoundary: "登记回答“工作负载能否进入治理环境”；策略回答“此刻能否执行这个动作”。", runtimeGateway: "运行时网关", decisionsCopy: "授权与风险分开计算；明确的策略拒绝不会被风险分数覆盖。",
-    tryDemo: "运行安全场景", all: "全部", blocked: "阻断", permitted: "已放行", evidenceChain: "证据链", investigationsCopy: "从请求上下文到最终结论，保留可解释的裁决与证据链。",
-    boundaryEvents: "边界事件", violationsAndBlocks: "越界与阻断", runtimeEvidence: "运行时证据", sourceAndTrust: "来源与可信度", evidenceRule: "自报、适配器、OS 与网络传感器不可混为同一种“已观察”。",
-    policyPlane: "策略平面", policiesCopy: "围绕身份、委托权限、能力、工具、资源、操作与约束做显式授权。", assetRegistration: "资产登记", mayParticipate: "这个工作负载可以参与治理环境吗？",
-    actionAuthorization: "逐动作授权", mayActNow: "它在当前委托权限下可以执行这个动作吗？", evaluationOrder: "评估输入", authorizationAnatomy: "授权构成", principalAndAgent: "主体 + Agent 身份",
-    principalAndAgentCopy: "人类或服务主体，以及实际工作负载", delegatedAuthority: "委托权限", delegatedAuthorityCopy: "凭据指纹、颁发者、主体、范围与有效期", capabilityAndTool: "能力 + 工具",
-    capabilityAndToolCopy: "允许的能力、工具身份和 Schema", resourceAndOperation: "资源 + 操作", resourceAndOperationCopy: "资源类别、read/write/admin 与副作用", constraints: "执行约束", constraintsCopy: "网络、秘密、写入、时长与执行环境",
-    observedRules: "已观察规则", rulesSeenInAudits: "审计中出现的规则", notPolicyEditor: "只读证据", policyApiNote: "当前 UI 不假装提供尚未暴露的策略编辑 API；这里仅汇总真实审计记录中命中的规则。",
-    securityObject: "安全对象", envelopeTitle: "授权信封", envelopeCopy: "只有 ALLOW、RESTRICT 或 SANDBOX 才能产生信封；运行时事件必须绑定信封并接受越界检查。",
-    visibilityModule: "可选可见性模块", inventoryCopy: "发现证据帮助识别工作负载，但依赖、插件或缓存文件本身不是 Agent 身份。", rescan: "重新扫描", scanCoverage: "扫描覆盖",
-    workloadEvidence: "工作负载证据", deployedCandidates: "已部署 / 已配置候选", availableIntegrations: "发现证据 / 可用集成", availableDisclosure: "这些 marketplace、catalog、cache 或依赖线索默认折叠，不计作运行中的 Agent。",
-    admissionRegistry: "准入登记", approvedWorkloads: "已登记工作负载", registryBoundary: "登记只控制工作负载准入；它的每次行为仍须经过策略与审计。", addOrEditRegistration: "添加或编辑登记",
-    agentName: "Agent 名称", agentType: "Agent 类型", pathEvidence: "证据路径片段", relativeEvidenceOnly: "仅使用相对扫描根目录的稳定片段。", fingerprint: "发现指纹", owner: "负责人", environment: "环境",
-    approvalRef: "批准单号", expiresOn: "到期日", registryState: "登记状态", active: "生效", suspended: "暂停", policyProfile: "策略档案", saveRegistration: "保存登记", clearForm: "清空",
-    safeFixtures: "安全测试夹具", demoCopy: "六个场景用于回归授权与检测流程，不代表真实生产遥测。", truthfulDemo: "这里产生的行为证据会明确标记为 simulated_demo。", sandboxTruth: "SANDBOX 仅表示路由；隔离后端：NOT CONNECTED / DEMO。",
-    scenarioLibrary: "场景库", securityScenarios: "安全场景", actionRequest: "动作请求", chooseScenario: "选择场景", requestPayload: "服务端测试夹具（只读）", privacyNote: "该请求由服务端场景固定提供；不得放入真实令牌、秘密、提示词内容或个人路径。", authorizeAction: "运行场景",
-    footerTruth: "默认拒绝 · 逐动作授权 · 来源可辨的审计", noDecisions: "还没有网关裁决。请在演示实验室运行一个安全场景。", noAlerts: "暂无阻断或授权边界越界记录。", noRuntimeEvidence: "没有带来源标识的运行时证据。未知不代表没有行为。",
-    noInventory: "未发现已部署或已配置的 Agent 候选。", noAvailableEvidence: "没有仅可用的集成或依赖证据。", noRegistrations: "登记清单为空。未匹配的已部署工作负载会标为 Shadow。", noRules: "尚无审计记录可用于汇总命中规则。",
-    principal: "主体", principalType: "主体类型", agentIdentity: "Agent 身份", workload: "工作负载", issuer: "颁发者", delegatedSubject: "委托主体", scopes: "委托范围", credential: "凭据指纹",
-    requestedAction: "请求动作", capability: "能力", tool: "工具", resource: "资源", operation: "操作", sideEffect: "副作用", policyDecision: "策略裁决", riskAssessment: "风险评估", dispatchDecision: "分派结果",
-    matchedRules: "命中规则", riskSignals: "风险信号", selectedExecutor: "执行器", finalVerdict: "最终结论", duration: "耗时", permitId: "许可 ID", issuedAt: "签发时间", expiresAt: "失效时间", allowedOperations: "允许操作",
-    permitNotIssued: "未签发执行许可", deniedBeforeExecution: "请求在执行前被策略阻断，因此没有授权信封。", legacyEnvelopeMissing: "旧版响应没有授权信封；界面不会从 ALLOW 结果推测许可范围。",
-    runtimeEvents: "运行时事件", source: "来源", trust: "可信度", violation: "授权边界越界", withinEnvelope: "信封范围内", isolationBackend: "隔离后端", notConnectedDemo: "NOT CONNECTED / DEMO",
-    unknown: "UNKNOWN", notInstrumented: "NOT INSTRUMENTED", instrumented: "INSTRUMENTED", adapterReported: "ADAPTER REPORTED", simulatedDemo: "SIMULATED DEMO", selfReported: "AGENT SELF-REPORTED", connected: "CONNECTED",
-    gatewayRequests: "网关请求", toolEvents: "工具事件", filesystem: "文件系统", network: "网络", osSyscalls: "OS 系统调用", isolation: "隔离执行", derivedFromAudit: "来自网关审计记录", noSensor: "未连接独立传感器", noAdapterEvidence: "没有适配器证据", demoOnly: "仅演示后端",
-    approved: "已登记", unassessed: "待评估", available: "仅可用", installed: "已安装", configured: "已配置", observed: "已观察", discoveryConfidence: "发现置信度", potentialExposure: "潜在暴露", unclassified: "未分类", prepareRegistration: "填写登记",
-    edit: "编辑", remove: "移除", confirmRemove: "移除这条登记记录？下次核对后该工作负载可能变为 Shadow。", registrationSaved: "登记已保存并重新核对。", registrationRemoved: "登记已移除并重新核对。", scanComplete: "扫描完成，清单已刷新。", scanIncomplete: "部分扫描源不可读取；覆盖保持 UNKNOWN。",
-    expected: "预期", authorizing: "正在授权…", inspectDecision: "查看完整裁决", demoEvidence: "演示证据", noExecutionEvidence: "没有运行时事件；系统不会把“未收到证据”写成“行为为零”。", requestFailed: "请求失败", refreshed: "数据已刷新。"
+    skipContent: "跳到主要内容", brandSubtitle: "AI Agent 动作执行许可证", navDecisions: "裁决", navPermits: "许可证", navAudit: "审计", navDemo: "演示", navInventory: "实验性清单",
+    invariantLabel: "执行不变量", invariant: "被授权的动作，必须正是被执行的动作。", checking: "检查中", online: "执行许可服务在线", offline: "执行许可服务不可达", productClass: "执行许可证层", refresh: "刷新",
+    decisionsTitle: "动作裁决", permitsTitle: "执行许可证", auditTitle: "执行授权审计", demoTitle: "许可证验证实验", inventoryTitle: "实验性 Agent 清单",
+    referenceMonitor: "REFERENCE MONITOR / PRE-EXECUTION", heroTitle: "AI Agent 动作执行许可证", heroLine: "一次授权。只执行获准的那一个动作。", heroDescription: "在真实工具副作用发生前，执行边界验证并消费一张短时、动作绑定、单次使用的签名许可证。", runDemo: "验证四种安全结果",
+    normalize: "规范化", authorize: "授权", issue: "签发", verify: "验证", consume: "消费", authorizedCopy: "策略明确授权", deniedCopy: "执行前拒绝", violationsCopy: "验证未通过", replayCopy: "重复消费已阻断",
+    executionActivity: "EXECUTION ACTIVITY", recentActivity: "最近活动", unknownRule: "未上报 ≠ 已验证", agent: "Agent", action: "动作", permit: "许可证", verificationResult: "验证结果", inspect: "查看", noActivity: "还没有动作裁决。前往演示运行一个服务器安全夹具。",
+    decisionDetail: "裁决详情", selectActivity: "选择一条活动，查看其动作绑定与验证结果。", authorization: "授权结论", requestId: "请求 ID", principal: "主体", workload: "工作负载", tool: "工具", capability: "能力", resource: "资源", operation: "操作", actionDigest: "动作摘要", policyVersion: "策略版本", obligations: "执行义务", evidenceSource: "证据来源", noObligations: "无已报告义务", noEvidence: "NOT REPORTED — 没有来源明确的执行证据", compatibilityHint: "兼容响应：没有执行边界验证结果，界面不会推断已执行或安全。",
+    credentialLedger: "EXECUTION CREDENTIAL LEDGER", permitsCopy: "只展示安全的相关标识与绑定字段。许可证令牌和原始敏感参数永不显示。", tokenHidden: "permit_token：永不渲染", all: "全部", failed: "异常", noPermits: "还没有可展示的许可证。拒绝裁决不会签发许可证。",
+    permitDetail: "许可证详情", selectPermit: "选择一张许可证查看安全声明。", state: "状态", permitId: "许可证 ID / jti", issuer: "签发者", issuedAt: "签发时间", expiresAt: "失效时间", consumedAt: "消费时间", singleUse: "单次使用", credentialFingerprint: "委托凭据指纹", permitFormat: "签名格式", neverStored: "令牌与原始敏感参数不在此视图中保存或显示。", lifecycle: "许可证生命周期", issued: "已签发", verified: "已验证", consumed: "已消费", terminal: "终止状态", notReported: "NOT REPORTED", legacyEnvelope: "兼容授权信封；不是可独立验证的凭据",
+    receiptLedger: "EXPLAINABLE RECEIPTS", auditCopy: "每张回执连接策略裁决、许可证状态、执行边界验证结果与来源明确的证据。", criticalControl: "关键控制", preExecution: "执行前许可证验证", preExecutionCopy: "只有 VERIFIED 才能调用上游工具。", additionalEvidence: "附加证据", postExecution: "执行中 / 执行后遥测", postExecutionCopy: "来源与可信度保持可区分；UNKNOWN 不会被写成 SAFE。", auditReceipts: "AUDIT RECEIPTS", latestReceipts: "最近回执", noAudits: "还没有审计回执。", finalVerdict: "最终结论", timestamp: "时间", receiptSafe: "安全回执：不含许可证令牌、委托令牌或原始动作参数。",
+    safeFixtures: "SAFE / SERVER-OWNED FIXTURES", demoCopy: "四个场景直接证明动作绑定、短时效与单次消费。所有行为证据均明确标记为 simulated_demo。", primaryProofs: "PRIMARY PROOFS", fourScenarios: "四个核心场景", advancedFixtures: "高级回归夹具", advancedCopy: "保留旧安全场景用于回归，但它们不定义产品主线。", runScenario: "运行服务器夹具", serverFixture: "服务端固定夹具", argumentsHidden: "原始动作参数不在界面或普通审计中显示；这里只展示安全绑定字段。", expected: "预期", demoResult: "验证结果", chooseScenario: "选择一个场景查看执行许可路径。", notAvailable: "当前服务端尚未提供这个核心夹具。", requestFailed: "夹具运行失败", upstreamTool: "上游工具", invoked: "已调用", notInvoked: "未调用", unknownInvocation: "NOT REPORTED", attempts: "验证尝试", truthfulDemo: "证据标签：simulated_demo。它是回归夹具，不是生产遥测。",
+    scenarioValidTitle: "A · 有效许可证", scenarioValidDescription: "精确动作通过验证，执行边界消费许可证后才调用上游工具。", scenarioValidExpected: "VERIFIED → CONSUMED",
+    scenarioMutationTitle: "B · 动作变更 / TOCTOU", scenarioMutationDescription: "授权后更改安全相关参数，动作摘要不再匹配，上游工具不会被调用。", scenarioMutationExpected: "ACTION_MISMATCH → BLOCK",
+    scenarioReplayTitle: "C · 许可证重放", scenarioReplayDescription: "第一次消费成功；同一许可证的第二次使用被 ReplayGuard 阻断。", scenarioReplayExpected: "VERIFIED → REPLAYED",
+    scenarioExpiredTitle: "D · 许可证过期", scenarioExpiredDescription: "短时许可证超过有效期后，在执行边界被拒绝。", scenarioExpiredExpected: "EXPIRED → BLOCK",
+    inventoryCopy: "该功能不属于执行许可证主线，仅在服务端明确启用实验性清单时显示。", noInventory: "没有实验性清单数据。发现能力保持冻结且默认关闭。", experimentalOnly: "实验性 / 非产品主线",
+    footerTruth: "签名 · 动作绑定 · 短时 · 单次使用 · 不记录秘密", refreshed: "数据已刷新。", loading: "加载中…", unknown: "UNKNOWN"
   },
   en: {
-    skipContent: "Skip to main content", brandSubtitle: "A Policy-Driven Security Router for AI Agents", navOverview: "Overview", navDecisions: "Decisions",
-    navInvestigations: "Audit / Investigations", navPolicies: "Policies", navInventory: "Agent Inventory", navDemo: "Demo Lab", doctrineLabel: "Zero-trust principle",
-    doctrine: "Approving an Agent to exist does not approve its behavior.", controlPlane: "Security control plane", checking: "Checking", online: "Policy engine online", offline: "Control plane unavailable", refresh: "Refresh",
-    overviewTitle: "Runtime posture", decisionsTitle: "Per-action decisions", investigationsTitle: "Audit & investigations", policiesTitle: "Authorization policies", inventoryTitle: "Agent inventory", demoTitle: "Demo lab",
-    runtimeFirst: "RUNTIME ENFORCEMENT FIRST", overviewHero: "Clear every action before it crosses the boundary.", overviewCopy: "Aegis verifies identity, delegated authority, and action constraints between Agents and tools or resources, then bounds execution with an Authorization Envelope.",
-    identity: "Identity", policy: "Policy", risk: "Risk", dispatch: "Dispatch", observation: "Observation", audit: "Audit", securityBoundary: "Security boundary", envelopeIsBoundary: "Authorization Envelope, not the Agent's declared plan", governedIdentities: "Governed identities",
-    allowedActions: "Permitted actions", restrictedActions: "Restricted execution", sandboxRoutes: "Sandbox routes", blockedActions: "Blocked pre-execution", needsReview: "Awaiting review",
-    decisionStream: "DECISION STREAM", recentDecisions: "Recent decisions", viewAll: "View all", attentionQueue: "ATTENTION QUEUE", blockedAndViolations: "Blocks & violations",
-    evidencePlane: "EVIDENCE PLANE", runtimeCoverage: "Runtime coverage", unknownNotZero: "UNKNOWN ≠ 0", coverageCopy: "Only connected, source-labeled evidence is shown. Disconnected sensors remain unknown.",
-    identityPlane: "IDENTITY PLANE", workloadIdentities: "Agent workloads", openInventory: "Open inventory", registered: "Registered", evidenceOnly: "Evidence only",
-    identityBoundary: "Registration asks whether a workload may participate; policy asks whether it may perform this action now.", runtimeGateway: "RUNTIME GATEWAY", decisionsCopy: "Authorization and risk are evaluated separately. A numerical risk score never overrides an explicit policy denial.",
-    tryDemo: "Run a security scenario", all: "All", blocked: "Blocked", permitted: "Permitted", evidenceChain: "EVIDENCE CHAIN", investigationsCopy: "Preserve an explainable decision and evidence chain from request context to final verdict.",
-    boundaryEvents: "BOUNDARY EVENTS", violationsAndBlocks: "Violations & blocks", runtimeEvidence: "RUNTIME EVIDENCE", sourceAndTrust: "Source & trust", evidenceRule: "Self-report, adapters, OS sensors, and network sensors must never collapse into one generic “Observed” state.",
-    policyPlane: "POLICY PLANE", policiesCopy: "Authorize explicitly across identity, delegation, capability, tool, resource, operation, and constraints.", assetRegistration: "Asset registration", mayParticipate: "May this workload participate in the governed environment?",
-    actionAuthorization: "Per-action authorization", mayActNow: "May it perform this action now under this delegated authority?", evaluationOrder: "EVALUATION INPUTS", authorizationAnatomy: "Authorization anatomy", principalAndAgent: "Principal + Agent identity",
-    principalAndAgentCopy: "Human or service principal and the actual workload", delegatedAuthority: "Delegated authority", delegatedAuthorityCopy: "Credential fingerprint, issuer, subject, scopes, and expiry", capabilityAndTool: "Capability + tool",
-    capabilityAndToolCopy: "Granted capability, tool identity, and schema", resourceAndOperation: "Resource + operation", resourceAndOperationCopy: "Resource class, read/write/admin, and side effects", constraints: "Execution constraints", constraintsCopy: "Network, secrets, writes, duration, and executor profile",
-    observedRules: "OBSERVED RULES", rulesSeenInAudits: "Rules seen in audits", notPolicyEditor: "READ-ONLY EVIDENCE", policyApiNote: "The UI does not pretend an unexposed policy editing API exists. This list only summarizes rules present in real audit records.",
-    securityObject: "SECURITY OBJECT", envelopeTitle: "Authorization Envelope", envelopeCopy: "Only ALLOW, RESTRICT, or SANDBOX can produce an envelope. Runtime events must bind to it and undergo boundary checks.",
-    visibilityModule: "OPTIONAL VISIBILITY MODULE", inventoryCopy: "Discovery evidence can identify workload candidates, but a dependency, plugin, or cache file is not an Agent identity.", rescan: "Rescan", scanCoverage: "Scan coverage",
-    workloadEvidence: "WORKLOAD EVIDENCE", deployedCandidates: "Deployed / configured candidates", availableIntegrations: "Discovery evidence / available integrations", availableDisclosure: "Marketplace, catalog, cache, and dependency clues stay collapsed and do not count as running Agents.",
-    admissionRegistry: "ADMISSION REGISTRY", approvedWorkloads: "Registered workloads", registryBoundary: "Registration controls workload admission only. Every action still passes through policy and audit.", addOrEditRegistration: "Add or edit registration",
-    agentName: "Agent name", agentType: "Agent type", pathEvidence: "Evidence path fragment", relativeEvidenceOnly: "Use a stable fragment relative to the scan root only.", fingerprint: "Discovery fingerprint", owner: "Owner", environment: "Environment",
-    approvalRef: "Approval reference", expiresOn: "Expires on", registryState: "Registry state", active: "Active", suspended: "Suspended", policyProfile: "Policy profile", saveRegistration: "Save registration", clearForm: "Clear",
-    safeFixtures: "SAFE FIXTURES", demoCopy: "Six scenarios exercise authorization and detection as regression fixtures—not production telemetry.", truthfulDemo: "Behavior evidence generated here is explicitly labeled simulated_demo.", sandboxTruth: "SANDBOX is a route only. Isolation backend: NOT CONNECTED / DEMO.",
-    scenarioLibrary: "SCENARIO LIBRARY", securityScenarios: "Security scenarios", actionRequest: "ACTION REQUEST", chooseScenario: "Choose a scenario", requestPayload: "Server-owned fixture (read-only)", privacyNote: "The request is fixed by the server-owned scenario; never place real tokens, secrets, prompt contents, or personal paths here.", authorizeAction: "Run scenario",
-    footerTruth: "Default deny · per-action authorization · source-labeled audit", noDecisions: "No gateway decisions yet. Run a safe fixture in Demo Lab.", noAlerts: "No blocked requests or authorization-boundary violations.", noRuntimeEvidence: "No source-labeled runtime evidence. Unknown does not mean no behavior.",
-    noInventory: "No deployed or configured Agent candidates were found.", noAvailableEvidence: "No available integration or dependency evidence.", noRegistrations: "The registry is empty. Unmatched deployed workloads are Shadow.", noRules: "No audit records exist from which to summarize matched rules.",
-    principal: "Principal", principalType: "Principal type", agentIdentity: "Agent identity", workload: "Workload", issuer: "Issuer", delegatedSubject: "Delegated subject", scopes: "Delegated scopes", credential: "Credential fingerprint",
-    requestedAction: "Requested action", capability: "Capability", tool: "Tool", resource: "Resource", operation: "Operation", sideEffect: "Side effect", policyDecision: "Policy decision", riskAssessment: "Risk assessment", dispatchDecision: "Dispatch decision",
-    matchedRules: "Matched rules", riskSignals: "Risk signals", selectedExecutor: "Executor", finalVerdict: "Final verdict", duration: "Duration", permitId: "Permit ID", issuedAt: "Issued at", expiresAt: "Expires at", allowedOperations: "Allowed operations",
-    permitNotIssued: "No execution permit issued", deniedBeforeExecution: "Policy blocked the request before execution, so no Authorization Envelope exists.", legacyEnvelopeMissing: "The legacy response has no Authorization Envelope. The UI will not infer a permit from an ALLOW result.",
-    runtimeEvents: "Runtime events", source: "Source", trust: "Trust", violation: "Authorization boundary violation", withinEnvelope: "Inside envelope", isolationBackend: "Isolation backend", notConnectedDemo: "NOT CONNECTED / DEMO",
-    unknown: "UNKNOWN", notInstrumented: "NOT INSTRUMENTED", instrumented: "INSTRUMENTED", adapterReported: "ADAPTER REPORTED", simulatedDemo: "SIMULATED DEMO", selfReported: "AGENT SELF-REPORTED", connected: "CONNECTED",
-    gatewayRequests: "Gateway requests", toolEvents: "Tool events", filesystem: "Filesystem", network: "Network", osSyscalls: "OS syscalls", isolation: "Isolation execution", derivedFromAudit: "Derived from gateway audit records", noSensor: "No independent sensor connected", noAdapterEvidence: "No adapter evidence", demoOnly: "Demo backend only",
-    approved: "Registered", unassessed: "Unassessed", available: "Available only", installed: "Installed", configured: "Configured", observed: "Observed", discoveryConfidence: "Discovery confidence", potentialExposure: "Potential exposure", unclassified: "Unclassified", prepareRegistration: "Prepare registration",
-    edit: "Edit", remove: "Remove", confirmRemove: "Remove this registration? The workload may become Shadow after reconciliation.", registrationSaved: "Registration saved and discovery reconciled.", registrationRemoved: "Registration removed and discovery reconciled.", scanComplete: "Scan complete. Inventory refreshed.", scanIncomplete: "Some scan sources are unreadable; coverage remains UNKNOWN.",
-    expected: "Expected", authorizing: "Authorizing…", inspectDecision: "Inspect full decision", demoEvidence: "Demo evidence", noExecutionEvidence: "No runtime events exist. The system does not rewrite “no evidence received” as “zero behavior.”", requestFailed: "Request failed", refreshed: "Data refreshed."
+    skipContent: "Skip to main content", brandSubtitle: "Execution permits for AI Agent actions", navDecisions: "Decisions", navPermits: "Permits", navAudit: "Audit", navDemo: "Demo", navInventory: "Experimental inventory",
+    invariantLabel: "Execution invariant", invariant: "The action authorized must be exactly the action executed.", checking: "Checking", online: "Execution permit service online", offline: "Execution permit service unavailable", productClass: "Execution permit layer", refresh: "Refresh",
+    decisionsTitle: "Action decisions", permitsTitle: "Execution permits", auditTitle: "Execution authorization audit", demoTitle: "Permit verification lab", inventoryTitle: "Experimental Agent inventory",
+    referenceMonitor: "REFERENCE MONITOR / PRE-EXECUTION", heroTitle: "Execution Permits for AI Agent Actions", heroLine: "Authorize once. Execute exactly what was authorized.", heroDescription: "Before a real tool side effect, the execution boundary verifies and consumes a signed, short-lived, action-bound, single-use permit.", runDemo: "Prove four security outcomes",
+    normalize: "Normalize", authorize: "Authorize", issue: "Issue", verify: "Verify", consume: "Consume", authorizedCopy: "Explicitly authorized", deniedCopy: "Denied before execution", violationsCopy: "Verification failures", replayCopy: "Repeated use blocked",
+    executionActivity: "EXECUTION ACTIVITY", recentActivity: "Recent activity", unknownRule: "NOT REPORTED ≠ VERIFIED", agent: "Agent", action: "Action", permit: "Permit", verificationResult: "Verification result", inspect: "Inspect", noActivity: "No action decisions yet. Run a server-owned safety fixture in Demo.",
+    decisionDetail: "Decision detail", selectActivity: "Select an activity to inspect its action binding and verification result.", authorization: "Authorization", requestId: "Request ID", principal: "Principal", workload: "Workload", tool: "Tool", capability: "Capability", resource: "Resource", operation: "Operation", actionDigest: "Action digest", policyVersion: "Policy version", obligations: "Execution obligations", evidenceSource: "Evidence source", noObligations: "No reported obligations", noEvidence: "NOT REPORTED — no source-labeled execution evidence", compatibilityHint: "Compatibility response: no execution-boundary verification result exists, so the UI does not infer execution or safety.",
+    credentialLedger: "EXECUTION CREDENTIAL LEDGER", permitsCopy: "Only safe correlation and binding fields are shown. Permit tokens and raw sensitive arguments are never rendered.", tokenHidden: "permit_token: NEVER RENDERED", all: "All", failed: "Failed", noPermits: "No permits to display. Denied decisions do not issue permits.",
+    permitDetail: "Permit detail", selectPermit: "Select a permit to inspect its safe claims.", state: "State", permitId: "Permit ID / jti", issuer: "Issuer", issuedAt: "Issued at", expiresAt: "Expires at", consumedAt: "Consumed at", singleUse: "Single use", credentialFingerprint: "Delegated credential fingerprint", permitFormat: "Signing format", neverStored: "The token and raw sensitive arguments are neither retained nor shown in this view.", lifecycle: "Permit lifecycle", issued: "Issued", verified: "Verified", consumed: "Consumed", terminal: "Terminal state", notReported: "NOT REPORTED", legacyEnvelope: "Compatibility authorization envelope; not a self-verifying credential",
+    receiptLedger: "EXPLAINABLE RECEIPTS", auditCopy: "Each receipt connects the policy decision, permit state, execution-boundary verification, and source-labeled evidence.", criticalControl: "Critical control", preExecution: "Pre-execution permit verification", preExecutionCopy: "Only VERIFIED may invoke the upstream tool.", additionalEvidence: "Additional evidence", postExecution: "During / post-execution telemetry", postExecutionCopy: "Sources and trust stay distinct; UNKNOWN is never rewritten as SAFE.", auditReceipts: "AUDIT RECEIPTS", latestReceipts: "Recent receipts", noAudits: "No audit receipts yet.", finalVerdict: "Final verdict", timestamp: "Timestamp", receiptSafe: "Safe receipt: no permit token, delegated token, or raw action arguments.",
+    safeFixtures: "SAFE / SERVER-OWNED FIXTURES", demoCopy: "Four scenarios directly prove action binding, short lifetime, and single-use consumption. All behavior evidence is labeled simulated_demo.", primaryProofs: "PRIMARY PROOFS", fourScenarios: "Four core scenarios", advancedFixtures: "Advanced regression fixtures", advancedCopy: "Existing security fixtures remain for regression, but do not define the primary product story.", runScenario: "Run server fixture", serverFixture: "Server-owned fixture", argumentsHidden: "Raw action arguments are not shown or placed in normal audit. Only safe binding fields appear here.", expected: "Expected", demoResult: "Verification result", chooseScenario: "Choose a scenario to inspect the execution-permit path.", notAvailable: "The current server does not expose this core fixture yet.", requestFailed: "Fixture run failed", upstreamTool: "Upstream tool", invoked: "Invoked", notInvoked: "Not invoked", unknownInvocation: "NOT REPORTED", attempts: "Verification attempts", truthfulDemo: "Evidence label: simulated_demo. This is a regression fixture, not production telemetry.",
+    scenarioValidTitle: "A · Valid permit", scenarioValidDescription: "The exact action verifies; the boundary consumes the permit before invoking the upstream tool.", scenarioValidExpected: "VERIFIED → CONSUMED",
+    scenarioMutationTitle: "B · Action mutation / TOCTOU", scenarioMutationDescription: "A security-relevant argument changes after authorization, the digest mismatches, and the upstream tool is not invoked.", scenarioMutationExpected: "ACTION_MISMATCH → BLOCK",
+    scenarioReplayTitle: "C · Permit replay", scenarioReplayDescription: "The first consumption succeeds; ReplayGuard blocks a second use of the same permit.", scenarioReplayExpected: "VERIFIED → REPLAYED",
+    scenarioExpiredTitle: "D · Expired permit", scenarioExpiredDescription: "A short-lived permit is rejected at the execution boundary after its expiry.", scenarioExpiredExpected: "EXPIRED → BLOCK",
+    inventoryCopy: "This is outside the execution-permit core and appears only when the server explicitly enables experimental inventory.", noInventory: "No experimental inventory data. Discovery remains frozen and disabled by default.", experimentalOnly: "Experimental / not product core",
+    footerTruth: "Signed · action-bound · short-lived · single-use · secret-free audit", refreshed: "Data refreshed.", loading: "Loading…", unknown: "UNKNOWN"
   }
 };
 
 const viewTitles: Record<ViewName, { key: string; kicker: string }> = {
-  overview: { key: "overviewTitle", kicker: "OVERVIEW" }, decisions: { key: "decisionsTitle", kicker: "DECISIONS" },
-  investigations: { key: "investigationsTitle", kicker: "AUDIT / INVESTIGATIONS" }, policies: { key: "policiesTitle", kicker: "POLICIES" },
-  inventory: { key: "inventoryTitle", kicker: "AGENT INVENTORY" }, demo: { key: "demoTitle", kicker: "DEMO LAB" }
+  decisions: { key: "decisionsTitle", kicker: "DECISIONS" },
+  permits: { key: "permitsTitle", kicker: "PERMITS" },
+  audit: { key: "auditTitle", kicker: "AUDIT" },
+  demo: { key: "demoTitle", kicker: "DEMO" },
+  inventory: { key: "inventoryTitle", kicker: "EXPERIMENTAL" }
 };
 
 const state: {
   locale: Locale;
   view: ViewName;
   decisions: Decision[];
-  selectedDecision: string;
-  decisionFilter: string;
+  permits: Permit[];
+  audits: Decision[];
   scenarios: Scenario[];
-  selectedScenario: string;
-  coverage: CoverageSource[];
-  sessionEvents: RuntimeEvidence[];
-  inventory: InventoryState;
-  modernAgentsAPI: boolean;
+  selectedDecisionId: string;
+  selectedPermitId: string;
+  selectedScenarioId: string;
+  permitFilter: string;
+  demoOutcome: DemoOutcome | null;
+  inventoryEnabled: boolean;
+  inventory: JsonObject[];
 } = {
-  locale: localStorage.getItem("aegis-locale") === "en" ? "en" : "zh-CN",
-  view: "overview", decisions: [], selectedDecision: "", decisionFilter: "all", scenarios: [], selectedScenario: "", coverage: [], sessionEvents: [],
-  inventory: { agents: [], approvals: [], governedCount: 0, agentTypes: [], scannedAt: "", rootCount: 0, gaps: [], truncated: false }, modernAgentsAPI: false
+  locale: (localStorage.getItem("aegis-locale") === "en" ? "en" : "zh-CN"),
+  view: "decisions", decisions: [], permits: [], audits: [], scenarios: [], selectedDecisionId: "", selectedPermitId: "", selectedScenarioId: "", permitFilter: "all", demoOutcome: null, inventoryEnabled: false, inventory: []
 };
 
-class HTTPError extends Error {
-  constructor(public readonly status: number, message: string) { super(message); }
-}
-
 function qs<T extends HTMLElement>(selector: string): T {
-  const node = document.querySelector<T>(selector);
-  if (!node) throw new Error(`Missing UI element: ${selector}`);
-  return node;
+  const element = document.querySelector<T>(selector);
+  if (!element) throw new Error(`Missing UI element: ${selector}`);
+  return element;
 }
 
 function node<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text = ""): HTMLElementTagNameMap[K] {
@@ -252,195 +157,224 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", tex
 }
 
 function tr(key: string): string { return copy[state.locale][key] ?? key; }
-function record(value: unknown): JsonObject { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {}; }
-function list(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
+function object(value: unknown): JsonObject { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {}; }
+function array(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
 function get(value: unknown, path: string): unknown {
-  return path.split(".").reduce<unknown>((current, key) => record(current)[key], value);
+  return path.split(".").reduce<unknown>((current, segment) => object(current)[segment], value);
 }
 function first(value: unknown, paths: string[]): unknown {
   for (const path of paths) { const candidate = get(value, path); if (candidate !== undefined && candidate !== null && candidate !== "") return candidate; }
   return undefined;
 }
-function textValue(value: unknown, paths: string[], fallback = "—"): string {
+function boolValue(value: unknown, paths: string[]): boolean | null {
   const candidate = first(value, paths);
-  return typeof candidate === "string" || typeof candidate === "number" || typeof candidate === "boolean" ? String(candidate) : fallback;
+  return typeof candidate === "boolean" ? candidate : null;
 }
-function strings(value: unknown, paths: string[]): string[] {
+function rawText(value: unknown, paths: string[], fallback = ""): string {
   const candidate = first(value, paths);
-  if (Array.isArray(candidate)) return candidate.map(item => typeof item === "string" ? item : textValue(item, ["name", "id", "rule"], "")).filter(Boolean);
-  if (typeof candidate === "string" && candidate) return [candidate];
+  if (typeof candidate === "string" || typeof candidate === "number") return String(candidate).trim();
+  return fallback;
+}
+function safeText(value: unknown, paths: string[], fallback = ""): string { return privacySafe(rawText(value, paths, fallback)); }
+function stringList(value: unknown, paths: string[]): string[] {
+  const candidate = first(value, paths);
+  if (Array.isArray(candidate)) return candidate.filter(item => typeof item === "string").map(item => privacySafe(item as string));
   return [];
 }
-function numberValue(value: unknown, paths: string[]): number | null {
-  const candidate = first(value, paths);
-  return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : null;
-}
+function upper(value: string, fallback = "UNKNOWN"): string { return value ? value.replaceAll("-", "_").replaceAll(" ", "_").toUpperCase() : fallback; }
 function slug(value: string): string { return value.toLowerCase().replaceAll("_", "-").replace(/[^a-z0-9-]/g, "-"); }
-function titleToken(value: string): string { return value ? value.replaceAll("_", " ").toUpperCase() : tr("unknown"); }
-function shortID(value: string): string { return value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-7)}` : value; }
-function formatTime(value: string, compact = false): string {
-  if (!value) return tr("unknown");
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) return value;
-  return compact ? new Intl.DateTimeFormat(state.locale, { hour: "2-digit", minute: "2-digit" }).format(date) : new Intl.DateTimeFormat(state.locale, { dateStyle: "medium", timeStyle: "short" }).format(date);
-}
-
+function shortID(value: string): string { return value.length > 24 ? `${value.slice(0, 11)}…${value.slice(-8)}` : (value || "—"); }
 function privacySafe(value: string): string {
-  if (!value) return "—";
-  const normalized = value.replaceAll("\\", "/");
-  if (!/^(?:[a-z]:\/|\/Users\/|\/home\/)/i.test(normalized) && !/[a-z]:\/Users\/[^/]+/i.test(normalized)) return value;
-  const lower = normalized.toLowerCase();
-  const filename = normalized.split("/").filter(Boolean).at(-1) || "item";
-  if (/secret|\.env|\.ssh|credential|token|vault/.test(lower)) return `SECRET_STORE / ${filename}`;
-  if (/workbuddy|agent|mcp/.test(lower)) return `USER_PROFILE / AGENT_CONFIG / ${filename}`;
-  if (/repo|workspace|source|\/src\//.test(lower)) return `WORKSPACE / SOURCE / ${filename}`;
-  if (/config|setting/.test(lower)) return `PROTECTED_CONFIG / ${filename}`;
-  return `LOCAL_PATH / ${filename}`;
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/\b(?:bearer|token|secret|password)\s*[:=]\s*\S+/i.test(trimmed) || /^(?:ghp_|github_pat_|sk-)[A-Za-z0-9_-]{12,}/.test(trimmed)) return "[REDACTED]";
+  if (/^[A-Za-z]:\\/.test(trimmed) || /^\/(?:Users|home)\//i.test(trimmed)) return "[LOCAL_RESOURCE_REDACTED]";
+  return trimmed;
 }
-
-function fingerprintSafe(value: string): string {
-  if (!value || value === "—") return value;
-  return value.length > 20 ? `${value.slice(0, 11)}…${value.slice(-6)}` : value;
+function formatTime(value: string): string {
+  if (!value) return tr("notReported");
+  const numeric = /^\d{10}(?:\.\d+)?$/.test(value) ? Number(value) * 1000 : Number.NaN;
+  const parsed = new Date(Number.isNaN(numeric) ? value : numeric);
+  return Number.isNaN(parsed.getTime()) ? privacySafe(value) : new Intl.DateTimeFormat(state.locale, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(parsed);
+}
+function extractArray(payload: unknown, keys: string[]): unknown[] {
+  if (Array.isArray(payload)) return payload;
+  for (const key of keys) { const candidate = get(payload, key); if (Array.isArray(candidate)) return candidate; }
+  return [];
 }
 
 async function requestJSON(url: string, options?: RequestInit): Promise<unknown> {
-  const response = await fetch(url, options);
-  const payload = await response.json().catch(() => ({ message: `HTTP ${response.status}` }));
-  if (!response.ok) throw new HTTPError(response.status, textValue(payload, ["message", "error"], `HTTP ${response.status}`));
-  return payload;
+  const response = await fetch(url, { headers: { Accept: "application/json", ...(options?.body ? { "Content-Type": "application/json" } : {}) }, ...options });
+  if (!response.ok) {
+    let code = `HTTP_${response.status}`;
+    try { code = rawText(await response.json(), ["error"], code); } catch { /* status is sufficient */ }
+    throw new Error(code);
+  }
+  return response.json();
 }
-
 async function optionalJSON(url: string): Promise<unknown | null> {
   try { return await requestJSON(url); } catch { return null; }
 }
 
-function extractArray(payload: unknown, keys: string[]): unknown[] {
-  if (Array.isArray(payload)) return payload;
-  for (const key of keys) { const value = get(payload, key); if (Array.isArray(value)) return value; }
-  return [];
-}
-
-function normalizeEnvelope(rawDecision: JsonObject): Envelope | null {
-  const source = first(rawDecision, ["authorization_envelope", "execution_permit", "permit", "authorization.envelope"]);
-  if (!source || typeof source !== "object") return null;
-  const constraintsSource = record(first(source, ["constraints"]));
-  const constraints: Record<string, string> = {};
-  Object.entries(constraintsSource).forEach(([key, value]) => {
-    if (Array.isArray(value)) constraints[key] = value.map(String).join(", ");
-    else if (["string", "number", "boolean"].includes(typeof value)) constraints[key] = String(value);
+function normalizeObligations(value: unknown): string[] {
+  const explicit = stringList(value, ["obligations", "execution_obligations"]);
+  if (explicit.length) return explicit.map(item => upper(item));
+  const claimsExplicit = stringList(value, ["claims.obligations"]);
+  if (claimsExplicit.length) return claimsExplicit.map(item => upper(item));
+  const source = object(first(value, ["obligations", "execution_obligations", "constraints", "claims.obligations"]));
+  return Object.entries(source).flatMap(([key, item]) => {
+    if (item === true) return [upper(key)];
+    if (typeof item === "string" && item && !["allow", "allowed", "none", "false"].includes(item.toLowerCase())) return [`${upper(key)}: ${upper(item)}`];
+    return [];
   });
+}
+
+function normalizeVerification(value: unknown): string {
+  const direct = upper(rawText(value, ["verification_result", "verification_outcome", "verification.result", "verification.outcome", "permit.verification_result", "execution_permit.verification_result", "receipt.verification_outcome", "verdict", "final_verdict"], ""), "");
+  const aliases: Record<string, string> = {
+    PERMIT_ACTION_MISMATCH: "ACTION_MISMATCH", PERMIT_EXPIRED: "EXPIRED", PERMIT_REPLAY: "REPLAYED", PERMIT_INVALID_SIGNATURE: "INVALID_SIGNATURE", PERMIT_REVOKED: "REVOKED",
+    EXECUTED_WITH_VALID_PERMIT: "VERIFIED", EXECUTION_COMPLETED: "VERIFIED", COMPLETED: "VERIFIED"
+  };
+  if (aliases[direct]) return aliases[direct];
+  const recognized = ["VERIFIED", "EXPIRED", "INVALID_SIGNATURE", "ACTION_MISMATCH", "WRONG_PRINCIPAL", "WRONG_AGENT", "WRONG_WORKLOAD", "WRONG_DELEGATION", "WRONG_TOOL", "WRONG_CAPABILITY", "WRONG_RESOURCE", "WRONG_OPERATION", "REPLAYED", "REVOKED", "INVALID_ISSUER", "UNKNOWN_PERMIT", "INVALID_PERMIT", "INVALID_ACTION", "NOT_YET_VALID"];
+  if (recognized.includes(direct)) return direct;
+  return "NOT_REPORTED";
+}
+
+function normalizePermit(value: unknown): Permit | null {
+  const id = safeText(value, ["permit_id", "jti", "claims.jti", "claims.permit_id", "permit.permit_id", "permit.jti", "execution_permit.permit_id", "authorization_envelope.permit_id"]);
+  if (!id) return null;
+  const consumedAt = safeText(value, ["consumed_at", "permit.consumed_at", "execution_permit.consumed_at", "receipt.consumed_at"]);
+  let permitState = upper(rawText(value, ["state", "permit_state", "permit.state", "execution_permit.state", "receipt.permit_state"], ""), "");
+  if (!permitState && consumedAt) permitState = "CONSUMED";
+  if (!permitState) permitState = "UNKNOWN";
+  const format = safeText(value, ["signature_algorithm", "algorithm", "alg", "permit.signature_algorithm", "execution_permit.signature_algorithm", "format"]);
+  const operationList = stringList(value, ["allowed_operations", "authorization_envelope.allowed_operations"]);
   return {
-    permitId: textValue(source, ["permit_id", "id"], "—"), principal: textValue(source, ["principal_id", "principal"], "—"),
-    agent: textValue(source, ["agent_id", "agent"], "—"), capability: textValue(source, ["allowed_capability", "capability"], "—"),
-    tool: textValue(source, ["allowed_tool", "tool", "tool_id"], "—"), resource: privacySafe(textValue(source, ["allowed_resource", "resource", "resource_class"], "—")),
-    operations: strings(source, ["allowed_operations", "operations"]), constraints,
-    issuedAt: textValue(source, ["issued_at"], "—"), expiresAt: textValue(source, ["expires_at", "expiry"], "—")
+    id,
+    state: permitState,
+    requestId: safeText(value, ["request_id", "claims.request_id", "permit.request_id", "execution_permit.request_id", "authorization_envelope.request_id"]),
+    principal: safeText(value, ["principal", "principal_id", "claims.principal", "claims.principal_id", "permit.principal", "authorization_envelope.principal_id"]),
+    agent: safeText(value, ["agent", "agent_id", "claims.agent", "claims.agent_id", "permit.agent", "authorization_envelope.agent_id"]),
+    workload: safeText(value, ["workload", "workload_id", "claims.workload", "claims.workload_id", "permit.workload", "authorization_envelope.workload_id"]),
+    delegationFingerprint: safeText(value, ["delegated_authority_fingerprint", "delegated_credential_fingerprint", "claims.delegated_authority_fingerprint", "permit.delegated_authority_fingerprint", "authorization_envelope.delegated_credential_fingerprint"]),
+    tool: safeText(value, ["tool", "allowed_tool", "claims.tool", "permit.tool", "authorization_envelope.allowed_tool"]),
+    capability: safeText(value, ["capability", "allowed_capability", "claims.capability", "permit.capability", "authorization_envelope.allowed_capability"]),
+    resource: safeText(value, ["resource", "allowed_resource", "claims.resource", "permit.resource", "authorization_envelope.allowed_resource"]),
+    operation: safeText(value, ["operation", "claims.operation", "permit.operation", "authorization_envelope.operation"], operationList[0] ?? ""),
+    actionDigest: safeText(value, ["action_digest", "canonical_action_digest", "claims.action_digest", "permit.action_digest", "execution_permit.action_digest", "authorization_envelope.action_digest"]),
+    policyVersion: safeText(value, ["policy_version", "claims.policy_version", "permit.policy_version", "execution_permit.policy_version"]),
+    issuer: safeText(value, ["issuer", "iss", "claims.iss", "permit.issuer", "execution_permit.issuer"]),
+    issuedAt: safeText(value, ["issued_at", "iat", "claims.iat", "permit.issued_at", "authorization_envelope.issued_at"]),
+    expiresAt: safeText(value, ["expires_at", "exp", "claims.exp", "permit.expires_at", "authorization_envelope.expires_at"]),
+    consumedAt,
+    verification: normalizeVerification(value),
+    obligations: normalizeObligations(first(value, ["permit", "execution_permit", "authorization_envelope", "receipt", "obligations"]) ?? value),
+    format: format || (get(value, "authorization_envelope") ? "LEGACY_ENVELOPE" : "NOT_REPORTED"),
+    singleUse: boolValue(value, ["single_use", "claims.single_use", "permit.single_use", "execution_permit.single_use"])
   };
 }
 
-function normalizeRuntimeEvent(rawEvent: unknown, index: number, violations: string[], violatingEventIDs: Set<string> = new Set()): RuntimeEvidence {
-  const capability = textValue(rawEvent, ["capability", "action_class"], "—");
-  const operation = textValue(rawEvent, ["operation", "event_type", "action"], capability);
-  const resource = privacySafe(textValue(rawEvent, ["resource_class", "resource", "target_resource"], "—"));
-  const eventID = textValue(rawEvent, ["event_id", "id", "sequence"], `event-${index + 1}`);
-  const violationFlag = first(rawEvent, ["violation", "envelope_violation"]) === true || first(rawEvent, ["allowed", "within_authorization_envelope"]) === false;
-  const combined = `${capability} ${operation} ${resource}`.toLowerCase();
+function normalizeAuthorization(value: unknown): string {
+  const direct = upper(rawText(value, ["authorization_decision", "authorization", "decision", "receipt.authorization_decision"], ""), "");
+  if (["AUTHORIZED", "DENIED", "REQUIRES_APPROVAL"].includes(direct)) return direct;
+  const authorized = boolValue(value, ["policy_decision.authorized", "authorized"]);
+  if (authorized === true) return "AUTHORIZED";
+  if (authorized === false) return "DENIED";
+  const route = upper(rawText(value, ["policy_decision.route", "dispatch_decision.route", "route"], ""), "");
+  if (route === "DENY") return "DENIED";
+  if (route === "ESCALATE") return "REQUIRES_APPROVAL";
+  if (["ALLOW", "RESTRICT", "SANDBOX"].includes(route)) return "AUTHORIZED";
+  return "UNKNOWN";
+}
+
+function normalizeDecision(value: unknown): Decision {
+  const permitSource = first(value, ["permit", "execution_permit", "authorization_envelope", "receipt.permit"]);
+  const permit = normalizePermit(permitSource ?? value);
+  const eventSources = extractArray(first(value, ["runtime_observation.events", "runtime_events", "events"]), []).map(item => safeText(item, ["source"])).filter(Boolean);
+  const directSources = stringList(value, ["evidence_sources"]);
+  const actionDigest = safeText(value, ["action_digest", "canonical_action_digest", "request.action_digest", "receipt.action_digest"], permit?.actionDigest ?? "");
+  const operation = safeText(value, ["operation", "request.action.operation", "request.data_access.operation", "receipt.operation"], permit?.operation ?? "");
   return {
-    id: eventID,
-    source: textValue(rawEvent, ["source"], "unknown"), trust: textValue(rawEvent, ["trust_level", "trust"], "unknown"),
-    capability, tool: textValue(rawEvent, ["tool", "tool_id", "tool_name"], "—"), operation, resource,
-    timestamp: textValue(rawEvent, ["timestamp", "observed_at", "created_at"], ""),
-    violation: violationFlag || violatingEventIDs.has(eventID) || violations.some(item => combined.includes(item.toLowerCase()) || item.toLowerCase().includes(operation.toLowerCase()))
+    id: safeText(value, ["decision_id", "id", "request_id", "receipt.decision_id", "receipt.request_id"], permit?.requestId || permit?.id || crypto.randomUUID()),
+    requestId: safeText(value, ["request_id", "receipt.request_id"], permit?.requestId ?? ""),
+    createdAt: safeText(value, ["timestamp", "created_at", "issued_at", "receipt.timestamp"], permit?.issuedAt ?? ""),
+    principal: safeText(value, ["principal", "principal_id", "request.principal.principal_id", "request.user_id", "receipt.principal"], permit?.principal ?? ""),
+    agent: safeText(value, ["agent", "agent_id", "request.agent.agent_id", "request.agent_id", "receipt.agent"], permit?.agent ?? ""),
+    workload: safeText(value, ["workload", "workload_id", "request.agent.workload_id", "receipt.workload"], permit?.workload ?? ""),
+    tool: safeText(value, ["tool", "request.tool.name", "request.tool.tool_id", "request.tool_identity.name", "receipt.tool"], permit?.tool ?? ""),
+    capability: safeText(value, ["capability", "request.action.capability", "request.requested_capability", "receipt.capability"], permit?.capability ?? ""),
+    resource: safeText(value, ["resource", "request.action.target_resource", "request.target_resource", "receipt.resource"], permit?.resource ?? ""),
+    operation,
+    actionDigest,
+    authorization: normalizeAuthorization(value),
+    policyVersion: safeText(value, ["policy_version", "receipt.policy_version"], permit?.policyVersion ?? ""),
+    policyReasons: stringList(value, ["policy_reasons", "policy_decision.reasons", "receipt.reasons"]),
+    obligations: normalizeObligations(value).length ? normalizeObligations(value) : (permit?.obligations ?? []),
+    verification: normalizeVerification(value) !== "NOT_REPORTED" ? normalizeVerification(value) : (permit?.verification ?? "NOT_REPORTED"),
+    verdict: upper(rawText(value, ["final_verdict", "verdict", "receipt.final_verdict"], "UNKNOWN")),
+    evidenceSources: [...new Set([...directSources, ...eventSources])],
+    permit
   };
 }
 
-function normalizeDecision(input: unknown): Decision {
-  const wrapped = record(input);
-  const raw = Object.keys(record(wrapped.audit)).length ? record(wrapped.audit) : Object.keys(record(wrapped.record)).length ? record(wrapped.record) : wrapped;
-  const policyRoute = textValue(raw, ["policy_decision.route", "decision.route", "authorization.route"], "unknown").toLowerCase();
-  const route = textValue(raw, ["dispatch_decision.route", "dispatch.route", "route"], policyRoute).toLowerCase();
-  const violations = strings(raw, ["runtime_observation.authorization_violations", "envelope_violations", "runtime_observation.envelope_violations", "runtime_observation.violations", "violations"]);
-  let eventInputs = extractArray(first(raw, ["runtime_events", "runtime_observation.events", "events"]), []);
-  const violatingEventIDs = new Set(
-    extractArray(first(raw, ["runtime_observation.event_evaluations", "event_evaluations"]), [])
-      .filter(evaluation => first(evaluation, ["within_authorization_envelope", "accepted"]) === false || first(evaluation, ["execution_terminated"]) === true)
-      .map(evaluation => textValue(evaluation, ["event_id"], ""))
-      .filter(Boolean)
-  );
-  if (!eventInputs.length) {
-    eventInputs = strings(raw, ["runtime_observation.actual_actions"]).map((action, index) => ({
-      event_id: `legacy-demo-${index + 1}`, source: "simulated_demo", trust_level: "simulated_demo", capability: action, operation: action,
-      envelope_violation: strings(raw, ["runtime_observation.unexpected_actions"]).includes(action)
-    }));
-  }
-  const policyReasons = strings(raw, ["policy_decision.reasons", "decision.reasons", "authorization.reasons"]);
-  const riskScore = numberValue(raw, ["risk_assessment.score", "risk.score"]);
-  const requestedCapability = textValue(raw, ["request.action_request.capability", "request.action.capability", "request.requested_capability", "action_request.capability"], "—");
-  const action = textValue(raw, ["request.action_request.operation", "request.action.operation", "request.requested_action", "action_request.operation"], requestedCapability);
-  const isolation = textValue(raw, ["dispatch_decision.isolation_backend", "dispatch.isolation_backend.status", "execution.isolation_backend.status", "isolation_backend.status"], "");
+function scenarioKind(value: unknown): ScenarioKind {
+  const haystack = `${rawText(value, ["id"])} ${rawText(value, ["title"])} ${rawText(value, ["description"])}`.toLowerCase();
+  if (/replay|single.?use|重放/.test(haystack)) return "replay";
+  if (/expir|ttl|过期/.test(haystack)) return "expired";
+  if (/mutation|mismatch|toctou|变更|篡改/.test(haystack)) return "mutation";
+  if (/valid.?permit|exact.?action|happy.?path|有效许可证/.test(haystack)) return "valid";
+  return "advanced";
+}
+
+function normalizeScenario(value: unknown): Scenario {
+  const kind = scenarioKind(value);
   return {
-    raw, requestId: textValue(raw, ["request_id", "request.request_id"], "unassigned"), createdAt: textValue(raw, ["created_at", "timestamp"], ""),
-    principal: textValue(raw, ["request.principal_context.principal_id", "request.principal.principal_id", "request.user_id"], "—"),
-    principalType: textValue(raw, ["request.principal_context.principal_type", "request.principal.principal_type"], "—"),
-    agent: textValue(raw, ["request.agent_identity.agent_id", "request.agent.agent_id", "request.agent_id"], "—"),
-    workload: textValue(raw, ["request.agent_identity.workload_id", "request.agent.workload_id"], "—"),
-    delegatedIssuer: textValue(raw, ["request.delegated_authority.issuer", "request.authority.issuer"], "—"),
-    delegatedSubject: textValue(raw, ["request.delegated_authority.subject", "request.authority.subject"], "—"),
-    scopes: strings(raw, ["request.delegated_authority.scopes", "request.authority.scopes", "request.token_scopes"]),
-    credentialFingerprint: fingerprintSafe(textValue(raw, ["request.delegated_authority.credential_fingerprint", "request.delegated_authority.credential_id", "request.authority.credential_fingerprint"], "—")),
-    capability: requestedCapability, action, operation: textValue(raw, ["request.action_request.operation", "request.action.operation", "request.operation"], action),
-    tool: textValue(raw, ["request.tool_context.tool_id", "request.tool_context.name", "request.tool_identity.name", "request.tool.name"], "—"),
-    resource: privacySafe(textValue(raw, ["request.action_request.target_resource", "request.action.target_resource", "request.target_resource"], "—")),
-    sideEffect: textValue(raw, ["request.action_request.side_effect", "request.action.side_effect", "request.side_effect"], "—"),
-    policyRoute, route, policyReasons, matchedRules: strings(raw, ["policy_decision.matched_rules", "policy_decision.rules", "decision.matched_rules"]),
-    riskLevel: textValue(raw, ["risk_assessment.level", "risk.level"], "unknown").toLowerCase(), riskScore,
-    riskSignals: strings(raw, ["risk_assessment.signals", "risk.signals"]), executor: textValue(raw, ["selected_executor", "dispatch.executor", "executor"], route === "deny" ? "not invoked" : "—"),
-    isolationStatus: isolation || (["sandbox", "restrict"].includes(route) ? "not_connected_demo" : "not_applicable"), envelope: normalizeEnvelope(raw),
-    events: eventInputs.map((event, index) => normalizeRuntimeEvent(event, index, violations, violatingEventIDs)), violations,
-    finalVerdict: textValue(raw, ["final_verdict", "verdict"], route), durationMs: numberValue(raw, ["duration_ms", "duration"])
+    id: rawText(value, ["id"]), kind,
+    title: safeText(value, ["title"], rawText(value, ["id"], "Fixture")),
+    description: safeText(value, ["description"]),
+    expected: upper(rawText(value, ["expected_verification", "expected_result", "expected_route"], "NOT_REPORTED")),
+    principal: safeText(value, ["request.principal.principal_id", "request.user_id"]),
+    agent: safeText(value, ["request.agent.agent_id", "request.agent_id"]),
+    tool: safeText(value, ["request.tool.name", "request.tool.tool_id", "request.tool_identity.name"]),
+    capability: safeText(value, ["request.action.capability", "request.requested_capability"]),
+    resource: safeText(value, ["request.action.target_resource", "request.target_resource"]),
+    operation: safeText(value, ["request.action.operation", "request.data_access.operation"]),
+    actionDigest: safeText(value, ["action_digest", "request.action_digest"]), available: true
   };
 }
 
-function normalizeScenario(input: unknown): Scenario {
-  return {
-    id: textValue(input, ["id"], crypto.randomUUID()), title: textValue(input, ["title"], "Scenario"), description: textValue(input, ["description"], ""),
-    expectedRoute: textValue(input, ["expected_route", "expected"], "—"), request: record(get(input, "request"))
-  };
+const fallbackScenarios: Array<Omit<Scenario, "title" | "description" | "expected"> & { titleKey: string; descriptionKey: string; expectedKey: string }> = [
+  { id: "valid-permit", kind: "valid", titleKey: "scenarioValidTitle", descriptionKey: "scenarioValidDescription", expectedKey: "scenarioValidExpected", principal: "", agent: "", tool: "", capability: "", resource: "", operation: "", actionDigest: "", available: false },
+  { id: "action-mutation", kind: "mutation", titleKey: "scenarioMutationTitle", descriptionKey: "scenarioMutationDescription", expectedKey: "scenarioMutationExpected", principal: "", agent: "", tool: "", capability: "", resource: "", operation: "", actionDigest: "", available: false },
+  { id: "permit-replay", kind: "replay", titleKey: "scenarioReplayTitle", descriptionKey: "scenarioReplayDescription", expectedKey: "scenarioReplayExpected", principal: "", agent: "", tool: "", capability: "", resource: "", operation: "", actionDigest: "", available: false },
+  { id: "expired-permit", kind: "expired", titleKey: "scenarioExpiredTitle", descriptionKey: "scenarioExpiredDescription", expectedKey: "scenarioExpiredExpected", principal: "", agent: "", tool: "", capability: "", resource: "", operation: "", actionDigest: "", available: false }
+];
+
+function localizedScenario(scenario: Scenario): Scenario {
+  if (scenario.kind === "advanced") return scenario;
+  const prefix = `scenario${scenario.kind[0].toUpperCase()}${scenario.kind.slice(1)}`;
+  return { ...scenario, title: tr(`${prefix}Title`), description: tr(`${prefix}Description`), expected: tr(`${prefix}Expected`) };
 }
 
-function normalizeDiscoveryAgent(input: unknown): InventoryAgent {
-  const evidence = extractArray(get(input, "evidence"), []).map(item => ({
-    source: textValue(item, ["source"], "evidence"), indicator: privacySafe(textValue(item, ["indicator"], "—")), confidence: numberValue(item, ["confidence"])
-  }));
-  return {
-    fingerprint: textValue(input, ["fingerprint"], "—"), name: textValue(input, ["display_name", "name"], "Unnamed workload"), agentType: textValue(input, ["agent_type", "type"], "unknown"),
-    deploymentState: textValue(input, ["deployment_state", "deployment.state"], "available").toLowerCase(), status: textValue(input, ["status", "registration_status"], "unassessed").toLowerCase(),
-    owner: textValue(input, ["owner"], ""), approvalId: textValue(input, ["approval_id", "registration_id"], ""), confidence: numberValue(input, ["confidence", "discovery_confidence"]), evidence,
-    exposure: textValue(input, ["potential_exposure.classification", "potential_exposure.level", "exposure.classification"], "unclassified"),
-    potentialCapabilities: strings(input, ["potential_exposure.potential_capabilities", "potential_exposure.capabilities", "exposure.capabilities"]),
-    exposureFactors: strings(input, ["potential_exposure.factors", "exposure.factors"])
-  };
+function mergeScenarios(serverScenarios: Scenario[]): Scenario[] {
+  const primary = fallbackScenarios.map(fallback => {
+    const server = serverScenarios.find(item => item.kind === fallback.kind);
+    const base = server ?? { ...fallback, title: "", description: "", expected: "" };
+    return localizedScenario(base);
+  });
+  return [...primary, ...serverScenarios.filter(item => item.kind === "advanced")];
 }
 
-function normalizeApproval(input: unknown): ApprovedAgent {
-  return {
-    id: textValue(input, ["id", "registration_id"], ""), agent_id: textValue(input, ["agent_id"], "") || undefined,
-    workload_identity: textValue(input, ["workload_identity", "workload_id"], "") || undefined, name: textValue(input, ["name", "display_name"], "Unnamed workload"),
-    display_name: textValue(input, ["display_name"], "") || undefined, agent_type: textValue(input, ["agent_type", "framework"], "unknown"), fingerprint: textValue(input, ["fingerprint"], "") || undefined,
-    path_contains: textValue(input, ["path_contains", "evidence_path"], ""), owner: textValue(input, ["owner"], "unassigned"), environment: textValue(input, ["environment"], "") || undefined,
-    framework: textValue(input, ["framework"], "") || undefined, approval_ref: textValue(input, ["approval_ref", "approval_reference"], "") || undefined,
-    expires_on: textValue(input, ["expires_on", "expiry"], "") || undefined, state: textValue(input, ["state"], "") || undefined, status: textValue(input, ["status"], "") || undefined,
-    policy_profile: textValue(input, ["policy_profile"], "") || undefined
-  };
+function explicitInventoryFlag(payload: unknown): boolean {
+  return first(payload, ["experimental_inventory_enabled", "features.experimental_inventory", "features.experimental_inventory.enabled", "experimental_inventory"]) === true;
 }
 
 function applyTranslations(): void {
   document.documentElement.lang = state.locale;
-  document.querySelectorAll<HTMLElement>("[data-i18n]").forEach(element => {
-    const key = element.dataset.i18n;
-    if (key) element.textContent = tr(key);
-  });
+  document.querySelectorAll<HTMLElement>("[data-i18n]").forEach(element => { const key = element.dataset.i18n; if (key) element.textContent = tr(key); });
   qs<HTMLButtonElement>("#language-toggle").textContent = state.locale === "zh-CN" ? "EN" : "中文";
+  state.scenarios = state.scenarios.map(localizedScenario);
   updateViewHeading();
 }
 
@@ -450,11 +384,15 @@ function updateViewHeading(): void {
   qs("#view-title").textContent = tr(heading.key);
 }
 
-function validView(value: string): value is ViewName {
-  return ["overview", "decisions", "investigations", "policies", "inventory", "demo"].includes(value);
+function validView(value: string): value is ViewName { return ["decisions", "permits", "audit", "demo", "inventory"].includes(value); }
+function compatibilityView(value: string): ViewName {
+  if (value === "overview" || value === "policies") return "decisions";
+  if (value === "investigations") return "audit";
+  return validView(value) ? value : "decisions";
 }
 
 function navigate(view: ViewName, updateHash = true): void {
+  if (view === "inventory" && !state.inventoryEnabled) view = "decisions";
   state.view = view;
   document.querySelectorAll<HTMLElement>("[data-view]").forEach(element => {
     const active = element.dataset.view === view;
@@ -467,688 +405,358 @@ function navigate(view: ViewName, updateHash = true): void {
     if (active) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
   });
   updateViewHeading();
-  if (updateHash && location.hash !== `#${view}`) history.replaceState(null, "", `#${view}`);
-  document.documentElement.scrollTop = 0;
+  if (updateHash) history.replaceState(null, "", `#${view}`);
+  qs("#main-content").focus({ preventScroll: true });
 }
 
+function badge(value: string): HTMLElement {
+  const normalized = upper(value);
+  const failure = !["VERIFIED", "AUTHORIZED", "CONSUMED", "ISSUED", "AVAILABLE", "UNKNOWN", "NOT_REPORTED", "REQUIRES_APPROVAL"].includes(normalized);
+  return node("span", `status-badge ${slug(value)}${failure ? " failed" : ""}`, value || tr("unknown"));
+}
+function fact(label: string, value: string, mono = false): HTMLElement {
+  const item = node("div", "fact");
+  item.append(node("span", "", label), node(mono ? "code" : "strong", "", value || tr("notReported")));
+  return item;
+}
+function empty(message: string): HTMLElement { return node("p", "empty-state", message); }
 function showToast(message: string, error = false): void {
   const toast = node("div", `toast${error ? " error" : ""}`, message);
   qs("#toast-region").append(toast);
   window.setTimeout(() => toast.remove(), 4200);
 }
 
-async function checkHealth(): Promise<void> {
+async function loadHealth(): Promise<void> {
   const indicator = qs("#system-state");
-  indicator.className = "system-state checking";
-  indicator.querySelector("b")!.textContent = tr("checking");
+  const label = indicator.querySelector("b");
   try {
-    await requestJSON("/api/health");
-    indicator.className = "system-state";
-    indicator.querySelector("b")!.textContent = tr("online");
+    const health = await requestJSON("/api/health");
+    state.inventoryEnabled = explicitInventoryFlag(health);
+    indicator.className = "system-state online";
+    if (label) { label.dataset.i18n = "online"; label.textContent = tr("online"); }
   } catch {
+    state.inventoryEnabled = false;
     indicator.className = "system-state offline";
-    indicator.querySelector("b")!.textContent = tr("offline");
+    if (label) { label.dataset.i18n = "offline"; label.textContent = tr("offline"); }
   }
+  qs<HTMLButtonElement>("#inventory-nav").hidden = !state.inventoryEnabled;
+  if (!state.inventoryEnabled && state.view === "inventory") navigate("decisions");
 }
 
 async function loadDecisions(): Promise<void> {
-  let payload: unknown;
-  try { payload = await requestJSON("/api/decisions?limit=50"); }
-  catch (error) {
-    if (!(error instanceof HTTPError) || ![404, 405].includes(error.status)) throw error;
-    payload = await requestJSON("/api/audits?limit=50");
-  }
-  state.decisions = extractArray(payload, ["decisions", "audits", "records", "items"]).map(normalizeDecision);
-  if (!state.selectedDecision && state.decisions.length) state.selectedDecision = state.decisions[0].requestId;
+  const payload = await optionalJSON("/api/decisions?limit=100") ?? await optionalJSON("/api/audits?limit=100");
+  state.decisions = extractArray(payload, ["decisions", "records", "audits", "items"]).map(normalizeDecision);
+  if (!state.selectedDecisionId || !state.decisions.some(item => item.id === state.selectedDecisionId)) state.selectedDecisionId = state.decisions[0]?.id ?? "";
 }
 
-function normalizeCoverage(payload: unknown): CoverageSource[] {
-  let sources = extractArray(payload, ["sources", "coverage", "runtime_coverage"]);
-  if (!sources.length) {
-    const sourceObject = record(first(payload, ["sources", "coverage", "runtime_coverage"]));
-    sources = Object.entries(sourceObject).map(([key, value]) => {
-      if (typeof value === "string") return { key, name: key, status: value };
-      return { key, ...record(value) };
-    });
-  }
-  return sources.map((source, index) => {
-    const key = textValue(source, ["key", "source", "name"], `source-${index + 1}`);
-    return { key, name: textValue(source, ["display_name", "name", "source"], key), status: textValue(source, ["status", "state"], "unknown").toLowerCase(), evidence: textValue(source, ["evidence", "detail", "reason"], "") };
-  });
+function derivedPermits(): Permit[] {
+  const unique = new Map<string, Permit>();
+  [...state.decisions, ...state.audits].forEach(item => { if (item.permit) unique.set(item.permit.id, item.permit); });
+  return [...unique.values()];
 }
 
-async function loadSessionEvents(): Promise<void> {
-  const payload = await optionalJSON("/api/session-events?limit=40");
-  const inputs = extractArray(payload, ["events", "items"]);
-  state.sessionEvents = inputs.map((event, index) => normalizeRuntimeEvent(event, index, []));
+async function loadPermits(): Promise<void> {
+  const payload = await optionalJSON("/api/permits?limit=100");
+  const explicit = extractArray(payload, ["permits", "records", "items"]).map(normalizePermit).filter((item): item is Permit => item !== null);
+  state.permits = explicit.length ? explicit : derivedPermits();
+  if (!state.selectedPermitId || !state.permits.some(item => item.id === state.selectedPermitId)) state.selectedPermitId = state.permits[0]?.id ?? "";
 }
 
-function fallbackCoverage(): CoverageSource[] {
-  const adapterEvents = state.sessionEvents.filter(event => ["instrumented_adapter", "observer_recorded"].includes(event.trust) || event.source === "instrumented_adapter");
-  const selfReported = state.sessionEvents.filter(event => event.trust === "agent_self_reported" || event.trust === "self_reported");
-  const toolStatus = adapterEvents.length ? "adapter_reported" : selfReported.length ? "agent_self_reported" : "unknown";
-  return [
-    { key: "gateway_requests", name: tr("gatewayRequests"), status: "instrumented", evidence: state.decisions.length ? `${state.decisions.length} ${tr("derivedFromAudit").toLowerCase()}` : tr("derivedFromAudit") },
-    { key: "tool_events", name: tr("toolEvents"), status: toolStatus, evidence: adapterEvents.length ? `${adapterEvents.length} ${tr("adapterReported").toLowerCase()}` : selfReported.length ? `${selfReported.length} ${tr("selfReported").toLowerCase()}` : tr("noAdapterEvidence") },
-    { key: "filesystem", name: tr("filesystem"), status: "not_instrumented", evidence: tr("noSensor") },
-    { key: "network", name: tr("network"), status: "not_instrumented", evidence: tr("noSensor") },
-    { key: "os_syscalls", name: tr("osSyscalls"), status: "not_instrumented", evidence: tr("noSensor") },
-    { key: "isolation", name: tr("isolation"), status: "not_connected", evidence: tr("demoOnly") }
-  ];
-}
-
-async function loadCoverage(): Promise<void> {
-  const payload = await optionalJSON("/api/runtime-coverage");
-  state.coverage = payload ? normalizeCoverage(payload) : [];
-  if (!state.coverage.length) state.coverage = fallbackCoverage();
-}
-
-function legacyDiscoveryPayload(discoveryPayload: unknown, approvalsPayload: unknown): InventoryState {
-  const report = record(discoveryPayload);
-  const approvalResponse = record(approvalsPayload);
-  return {
-    agents: extractArray(report, ["agents", "discoveries"]).map(normalizeDiscoveryAgent),
-    approvals: extractArray(approvalResponse, ["approved_agents", "agents", "registrations"]).map(normalizeApproval),
-    governedCount: 0,
-    agentTypes: strings(approvalResponse, ["agent_types"]), scannedAt: textValue(report, ["scanned_at"], ""),
-    rootCount: extractArray(report, ["roots", "scan_roots"]).length,
-    gaps: extractArray(report, ["coverage_gaps", "gaps"]).map(gap => ({ source: privacySafe(textValue(gap, ["source"], "scan")), reason: textValue(gap, ["reason"], tr("unknown")) })),
-    truncated: first(report, ["summary.truncated", "truncated"]) === true
-  };
-}
-
-function normalizeAgentsPayload(payload: unknown): InventoryState {
-  const container = record(payload);
-  const discovery = Object.keys(record(container.discovery)).length ? record(container.discovery) : container;
-  return {
-    agents: extractArray(discovery, ["agents", "discoveries", "items"]).map(normalizeDiscoveryAgent),
-    approvals: extractArray(container, ["asset_registry", "registered_agents", "approved_agents", "registrations", "registry"]).map(normalizeApproval),
-    governedCount: extractArray(container, ["governed_identities"]).length,
-    agentTypes: strings(container, ["agent_types"]), scannedAt: textValue(discovery, ["scanned_at"], ""),
-    rootCount: extractArray(discovery, ["roots", "scan_roots"]).length,
-    gaps: extractArray(discovery, ["coverage_gaps", "gaps"]).map(gap => ({ source: privacySafe(textValue(gap, ["source"], "scan")), reason: textValue(gap, ["reason"], tr("unknown")) })),
-    truncated: first(discovery, ["summary.truncated", "truncated"]) === true
-  };
-}
-
-async function loadInventory(): Promise<void> {
-  try {
-    const payload = await requestJSON("/api/agents");
-    state.inventory = normalizeAgentsPayload(payload);
-    state.modernAgentsAPI = true;
-  } catch (error) {
-    if (!(error instanceof HTTPError) || ![404, 405].includes(error.status)) throw error;
-    const [discovery, approvals] = await Promise.all([optionalJSON("/api/discoveries"), optionalJSON("/api/approved-agents")]);
-    state.inventory = legacyDiscoveryPayload(discovery, approvals);
-    state.modernAgentsAPI = false;
-  }
+async function loadAudits(): Promise<void> {
+  const payload = await optionalJSON("/api/audits?limit=100");
+  state.audits = extractArray(payload, ["audits", "receipts", "records", "items"]).map(normalizeDecision);
 }
 
 async function loadScenarios(): Promise<void> {
-  const payload = await requestJSON("/api/scenarios");
-  state.scenarios = extractArray(payload, ["scenarios", "items"]).map(normalizeScenario);
-  if (!state.selectedScenario && state.scenarios.length) state.selectedScenario = state.scenarios[0].id;
+  const payload = await optionalJSON("/api/demo-lab") ?? await optionalJSON("/api/scenarios");
+  const primary = extractArray(payload, ["scenarios", "items"]);
+  const advanced = extractArray(payload, ["advanced_regression_fixtures"]);
+  state.scenarios = mergeScenarios([...primary, ...advanced].map(normalizeScenario));
+  if (!state.selectedScenarioId || !state.scenarios.some(item => item.id === state.selectedScenarioId)) state.selectedScenarioId = state.scenarios[0]?.id ?? "";
+}
+
+async function loadInventory(): Promise<void> {
+  if (!state.inventoryEnabled) { state.inventory = []; return; }
+  const payload = await optionalJSON("/api/agents");
+  state.inventory = extractArray(payload, ["governed_identities", "agents", "items"]).map(object);
 }
 
 async function refreshAll(notify = false): Promise<void> {
-  const button = qs<HTMLButtonElement>("#refresh-all");
-  button.disabled = true;
-  button.classList.add("loading");
-  await checkHealth();
-  const results = await Promise.allSettled([loadDecisions(), loadSessionEvents(), loadInventory(), loadScenarios()]);
-  await loadCoverage();
+  const refresh = qs<HTMLButtonElement>("#refresh-all");
+  refresh.disabled = true;
+  refresh.classList.add("loading");
+  await loadHealth();
+  await Promise.all([loadDecisions(), loadAudits(), loadScenarios(), loadInventory()]);
+  await loadPermits();
   renderAll();
-  const failures = results.filter(result => result.status === "rejected");
-  if (failures.length) showToast(`${tr("requestFailed")}: ${failures.length}`, true);
-  else if (notify) showToast(tr("refreshed"));
-  button.disabled = false;
-  button.classList.remove("loading");
+  refresh.disabled = false;
+  refresh.classList.remove("loading");
+  if (notify) showToast(tr("refreshed"));
 }
 
-function empty(message: string): HTMLElement { return node("p", "empty-state", message); }
+function verificationClass(value: string): string {
+  if (value === "VERIFIED") return "verified";
+  if (value === "NOT_REPORTED" || value === "UNKNOWN") return "not-reported";
+  return "failed";
+}
+function actionLabel(value: Pick<Decision, "tool" | "operation" | "capability">): string {
+  const target = value.tool || value.capability || tr("unknown");
+  return value.operation ? `${target} · ${value.operation}` : target;
+}
 
-function decisionButton(decision: Decision, index: number, compact = false): HTMLButtonElement {
-  const button = node("button", compact ? "stream-row" : `decision-index-row${state.selectedDecision === decision.requestId ? " active" : ""}`) as HTMLButtonElement;
-  button.type = "button";
-  const badge = node("span", `route-badge ${slug(decision.route)}`, titleToken(decision.route));
-  const action = node("span", "stream-action");
-  action.append(node("strong", "", privacySafe(decision.action)), node("code", "", `${privacySafe(decision.agent)} · ${privacySafe(decision.capability)}`));
-  if (compact) {
-    button.append(badge, action, node("span", "stream-meta", `${privacySafe(decision.tool)} → ${privacySafe(decision.resource)}`), node("time", "stream-time", formatTime(decision.createdAt, true)));
-  } else {
-    const header = node("header"); header.append(badge, node("time", "stream-time", formatTime(decision.createdAt, true)));
-    button.append(header, node("strong", "", privacySafe(decision.action)), node("code", "", `${shortID(decision.requestId)} · ${privacySafe(decision.agent)} · ${privacySafe(decision.resource)}`));
-  }
-  button.addEventListener("click", () => {
-    state.selectedDecision = decision.requestId;
-    navigate("decisions");
-    renderDecisionViews();
-    if (compact) window.requestAnimationFrame(() => qs("#decision-detail").scrollIntoView({ block: "start", behavior: "smooth" }));
+function renderMetrics(): void {
+  const authorized = state.decisions.filter(item => item.authorization === "AUTHORIZED").length;
+  const denied = state.decisions.filter(item => item.authorization === "DENIED").length;
+  const permitEvidence = state.permits.length ? state.permits : state.decisions.map(item => item.permit).filter((item): item is Permit => item !== null);
+  const violations = permitEvidence.filter(item => !["VERIFIED", "NOT_REPORTED", "UNKNOWN"].includes(item.verification)).length;
+  const replays = permitEvidence.filter(item => item.verification === "REPLAYED").length;
+  qs("#count-authorized").textContent = String(authorized);
+  qs("#count-denied").textContent = String(denied);
+  qs("#count-violations").textContent = String(violations);
+  qs("#count-replays").textContent = String(replays);
+  qs("#nav-decision-count").textContent = String(state.decisions.length);
+  qs("#nav-permit-count").textContent = String(state.permits.length);
+  qs("#nav-violation-count").textContent = String(violations);
+}
+
+function renderActivity(): void {
+  const body = qs<HTMLTableSectionElement>("#activity-body");
+  const emptyState = qs("#activity-empty");
+  body.replaceChildren();
+  emptyState.hidden = state.decisions.length > 0;
+  emptyState.textContent = tr("noActivity");
+  state.decisions.slice(0, 20).forEach(decision => {
+    const row = node("tr", decision.id === state.selectedDecisionId ? "selected" : "");
+    const agent = node("td"); agent.append(node("strong", "", decision.agent || tr("unknown")), node("small", "", decision.workload || tr("notReported")));
+    const action = node("td"); action.append(node("strong", "", actionLabel(decision)), node("small", "", decision.resource || tr("notReported")));
+    const permit = node("td"); permit.append(node("code", "", decision.permit ? shortID(decision.permit.id) : "—"));
+    const verification = node("td"); verification.append(badge(decision.verification));
+    const inspect = node("td");
+    const button = node("button", "inspect-button", "→"); button.type = "button"; button.setAttribute("aria-label", `${tr("inspect")} ${decision.requestId || decision.id}`);
+    button.addEventListener("click", () => { state.selectedDecisionId = decision.id; renderActivity(); renderDecisionDetail(); });
+    inspect.append(button); row.append(agent, action, permit, verification, inspect); body.append(row);
   });
-  button.dataset.index = String(index);
+  renderDecisionDetail();
+}
+
+function renderDecisionDetail(): void {
+  const container = qs("#decision-detail"); container.replaceChildren();
+  const decision = state.decisions.find(item => item.id === state.selectedDecisionId);
+  if (!decision) { container.append(empty(tr("selectActivity"))); return; }
+  const head = node("header", "detail-head");
+  const headCopy = node("div"); headCopy.append(node("p", "eyebrow", tr("decisionDetail")), node("h3", "", shortID(decision.requestId || decision.id)));
+  head.append(headCopy, badge(decision.authorization));
+  const facts = node("div", "detail-facts");
+  facts.append(
+    fact(tr("principal"), decision.principal), fact(tr("agent"), decision.agent), fact(tr("workload"), decision.workload),
+    fact(tr("tool"), decision.tool), fact(tr("capability"), decision.capability), fact(tr("resource"), decision.resource), fact(tr("operation"), decision.operation),
+    fact(tr("actionDigest"), decision.actionDigest ? shortID(decision.actionDigest) : "NOT REPORTED", true), fact(tr("permitId"), decision.permit ? shortID(decision.permit.id) : "—", true), fact(tr("verificationResult"), decision.verification)
+  );
+  const obligationBlock = node("div", "detail-block"); obligationBlock.append(node("span", "block-label", tr("obligations")));
+  const chips = node("div", "chip-list");
+  (decision.obligations.length ? decision.obligations : [tr("noObligations")]).forEach(item => chips.append(node("span", "", item)));
+  obligationBlock.append(chips);
+  const evidence = node("div", "detail-block"); evidence.append(node("span", "block-label", tr("evidenceSource")));
+  if (decision.evidenceSources.length) decision.evidenceSources.forEach(source => evidence.append(badge(upper(source)))); else evidence.append(node("p", "truth-copy", tr("noEvidence")));
+  container.append(head, facts, obligationBlock, evidence);
+  if (decision.verification === "NOT_REPORTED") container.append(node("p", "compatibility-note", tr("compatibilityHint")));
+}
+
+function filteredPermits(): Permit[] {
+  if (state.permitFilter === "all") return state.permits;
+  if (state.permitFilter === "failed") return state.permits.filter(item => !["VERIFIED", "NOT_REPORTED"].includes(item.verification) || ["EXPIRED", "REVOKED"].includes(item.state));
+  return state.permits.filter(item => item.state === upper(state.permitFilter));
+}
+
+function renderPermits(): void {
+  const list = qs("#permit-list"); list.replaceChildren();
+  const permits = filteredPermits();
+  if (!permits.length) list.append(empty(tr("noPermits")));
+  permits.forEach(permit => {
+    const button = node("button", `permit-row${permit.id === state.selectedPermitId ? " selected" : ""}`); button.type = "button";
+    const top = node("span", "permit-row-top"); top.append(node("code", "", shortID(permit.id)), badge(permit.state));
+    button.append(top, node("strong", "", `${permit.tool || tr("unknown")} · ${permit.operation || tr("unknown")}`), node("small", "", permit.agent || tr("unknown")), node("time", "", formatTime(permit.issuedAt)));
+    button.addEventListener("click", async () => {
+      state.selectedPermitId = permit.id;
+      const detailPayload = await optionalJSON(`/api/permits/${encodeURIComponent(permit.id)}`);
+      const detailed = normalizePermit(detailPayload);
+      if (detailed) state.permits = state.permits.map(item => item.id === detailed.id ? detailed : item);
+      renderPermits();
+    });
+    list.append(button);
+  });
+  renderPermitDetail();
+}
+
+function lifecycleStep(code: string, label: string, status: string): HTMLElement {
+  const item = node("div", `lifecycle-step ${status}`); item.append(node("b", "", code), node("span", "", label)); return item;
+}
+
+function renderPermitDetail(): void {
+  const container = qs("#permit-detail"); container.replaceChildren();
+  const permit = state.permits.find(item => item.id === state.selectedPermitId);
+  if (!permit) { container.append(empty(tr("selectPermit"))); return; }
+  const ticket = node("section", "permit-ticket");
+  const head = node("header", "ticket-head");
+  const title = node("div"); title.append(node("p", "eyebrow", tr("permitDetail")), node("h3", "", shortID(permit.id)));
+  head.append(title, badge(permit.state));
+  const seal = node("div", "signature-seal");
+  const sealLabel = permit.format === "LEGACY_ENVELOPE" ? "LEGACY" : permit.format === "NOT_REPORTED" ? "CLAIMS" : "SIGNED";
+  seal.append(node("span", "", sealLabel), node("small", "", permit.format));
+  const claims = node("div", "claim-grid");
+  claims.append(
+    fact(tr("principal"), permit.principal), fact(tr("agent"), permit.agent), fact(tr("workload"), permit.workload), fact(tr("credentialFingerprint"), permit.delegationFingerprint ? shortID(permit.delegationFingerprint) : "NOT REPORTED", true),
+    fact(tr("tool"), permit.tool), fact(tr("capability"), permit.capability), fact(tr("resource"), permit.resource), fact(tr("operation"), permit.operation),
+    fact(tr("actionDigest"), permit.actionDigest ? shortID(permit.actionDigest) : "NOT REPORTED", true), fact(tr("policyVersion"), permit.policyVersion), fact(tr("issuer"), permit.issuer), fact(tr("singleUse"), permit.singleUse === null ? "NOT REPORTED" : String(permit.singleUse))
+  );
+  const times = node("div", "ticket-times"); times.append(fact(tr("issuedAt"), formatTime(permit.issuedAt)), fact(tr("expiresAt"), formatTime(permit.expiresAt)), fact(tr("consumedAt"), formatTime(permit.consumedAt)));
+  ticket.append(head, seal, claims, times, node("p", "secret-note", tr("neverStored")));
+  if (permit.format === "LEGACY_ENVELOPE") ticket.append(node("p", "compatibility-note", tr("legacyEnvelope")));
+  const lifecycle = node("section", "lifecycle-panel"); lifecycle.append(node("p", "eyebrow", tr("lifecycle")));
+  const steps = node("div", "lifecycle-track");
+  const issuedDone = permit.state !== "UNKNOWN";
+  const verifiedDone = permit.verification === "VERIFIED" || permit.state === "CONSUMED";
+  const consumedDone = permit.state === "CONSUMED";
+  steps.append(lifecycleStep("01", tr("issued"), issuedDone ? "done" : "unknown"), lifecycleStep("02", tr("verified"), verifiedDone ? "done" : (permit.verification === "NOT_REPORTED" ? "unknown" : "failed")), lifecycleStep("03", tr("consumed"), consumedDone ? "done" : "unknown"));
+  if (["EXPIRED", "REVOKED"].includes(permit.state) || !["VERIFIED", "NOT_REPORTED"].includes(permit.verification)) steps.append(lifecycleStep("!", permit.verification !== "NOT_REPORTED" ? permit.verification : permit.state, "failed"));
+  lifecycle.append(steps);
+  container.append(ticket, lifecycle);
+}
+
+function renderAudit(): void {
+  const list = qs("#audit-list"); list.replaceChildren();
+  qs("#audit-count").textContent = String(state.audits.length);
+  if (!state.audits.length) { list.append(empty(tr("noAudits"))); return; }
+  state.audits.forEach(receipt => {
+    const item = node("details", "receipt");
+    const summary = node("summary");
+    const identity = node("span", "receipt-identity"); identity.append(node("strong", "", receipt.agent || tr("unknown")), node("small", "", actionLabel(receipt)));
+    summary.append(node("time", "", formatTime(receipt.createdAt)), identity, node("code", "", receipt.permit ? shortID(receipt.permit.id) : "—"), badge(receipt.verification !== "NOT_REPORTED" ? receipt.verification : receipt.authorization));
+    const body = node("div", "receipt-body");
+    body.append(
+      fact(tr("requestId"), shortID(receipt.requestId), true), fact(tr("finalVerdict"), receipt.verdict), fact(tr("authorization"), receipt.authorization), fact(tr("verificationResult"), receipt.verification),
+      fact(tr("resource"), receipt.resource), fact(tr("operation"), receipt.operation), fact(tr("actionDigest"), receipt.actionDigest ? shortID(receipt.actionDigest) : "NOT REPORTED", true), fact(tr("policyVersion"), receipt.policyVersion),
+      fact(tr("evidenceSource"), receipt.evidenceSources.length ? receipt.evidenceSources.map(item => upper(item)).join(" · ") : "NOT REPORTED")
+    );
+    body.append(node("p", "receipt-safe", tr("receiptSafe"))); item.append(summary, body); list.append(item);
+  });
+}
+
+function scenarioIcon(kind: ScenarioKind): string { return ({ valid: "✓", mutation: "≠", replay: "↺", expired: "⌛", advanced: "·" })[kind]; }
+function renderScenarioButton(scenario: Scenario): HTMLButtonElement {
+  const button = node("button", `scenario-card ${scenario.kind}${scenario.id === state.selectedScenarioId ? " selected" : ""}${scenario.available ? "" : " unavailable"}`); button.type = "button";
+  const top = node("span", "scenario-top"); top.append(node("b", "", scenarioIcon(scenario.kind)), node("em", "", scenario.expected));
+  button.append(top, node("strong", "", scenario.title), node("small", "", scenario.description));
+  button.addEventListener("click", () => { state.selectedScenarioId = scenario.id; state.demoOutcome = null; renderDemo(); });
   return button;
 }
 
-function renderOverview(): void {
-  const counts: Record<string, number> = { allow: 0, restrict: 0, sandbox: 0, deny: 0, escalate: 0 };
-  state.decisions.forEach(decision => { if (decision.route in counts) counts[decision.route] += 1; });
-  Object.entries(counts).forEach(([route, count]) => { qs(`#count-${route}`).textContent = String(count); });
-  qs("#nav-decision-count").textContent = String(state.decisions.length);
-
-  const stream = qs("#overview-decisions"); stream.replaceChildren();
-  if (!state.decisions.length) stream.append(empty(tr("noDecisions")));
-  else state.decisions.slice(0, 5).forEach((decision, index) => stream.append(decisionButton(decision, index, true)));
-
-  const alerts = state.decisions.filter(decision => ["deny", "escalate"].includes(decision.route) || decision.violations.length || decision.events.some(event => event.violation));
-  qs("#alert-count").textContent = String(alerts.length);
-  qs("#nav-violation-count").textContent = String(alerts.length);
-  const alertList = qs("#overview-alerts"); alertList.replaceChildren();
-  if (!alerts.length) alertList.append(empty(tr("noAlerts")));
-  else alerts.slice(0, 4).forEach(decision => {
-    const row = node("article", "alert-row");
-    const label = decision.violations[0] || (decision.events.some(event => event.violation) ? tr("violation") : titleToken(decision.route));
-    row.append(node("strong", "", privacySafe(decision.action)), node("span", "", `${label} · ${privacySafe(decision.agent)} · ${shortID(decision.requestId)}`));
-    alertList.append(row);
-  });
-  renderCoverage();
-
-  const inventory = state.inventory;
-  const shadow = inventory.agents.filter(agent => agent.status === "shadow" && agent.deploymentState !== "available").length;
-  const available = inventory.agents.filter(agent => agent.deploymentState === "available").length;
-  qs("#summary-registered").textContent = String(inventory.governedCount || inventory.approvals.length);
-  qs("#summary-shadow").textContent = String(shadow);
-  qs("#summary-evidence").textContent = String(available);
-  qs("#nav-shadow-count").textContent = String(shadow);
+function renderDemo(): void {
+  const primary = qs("#primary-scenario-list"); const advanced = qs("#advanced-scenario-list");
+  primary.replaceChildren(); advanced.replaceChildren();
+  state.scenarios.filter(item => item.kind !== "advanced").forEach(item => primary.append(renderScenarioButton(item)));
+  const advancedItems = state.scenarios.filter(item => item.kind === "advanced");
+  advancedItems.forEach(item => advanced.append(renderScenarioButton(item)));
+  qs("#advanced-count").textContent = String(advancedItems.length);
+  qs<HTMLDetailsElement>("#advanced-fixtures").hidden = advancedItems.length === 0;
+  renderDemoScenarioDetail(); renderDemoResult();
 }
 
-function coverageName(source: CoverageSource): string {
-  const normalized = slug(source.key);
-  if (normalized.includes("gateway")) return tr("gatewayRequests");
-  if (normalized.includes("tool") || normalized.includes("adapter")) return tr("toolEvents");
-  if (normalized.includes("file")) return tr("filesystem");
-  if (normalized.includes("network")) return tr("network");
-  if (normalized.includes("syscall") || normalized === "os") return tr("osSyscalls");
-  if (normalized.includes("sandbox") || normalized.includes("isolation")) return tr("isolation");
-  return source.name;
+function renderDemoScenarioDetail(): void {
+  const container = qs("#demo-scenario-detail"); container.replaceChildren();
+  const scenario = state.scenarios.find(item => item.id === state.selectedScenarioId);
+  const runButton = qs<HTMLButtonElement>("#run-scenario");
+  if (!scenario) { container.append(empty(tr("chooseScenario"))); runButton.disabled = true; return; }
+  const head = node("header", "demo-detail-head");
+  const heading = node("div"); heading.append(node("p", "eyebrow", tr("serverFixture")), node("h3", "", scenario.title));
+  head.append(heading, badge(scenario.available ? "AVAILABLE" : "NOT_AVAILABLE"));
+  const summary = node("p", "scenario-description", scenario.description);
+  const fields = node("div", "fixture-fields");
+  fields.append(fact(tr("principal"), scenario.principal), fact(tr("agent"), scenario.agent), fact(tr("tool"), scenario.tool), fact(tr("capability"), scenario.capability), fact(tr("resource"), scenario.resource), fact(tr("operation"), scenario.operation), fact(tr("actionDigest"), scenario.actionDigest ? shortID(scenario.actionDigest) : "COMPUTED SERVER-SIDE", true));
+  const expected = node("div", "expected-result"); expected.append(node("span", "", tr("expected")), node("strong", "", scenario.expected));
+  container.append(head, summary, fields, expected, node("p", "secret-note", tr("argumentsHidden")));
+  if (!scenario.available) container.append(node("p", "compatibility-note", tr("notAvailable")));
+  runButton.disabled = !scenario.available;
 }
 
-function coverageStatus(value: string): string {
-  const normalized = slug(value);
-  if (["instrumented", "gateway-enforced", "enforced"].includes(normalized)) return tr("instrumented");
-  if (["adapter-reported", "instrumented-adapter", "wrapper-and-self-reported-only"].includes(normalized)) return tr("adapterReported");
-  if (["simulated-demo", "demo"].includes(normalized)) return tr("simulatedDemo");
-  if (["agent-self-reported", "self-reported"].includes(normalized)) return tr("selfReported");
-  if (["not-instrumented", "disconnected"].includes(normalized)) return tr("notInstrumented");
-  if (["not-connected", "not-connected-demo"].includes(normalized)) return tr("notConnectedDemo");
-  if (normalized === "connected") return tr("connected");
-  return tr("unknown");
+function normalizeDemoOutcome(payload: unknown): DemoOutcome {
+  const permit = normalizePermit(first(payload, ["permit", "execution_permit", "authorization_envelope", "receipt.permit"]) ?? payload);
+  const attemptsPayload = extractArray(payload, ["attempts", "verification_attempts", "results", "verifications"]);
+  const attempts = attemptsPayload.map(item => normalizeVerification(item)).filter(item => item !== "NOT_REPORTED");
+  const result = normalizeVerification(payload) !== "NOT_REPORTED" ? normalizeVerification(payload) : (attempts.at(-1) ?? permit?.verification ?? "NOT_REPORTED");
+  return {
+    result, permitId: permit?.id ?? safeText(payload, ["permit_id", "receipt.permit_id"]), state: permit?.state ?? upper(rawText(payload, ["permit_state", "state"], "UNKNOWN")),
+    actionDigest: permit?.actionDigest ?? safeText(payload, ["action_digest", "receipt.action_digest"]),
+    upstreamInvoked: boolValue(payload, ["upstream_invoked", "upstream_tool_invoked", "executor_invoked", "dispatch_decision.executor_invoked", "receipt.upstream_invoked"]),
+    evidenceSource: safeText(payload, ["evidence_source", "source", "receipt.evidence_source"], "simulated_demo"), attempts
+  };
 }
 
-function coverageEvidence(source: CoverageSource): string {
-  if (source.evidence) return privacySafe(source.evidence);
-  const key = slug(source.key);
-  const status = slug(source.status);
-  if (key.includes("gateway") && status === "instrumented") return tr("derivedFromAudit");
-  if (key.includes("tool")) return tr("noAdapterEvidence");
-  if (key.includes("isolation") || key.includes("sandbox")) return tr("demoOnly");
-  if (["not-instrumented", "not-connected", "not-reported", "unknown"].includes(status)) return tr("noSensor");
-  return tr("unknown");
+async function runScenario(): Promise<void> {
+  const scenario = state.scenarios.find(item => item.id === state.selectedScenarioId);
+  if (!scenario?.available) return;
+  const button = qs<HTMLButtonElement>("#run-scenario"); const error = qs("#demo-error");
+  button.disabled = true; button.classList.add("loading"); error.textContent = "";
+  try {
+    const payload = await requestJSON(`/api/demo-lab/${encodeURIComponent(scenario.id)}/run`, { method: "POST", body: "{}" });
+    state.demoOutcome = normalizeDemoOutcome(payload);
+    await Promise.all([loadDecisions(), loadAudits()]); await loadPermits();
+    renderAll(); navigate("demo", false);
+  } catch (cause) {
+    error.textContent = `${tr("requestFailed")}: ${cause instanceof Error ? cause.message : "UNKNOWN"}`;
+  } finally { button.disabled = !scenario.available; button.classList.remove("loading"); }
 }
 
-function renderCoverage(): void {
-  const grid = qs("#coverage-grid"); grid.replaceChildren();
-  const sources = state.coverage.length ? state.coverage : fallbackCoverage();
-  sources.forEach(source => {
-    const status = slug(source.status);
-    const card = node("article", `coverage-source ${status}`);
-    card.append(node("span", "", coverageName(source)), node("strong", "", coverageStatus(source.status)), node("small", "", coverageEvidence(source)));
-    grid.append(card);
-  });
-}
-
-function fact(label: string, value: string): HTMLElement {
-  const row = node("div"); row.append(node("dt", "", label), node("dd", "", privacySafe(value || "—"))); return row;
-}
-
-function detailCard(title: string, facts: Array<[string, string]>): HTMLElement {
-  const card = node("section", "detail-card"); card.append(node("h4", "", title));
-  const dl = node("dl", "fact-list"); facts.forEach(([label, value]) => dl.append(fact(label, value))); card.append(dl); return card;
-}
-
-function railNode(code: string, label: string, detail: string, status: string): HTMLElement {
-  const item = node("div", `investigation-node ${status}`); item.append(node("b", "", code), node("span", "", label), node("small", "", detail)); return item;
-}
-
-function renderInvestigationRail(decision: Decision): HTMLElement {
-  const rail = node("div", "investigation-rail");
-  const identityFailed = decision.matchedRules.some(rule => /identity|unknown.agent/i.test(rule)) && decision.route === "deny";
-  const policyState = decision.policyRoute === "deny" ? "fail" : decision.policyRoute === "escalate" ? "warn" : "";
-  const riskState = decision.riskLevel === "high" || decision.riskLevel === "critical" ? "warn" : "";
-  const dispatchState = ["sandbox", "restrict", "escalate"].includes(decision.route) ? "warn" : decision.route === "deny" ? "fail" : "";
-  const observationState = decision.violations.length || decision.events.some(event => event.violation) ? "fail" : !decision.events.length ? "warn" : "";
-  rail.append(
-    railNode("I", tr("identity"), decision.agent, identityFailed ? "fail" : ""), railNode("P", tr("policy"), titleToken(decision.policyRoute), policyState),
-    railNode("R", tr("risk"), decision.riskScore === null ? tr("unknown") : String(decision.riskScore), riskState), railNode("D", tr("dispatch"), decision.executor, dispatchState),
-    railNode("O", tr("observation"), decision.events.length ? String(decision.events.length) : tr("unknown"), observationState), railNode("A", tr("audit"), titleToken(decision.finalVerdict), "")
-  );
-  return rail;
-}
-
-function renderPolicyRisk(decision: Decision): HTMLElement {
-  const grid = node("div", "policy-risk-grid");
-  const policy = node("section", `policy-result${decision.policyRoute === "deny" ? " denied" : ""}`);
-  const policyHead = node("div", "result-heading"); policyHead.append(node("span", "", tr("policyDecision")), node("strong", "", titleToken(decision.policyRoute)));
-  const policyReasons = node("ul", "reason-list");
-  const reasons = [...decision.policyReasons, ...decision.matchedRules.map(rule => `${tr("matchedRules")}: ${rule}`)];
-  (reasons.length ? reasons : [tr("unknown")]).forEach(reason => policyReasons.append(node("li", "", privacySafe(reason))));
-  policy.append(policyHead, policyReasons);
-  const risk = node("section", `risk-result ${slug(decision.riskLevel)}`);
-  const riskHead = node("div", "result-heading");
-  riskHead.append(node("span", "", tr("riskAssessment")), node("strong", "", `${titleToken(decision.riskLevel)}${decision.riskScore === null ? "" : ` · ${decision.riskScore}/100`}`));
-  const signals = node("ul", "reason-list"); (decision.riskSignals.length ? decision.riskSignals : [tr("unknown")]).forEach(signal => signals.append(node("li", "", privacySafe(signal))));
-  risk.append(riskHead, signals); grid.append(policy, risk); return grid;
-}
-
-function renderEnvelope(decision: Decision): HTMLElement {
-  if (!decision.envelope) {
-    const unavailable = node("div", "envelope-unavailable");
-    unavailable.append(node("strong", "", tr("permitNotIssued")), node("span", "", decision.route === "deny" ? tr("deniedBeforeExecution") : tr("legacyEnvelopeMissing")));
-    return unavailable;
+function renderDemoResult(): void {
+  const container = qs("#demo-result"); container.replaceChildren();
+  const scenario = state.scenarios.find(item => item.id === state.selectedScenarioId);
+  if (!state.demoOutcome || !scenario) {
+    const placeholder = node("div", "demo-placeholder"); placeholder.append(node("b", "", "A≡A"), node("p", "", tr("chooseScenario"))); container.append(placeholder); return;
   }
-  const envelope = decision.envelope;
-  const wrapper = node("section", "authorization-envelope");
-  const head = node("div", "envelope-head");
-  const title = node("div"); title.append(node("p", "eyebrow", "SIGNED ROUTE CLEARANCE"), node("h4", "", tr("envelopeTitle")));
-  head.append(title, node("code", "", shortID(envelope.permitId)));
-  const grid = node("div", "envelope-grid");
-  const fields: Array<[string, string]> = [
-    [tr("principal"), envelope.principal], [tr("agentIdentity"), envelope.agent], [tr("capability"), envelope.capability], [tr("tool"), envelope.tool],
-    [tr("resource"), envelope.resource], [tr("allowedOperations"), envelope.operations.join(", ") || "—"], [tr("issuedAt"), formatTime(envelope.issuedAt)], [tr("expiresAt"), formatTime(envelope.expiresAt)]
-  ];
-  fields.forEach(([label, value]) => { const item = node("div", "envelope-field"); item.append(node("span", "", label), node("strong", "", privacySafe(value))); grid.append(item); });
-  wrapper.append(head, grid);
-  const constraints = node("div", "constraint-strip");
-  const entries = Object.entries(envelope.constraints);
-  if (!entries.length) constraints.append(node("span", "", `${tr("constraints")}: ${tr("unknown")}`));
-  else entries.forEach(([key, value]) => constraints.append(node("span", "", `${key}: ${privacySafe(value)}`)));
-  wrapper.append(constraints); return wrapper;
-}
-
-function eventTrustLabel(event: RuntimeEvidence): string {
-  const combined = `${event.source}_${event.trust}`.toLowerCase();
-  if (combined.includes("simulated") || combined.includes("demo")) return tr("simulatedDemo");
-  if (combined.includes("self_report")) return tr("selfReported");
-  if (combined.includes("adapter") || combined.includes("observer_recorded")) return tr("adapterReported");
-  if (combined.includes("gateway")) return "GATEWAY ENFORCED";
-  if (combined.includes("os_sensor")) return "OS SENSOR";
-  if (combined.includes("network_sensor")) return "NETWORK SENSOR";
-  return tr("unknown");
-}
-
-function renderRuntimeEvents(decision: Decision): HTMLElement {
-  const section = node("section", "runtime-section"); section.append(node("h4", "", tr("runtimeEvents")));
-  if (!decision.events.length) { section.append(empty(tr("noExecutionEvidence"))); return section; }
-  decision.events.forEach(event => {
-    const row = node("article", `runtime-event${event.violation ? " violation" : ""}`);
-    row.append(node("code", "", shortID(event.id)), node("strong", "", `${privacySafe(event.operation)} · ${privacySafe(event.tool)} → ${privacySafe(event.resource)}`), node("span", `trust-badge ${slug(`${event.source}-${event.trust}`)}`, `${event.violation ? `${tr("violation")} · ` : ""}${eventTrustLabel(event)}`));
-    section.append(row);
-  });
-  return section;
-}
-
-function renderDecisionDetail(decision: Decision | undefined): void {
-  const container = qs("#decision-detail"); container.replaceChildren();
-  if (!decision) {
-    const placeholder = node("div", "detail-empty"); placeholder.append(node("b", "", "I→A"), node("p", "", tr("noDecisions"))); container.append(placeholder); return;
+  const outcome = state.demoOutcome;
+  const head = node("header", `result-head ${verificationClass(outcome.result)}`); head.append(node("p", "eyebrow", tr("demoResult")), node("h3", "", outcome.result));
+  const facts = node("div", "result-facts");
+  const upstream = outcome.upstreamInvoked === true ? tr("invoked") : outcome.upstreamInvoked === false ? tr("notInvoked") : tr("unknownInvocation");
+  facts.append(fact(tr("permitId"), shortID(outcome.permitId), true), fact(tr("state"), outcome.state), fact(tr("actionDigest"), outcome.actionDigest ? shortID(outcome.actionDigest) : "NOT REPORTED", true), fact(tr("upstreamTool"), upstream), fact(tr("evidenceSource"), upper(outcome.evidenceSource)));
+  if (outcome.attempts.length) {
+    const attempts = node("div", "attempt-list"); attempts.append(node("span", "block-label", tr("attempts")));
+    outcome.attempts.forEach((attempt, index) => { const row = node("div"); row.append(node("b", "", String(index + 1).padStart(2, "0")), badge(attempt)); attempts.append(row); });
+    facts.append(attempts);
   }
-  const hero = node("header", "detail-hero"); const heroCopy = node("div");
-  heroCopy.append(node("p", "eyebrow", `${tr("requestedAction")} · ${formatTime(decision.createdAt)}`), node("h3", "", privacySafe(decision.action)), node("code", "", shortID(decision.requestId)));
-  const hasViolation = decision.violations.length > 0 || decision.events.some(event => event.violation);
-  hero.append(heroCopy, node("div", `verdict-stamp ${hasViolation ? "violation" : slug(decision.route)}`, titleToken(decision.finalVerdict)));
-  const details = node("div", "detail-grid");
-  details.append(
-    detailCard(tr("identity"), [[tr("principal"), decision.principal], [tr("principalType"), decision.principalType], [tr("agentIdentity"), decision.agent], [tr("workload"), decision.workload]]),
-    detailCard(tr("delegatedAuthority"), [[tr("issuer"), decision.delegatedIssuer], [tr("delegatedSubject"), decision.delegatedSubject], [tr("scopes"), decision.scopes.join(", ") || "—"], [tr("credential"), decision.credentialFingerprint]]),
-    detailCard(tr("actionRequest"), [[tr("capability"), decision.capability], [tr("tool"), decision.tool], [tr("resource"), decision.resource], [tr("operation"), decision.operation], [tr("sideEffect"), decision.sideEffect]]),
-    detailCard(tr("dispatchDecision"), [[tr("selectedExecutor"), decision.executor], [tr("finalVerdict"), titleToken(decision.finalVerdict)], [tr("duration"), decision.durationMs === null ? "—" : `${decision.durationMs} ms`], [tr("isolationBackend"), titleToken(decision.isolationStatus)]])
-  );
-  container.append(hero, renderInvestigationRail(decision), details, renderPolicyRisk(decision), renderEnvelope(decision));
-  if (["sandbox", "restrict"].includes(decision.route) && slug(decision.isolationStatus) !== "connected") {
-    container.append(node("p", "isolation-warning", `${tr("isolationBackend")}: ${tr("notConnectedDemo")}`));
-  }
-  container.append(renderRuntimeEvents(decision));
-}
-
-function visibleDecisions(): Decision[] {
-  if (state.decisionFilter === "blocked") return state.decisions.filter(decision => ["deny", "escalate"].includes(decision.route) || decision.events.some(event => event.violation));
-  if (state.decisionFilter === "permitted") return state.decisions.filter(decision => ["allow", "restrict", "sandbox"].includes(decision.route));
-  return state.decisions;
-}
-
-function renderDecisionViews(): void {
-  const container = qs("#decision-list"); container.replaceChildren();
-  const decisions = visibleDecisions();
-  if (!decisions.length) container.append(empty(tr("noDecisions")));
-  else decisions.forEach((decision, index) => container.append(decisionButton(decision, index)));
-  renderDecisionDetail(state.decisions.find(decision => decision.requestId === state.selectedDecision) || decisions[0]);
-}
-
-function renderInvestigations(): void {
-  const listContainer = qs("#investigation-list"); listContainer.replaceChildren();
-  const relevant = state.decisions.filter(decision => ["deny", "escalate"].includes(decision.route) || decision.violations.length || decision.events.some(event => event.violation));
-  if (!relevant.length) listContainer.append(empty(tr("noAlerts")));
-  relevant.forEach(decision => {
-    const row = node("article", "investigation-row");
-    const route = node("span", `route-badge ${slug(decision.route)}`, decision.events.some(event => event.violation) ? "VIOLATION" : titleToken(decision.route));
-    const description = node("div");
-    description.append(node("strong", "", privacySafe(decision.action)), node("code", "", `${privacySafe(decision.agent)} · ${shortID(decision.requestId)} · ${formatTime(decision.createdAt)}`));
-    const inspect = node("button", "", tr("inspectDecision")) as HTMLButtonElement; inspect.type = "button";
-    inspect.addEventListener("click", () => { state.selectedDecision = decision.requestId; navigate("decisions"); renderDecisionViews(); });
-    row.append(route, description, inspect); listContainer.append(row);
-  });
-
-  const evidenceContainer = qs("#runtime-event-list"); evidenceContainer.replaceChildren();
-  const decisionEvents = state.decisions.flatMap(decision => decision.events.map(event => ({ event, requestId: decision.requestId })));
-  const looseEvents = state.sessionEvents.map(event => ({ event, requestId: "session evidence" }));
-  const combined = [...decisionEvents, ...looseEvents].slice(0, 50);
-  if (!combined.length) evidenceContainer.append(empty(tr("noRuntimeEvidence")));
-  combined.forEach(({ event, requestId }) => {
-    const item = node("article", "evidence-item"); const header = node("header");
-    header.append(node("strong", "", privacySafe(event.operation)), node("span", `trust-badge ${slug(`${event.source}-${event.trust}`)}`, eventTrustLabel(event)));
-    item.append(header, node("code", "", `${shortID(requestId)} · ${privacySafe(event.tool)} → ${privacySafe(event.resource)} · ${formatTime(event.timestamp)}`)); evidenceContainer.append(item);
-  });
-}
-
-function renderPolicies(): void {
-  const container = qs("#policy-rule-list"); container.replaceChildren();
-  const counts = new Map<string, number>();
-  state.decisions.forEach(decision => decision.matchedRules.forEach(rule => counts.set(rule, (counts.get(rule) || 0) + 1)));
-  if (!counts.size) { container.append(empty(tr("noRules"))); return; }
-  [...counts.entries()].sort((a, b) => b[1] - a[1]).forEach(([rule, count]) => {
-    const item = node("div", "policy-rule"); item.append(node("code", "", privacySafe(rule)), node("span", "", String(count))); container.append(item);
-  });
-}
-
-function statusLabel(value: string): string {
-  const normalized = slug(value);
-  if (["approved", "registered", "active"].includes(normalized)) return tr("approved");
-  if (normalized === "shadow") return "SHADOW";
-  if (normalized === "unassessed") return tr("unassessed");
-  return titleToken(value);
-}
-
-function deploymentLabel(value: string): string {
-  const normalized = slug(value);
-  return tr(({ available: "available", installed: "installed", configured: "configured", observed: "observed" } as Record<string, string>)[normalized] || "unknown");
-}
-
-function registrationPath(agent: InventoryAgent): string {
-  const raw = agent.evidence[0]?.source || agent.evidence[0]?.indicator || "";
-  const normalized = raw.replaceAll("\\", "/");
-  return normalized.replace(/^.*?\/Users\/[^/]+\//i, "").replace(/^[A-Za-z]:\//, "").slice(0, 160);
-}
-
-function prepareRegistration(agent: InventoryAgent): void {
-  resetApprovalForm();
-  const details = qs<HTMLDetailsElement>(".registry-editor"); details.open = true;
-  qs<HTMLInputElement>("#approval-name").value = agent.name;
-  const type = qs<HTMLSelectElement>("#approval-type"); if ([...type.options].some(option => option.value === agent.agentType)) type.value = agent.agentType;
-  qs<HTMLInputElement>("#approval-path").value = registrationPath(agent);
-  qs<HTMLInputElement>("#approval-fingerprint").value = agent.fingerprint === "—" ? "" : agent.fingerprint;
-  qs<HTMLInputElement>("#approval-owner").focus();
-  details.scrollIntoView({ behavior: "smooth", block: "center" });
-}
-
-function inventoryCard(agent: InventoryAgent, compact = false): HTMLElement {
-  const entry = node("article", `inventory-entry ${slug(agent.status)}`);
-  const identity = node("div"); const badges = node("div", "inventory-badges");
-  badges.append(node("span", "", statusLabel(agent.status)), node("span", "", deploymentLabel(agent.deploymentState)));
-  identity.append(badges, node("h4", "", agent.name), node("code", "", `${agent.agentType} · ${fingerprintSafe(agent.fingerprint)}`));
-  const confidence = node("div", "discovery-confidence");
-  confidence.append(node("span", "", tr("discoveryConfidence")), node("strong", "", agent.confidence === null ? tr("unknown") : `${Math.round(agent.confidence * (agent.confidence <= 1 ? 100 : 1))}%`));
-  const exposure = node("div", "exposure-copy");
-  const capabilities = agent.potentialCapabilities.length ? ` · ${agent.potentialCapabilities.join(", ")}` : "";
-  exposure.textContent = `${tr("potentialExposure")}: ${titleToken(agent.exposure)}${capabilities}`;
-  entry.append(identity, confidence, exposure);
-  if (!compact && agent.status === "shadow") {
-    const button = node("button", "text-button", tr("prepareRegistration")) as HTMLButtonElement; button.type = "button"; button.addEventListener("click", () => prepareRegistration(agent)); entry.append(button);
-  }
-  return entry;
-}
-
-function renderApprovals(): void {
-  const container = qs("#approval-list"); container.replaceChildren();
-  if (!state.inventory.approvals.length) { container.append(empty(tr("noRegistrations"))); return; }
-  state.inventory.approvals.forEach(approval => {
-    const currentState = approval.status || approval.state || "active";
-    const card = node("article", `approval-entry ${slug(currentState)}`); const header = node("header");
-    header.append(node("strong", "", approval.display_name || approval.name), node("span", "", titleToken(currentState)));
-    const identity = approval.agent_id || approval.workload_identity || approval.agent_type;
-    card.append(header, node("code", "", `${privacySafe(identity)} · ${privacySafe(approval.path_contains || "evidence reference unavailable")}`),
-      node("small", "", `${approval.owner}${approval.environment ? ` · ${approval.environment}` : ""}${approval.policy_profile ? ` · policy: ${approval.policy_profile}` : ""}`));
-    const actions = node("div", "approval-actions");
-    const edit = node("button", "text-button", tr("edit")) as HTMLButtonElement; edit.type = "button"; edit.addEventListener("click", () => editApproval(approval));
-    const remove = node("button", "danger-button", tr("remove")) as HTMLButtonElement; remove.type = "button"; remove.addEventListener("click", () => void deleteApproval(approval));
-    actions.append(edit, remove); card.append(actions); container.append(card);
-  });
-}
-
-function renderAgentTypes(): void {
-  const select = qs<HTMLSelectElement>("#approval-type"); const current = select.value; select.replaceChildren();
-  const types = state.inventory.agentTypes.length ? state.inventory.agentTypes : [...new Set(state.inventory.agents.map(agent => agent.agentType).filter(type => type !== "unknown"))];
-  (types.length ? types : ["agent"]).forEach(type => { const option = node("option", "", type) as HTMLOptionElement; option.value = type; select.append(option); });
-  if (types.includes(current)) select.value = current;
+  container.append(head, facts, node("p", "demo-truth", tr("truthfulDemo")));
 }
 
 function renderInventory(): void {
-  const { agents, approvals, gaps, scannedAt, truncated } = state.inventory;
-  const primary = agents.filter(agent => agent.deploymentState !== "available");
-  const available = agents.filter(agent => agent.deploymentState === "available");
-  const shadow = primary.filter(agent => agent.status === "shadow").length;
-  qs("#inventory-approved").textContent = String(approvals.length);
-  qs("#inventory-shadow").textContent = String(shadow);
-  qs("#inventory-available").textContent = String(available.length);
-  qs("#inventory-coverage").textContent = gaps.length || truncated ? tr("unknown") : state.inventory.rootCount ? tr("instrumented") : tr("unknown");
-  qs("#available-count").textContent = String(available.length);
-  qs("#scanned-at").textContent = scannedAt ? formatTime(scannedAt) : tr("unknown");
-  const warning = qs("#inventory-warning"); warning.hidden = !gaps.length && !truncated;
-  warning.textContent = gaps.length || truncated ? `${tr("scanIncomplete")}${gaps.length ? ` (${gaps.length})` : ""}` : "";
-  const primaryList = qs("#inventory-primary-list"); primaryList.replaceChildren();
-  if (!primary.length) primaryList.append(empty(tr("noInventory"))); else primary.forEach(agent => primaryList.append(inventoryCard(agent)));
-  const evidenceList = qs("#inventory-evidence-list"); evidenceList.replaceChildren();
-  if (!available.length) evidenceList.append(empty(tr("noAvailableEvidence"))); else available.forEach(agent => evidenceList.append(inventoryCard(agent, true)));
-  renderAgentTypes(); renderApprovals();
-}
-
-function editApproval(approval: ApprovedAgent): void {
-  const details = qs<HTMLDetailsElement>(".registry-editor"); details.open = true;
-  qs<HTMLInputElement>("#approval-id").value = approval.id;
-  qs<HTMLInputElement>("#approval-name").value = approval.display_name || approval.name;
-  const type = qs<HTMLSelectElement>("#approval-type"); if ([...type.options].some(option => option.value === approval.agent_type)) type.value = approval.agent_type;
-  qs<HTMLInputElement>("#approval-path").value = approval.path_contains;
-  qs<HTMLInputElement>("#approval-fingerprint").value = approval.fingerprint || "";
-  qs<HTMLInputElement>("#approval-owner").value = approval.owner;
-  qs<HTMLInputElement>("#approval-environment").value = approval.environment || "";
-  qs<HTMLInputElement>("#approval-ref").value = approval.approval_ref || "";
-  qs<HTMLInputElement>("#approval-expiry").value = approval.expires_on || "";
-  qs<HTMLSelectElement>("#approval-state").value = approval.state || approval.status || "active";
-  qs<HTMLInputElement>("#approval-policy-profile").value = approval.policy_profile || "";
-  qs<HTMLInputElement>("#approval-name").focus();
-}
-
-function resetApprovalForm(): void {
-  qs<HTMLFormElement>("#approval-form").reset(); qs<HTMLInputElement>("#approval-id").value = ""; qs<HTMLSelectElement>("#approval-state").value = "active";
-  const feedback = qs("#approval-feedback"); feedback.textContent = ""; feedback.classList.remove("error");
-}
-
-async function saveApproval(event: SubmitEvent): Promise<void> {
-  event.preventDefault(); const form = qs<HTMLFormElement>("#approval-form"); const feedback = qs("#approval-feedback");
-  const payload = Object.fromEntries(new FormData(form).entries()) as Record<string, FormDataEntryValue>;
-  if (!state.modernAgentsAPI) { delete payload.environment; delete payload.policy_profile; }
-  try {
-    const response = await requestJSON("/api/approved-agents", { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-Governance-Admin": "local-ui" }, body: JSON.stringify(payload) });
-    const discovery = first(response, ["discovery"]); if (discovery) state.inventory = legacyDiscoveryPayload(discovery, { approved_agents: [...state.inventory.approvals] });
-    await loadInventory(); renderInventory(); renderOverview(); resetApprovalForm(); feedback.textContent = tr("registrationSaved"); showToast(tr("registrationSaved"));
-  } catch (error) { feedback.textContent = error instanceof Error ? error.message : tr("requestFailed"); feedback.classList.add("error"); }
-}
-
-async function deleteApproval(approval: ApprovedAgent): Promise<void> {
-  if (!window.confirm(tr("confirmRemove"))) return;
-  const feedback = qs("#approval-feedback");
-  try {
-    await requestJSON(`/api/approved-agents/${encodeURIComponent(approval.id)}`, { method: "DELETE", headers: { "X-Agent-Governance-Admin": "local-ui" } });
-    await loadInventory(); renderInventory(); renderOverview(); feedback.textContent = tr("registrationRemoved"); showToast(tr("registrationRemoved"));
-  } catch (error) { feedback.textContent = error instanceof Error ? error.message : tr("requestFailed"); feedback.classList.add("error"); }
-}
-
-async function rescanDiscoveries(): Promise<void> {
-  const button = qs<HTMLButtonElement>("#rescan-discoveries"); button.disabled = true;
-  try {
-    await requestJSON("/api/discoveries/rescan", { method: "POST", headers: { "X-Agent-Governance-Admin": "local-ui" } });
-    await loadInventory(); renderInventory(); renderOverview(); showToast(tr("scanComplete"));
-  } catch (error) { showToast(error instanceof Error ? error.message : tr("requestFailed"), true); }
-  finally { button.disabled = false; }
-}
-
-const localizedScenarios: Record<string, { zh: [string, string]; en: [string, string] }> = {
-  "safe-code": { zh: ["安全代码请求", "合法身份、委托范围、工具与资源；签发许可并保持在信封内。"], en: ["Safe code request", "Valid identity, delegation, tool, and resource; issue a permit and stay inside it."] },
-  "scope-violation": { zh: ["未授权财务访问", "代码 Agent 使用 code 范围请求 finance.read；执行前拒绝。"], en: ["Unauthorized finance access", "A coder Agent uses code scope for finance.read and is denied before execution."] },
-  "authorization-boundary-violation": { zh: ["授权边界越界", "仅获准 config.read，随后演示 secret.read；触发越界结论。"], en: ["Authorization-boundary violation", "Only config.read is permitted, then demo secret.read triggers a boundary violation."] },
-  "indirect-prompt-injection": { zh: ["间接提示注入", "来自检索内容的风险信号影响风险与分派。"], en: ["Indirect prompt injection", "Risk signals from retrieved content affect risk and dispatch."] },
-  "sensitive-file-read": { zh: ["受保护文件读取", "只使用资源类别与访问元数据，不展示路径或内容。"], en: ["Protected file read", "Use resource class and access metadata without revealing paths or contents."] },
-  "cross-tool-egress": { zh: ["敏感读取后外传", "因果链关联敏感读取与后续外部出口。"], en: ["Sensitive read followed by egress", "A causal chain links a sensitive read to subsequent external egress."] }
-};
-
-function scenarioCopy(scenario: Scenario): [string, string] {
-  const direct = localizedScenarios[scenario.id];
-  if (direct) return state.locale === "zh-CN" ? direct.zh : direct.en;
-  const normalized = scenario.id.toLowerCase();
-  const match = Object.entries(localizedScenarios).find(([key]) => normalized.includes(key) || key.includes(normalized));
-  if (match) return state.locale === "zh-CN" ? match[1].zh : match[1].en;
-  return [scenario.title, scenario.description];
-}
-
-function selectScenario(scenario: Scenario): void {
-  state.selectedScenario = scenario.id;
-  document.querySelectorAll<HTMLElement>(".scenario-card").forEach(card => card.classList.toggle("active", card.dataset.scenario === scenario.id));
-  const [title] = scenarioCopy(scenario); qs("#scenario-selection").textContent = title;
-  qs("#scenario-expected").textContent = `${tr("expected")}: ${titleToken(scenario.expectedRoute)}`;
-  qs<HTMLTextAreaElement>("#request-json").value = JSON.stringify(scenario.request, null, 2);
-  qs("#demo-error").textContent = "";
-}
-
-function renderScenarios(): void {
-  const container = qs("#scenario-list"); container.replaceChildren();
-  if (!state.scenarios.length) { container.append(empty(tr("noDecisions"))); return; }
-  state.scenarios.forEach(scenario => {
-    const [title, description] = scenarioCopy(scenario);
-    const button = node("button", `scenario-card${state.selectedScenario === scenario.id ? " active" : ""}`) as HTMLButtonElement;
-    button.type = "button"; button.dataset.scenario = scenario.id;
-    button.append(node("strong", "", title), node("span", "", description), node("em", "", `${tr("expected")} · ${titleToken(scenario.expectedRoute)}`));
-    button.addEventListener("click", () => selectScenario(scenario)); container.append(button);
+  const container = qs("#inventory-list"); container.replaceChildren();
+  if (!state.inventoryEnabled || !state.inventory.length) { container.append(empty(tr("noInventory"))); return; }
+  container.append(node("p", "experimental-banner", tr("experimentalOnly")));
+  state.inventory.forEach(item => {
+    const row = node("article", "inventory-row");
+    row.append(node("strong", "", safeText(item, ["agent_id", "name"], tr("unknown"))), node("code", "", safeText(item, ["workload_id", "workload_ids.0"], "NOT REPORTED")));
+    container.append(row);
   });
-  const selected = state.scenarios.find(scenario => scenario.id === state.selectedScenario) || state.scenarios[0];
-  if (selected) {
-    const [title] = scenarioCopy(selected); qs("#scenario-selection").textContent = title; qs("#scenario-expected").textContent = `${tr("expected")}: ${titleToken(selected.expectedRoute)}`;
-    if (!qs<HTMLTextAreaElement>("#request-json").value) qs<HTMLTextAreaElement>("#request-json").value = JSON.stringify(selected.request, null, 2);
-  }
-}
-
-function freshenRequest(input: JsonObject): JsonObject {
-  const request = structuredClone(input);
-  delete request.simulated_actions;
-  const suffix = crypto.randomUUID().slice(0, 8);
-  for (const key of ["request_id", "session_id", "parent_event_id"]) {
-    const value = request[key]; if (typeof value === "string" && value.startsWith("demo-")) request[key] = `${value}-${suffix}`;
-  }
-  const sources = list(request.input_sources);
-  if (sources.length) request.input_sources = sources.map(source => {
-    const copySource = { ...record(source) }; const eventID = copySource.event_id;
-    if (typeof eventID === "string" && eventID.startsWith("demo-")) copySource.event_id = `${eventID}-${suffix}`;
-    return copySource;
-  });
-  return request;
-}
-
-async function postAuthorization(request: JsonObject): Promise<unknown> {
-  const options: RequestInit = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) };
-  try { return await requestJSON("/api/authorize", options); }
-  catch (error) {
-    if (!(error instanceof HTTPError) || ![404, 405].includes(error.status)) throw error;
-    return requestJSON("/api/route", options);
-  }
-}
-
-async function runDemo(): Promise<void> {
-  const button = qs<HTMLButtonElement>("#authorize-button"); const errorBox = qs("#demo-error");
-  const selected = state.scenarios.find(scenario => scenario.id === state.selectedScenario);
-  if (!selected) { errorBox.textContent = tr("chooseScenario"); return; }
-  let request: JsonObject;
-  try { request = freshenRequest(record(JSON.parse(qs<HTMLTextAreaElement>("#request-json").value))); }
-  catch (error) { errorBox.textContent = error instanceof Error ? `JSON: ${error.message}` : "Invalid JSON"; return; }
-  button.disabled = true; button.querySelector("span")!.textContent = tr("authorizing"); errorBox.textContent = "";
-  let serverDemo = true;
-  try {
-    let payload: unknown;
-    try {
-      payload = await requestJSON(`/api/demo-lab/${encodeURIComponent(selected.id)}/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-    } catch (error) {
-      if (!(error instanceof HTTPError) || ![404, 405].includes(error.status)) throw error;
-      serverDemo = false; payload = await postAuthorization(request);
-    }
-    const decision = normalizeDecision(payload);
-    if (!serverDemo) decision.events = decision.events.filter(event => event.source !== "simulated_demo");
-    state.decisions = [decision, ...state.decisions.filter(existing => existing.requestId !== decision.requestId)];
-    state.selectedDecision = decision.requestId; renderAll(); renderDemoResult(decision, serverDemo);
-  } catch (error) { errorBox.textContent = error instanceof Error ? error.message : tr("requestFailed"); }
-  finally { button.disabled = false; button.querySelector("span")!.textContent = tr("authorizeAction"); }
-}
-
-function renderDemoResult(decision?: Decision, serverDemo = false): void {
-  const container = qs("#demo-result"); container.replaceChildren();
-  if (!decision) {
-    const placeholder = node("div", "demo-placeholder"); placeholder.append(node("b", "", "D→A"), node("p", "", tr("chooseScenario"))); container.append(placeholder); return;
-  }
-  const head = node("header", "demo-result-head"); head.append(node("span", "", serverDemo ? tr("demoEvidence") : tr("policyDecision")), node("strong", "", titleToken(decision.finalVerdict)));
-  const body = node("div", "demo-result-body");
-  const facts: Array<[string, string]> = [[tr("policyDecision"), titleToken(decision.policyRoute)], [tr("dispatchDecision"), titleToken(decision.route)], [tr("riskAssessment"), `${titleToken(decision.riskLevel)}${decision.riskScore === null ? "" : ` · ${decision.riskScore}/100`}`], [tr("permitId"), decision.envelope ? shortID(decision.envelope.permitId) : tr("permitNotIssued")], [tr("runtimeEvents"), serverDemo ? String(decision.events.length) : tr("unknown")]];
-  facts.forEach(([label, value]) => { const row = node("div", "demo-result-fact"); row.append(node("span", "", label), node("strong", "", value)); body.append(row); });
-  const truth = node("p", "demo-truth-note", serverDemo ? tr("truthfulDemo") : tr("noExecutionEvidence"));
-  const inspect = node("button", "primary-button", tr("inspectDecision")) as HTMLButtonElement; inspect.type = "button";
-  inspect.addEventListener("click", () => { navigate("decisions"); renderDecisionViews(); });
-  container.append(head, body, truth, inspect);
 }
 
 function renderAll(): void {
-  renderOverview(); renderDecisionViews(); renderInvestigations(); renderPolicies(); renderInventory(); renderScenarios();
-  if (!qs("#demo-result").hasChildNodes()) renderDemoResult();
+  applyTranslations(); renderMetrics(); renderActivity(); renderPermits(); renderAudit(); renderDemo(); renderInventory();
 }
 
 function bindEvents(): void {
-  document.querySelectorAll<HTMLButtonElement>("[data-nav]").forEach(button => button.addEventListener("click", () => {
-    const target = button.dataset.nav || "overview"; if (validView(target)) navigate(target);
-  }));
-  document.querySelectorAll<HTMLButtonElement>("[data-go]").forEach(button => button.addEventListener("click", () => {
-    const target = button.dataset.go || "overview"; if (validView(target)) navigate(target);
-  }));
-  document.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach(button => button.addEventListener("click", () => {
-    state.decisionFilter = button.dataset.filter || "all";
-    document.querySelectorAll("[data-filter]").forEach(item => item.classList.toggle("active", item === button)); renderDecisionViews();
+  document.querySelectorAll<HTMLButtonElement>("[data-nav]").forEach(button => button.addEventListener("click", () => navigate(compatibilityView(button.dataset.nav ?? ""))));
+  document.querySelectorAll<HTMLButtonElement>("[data-go]").forEach(button => button.addEventListener("click", () => navigate(compatibilityView(button.dataset.go ?? ""))));
+  document.querySelectorAll<HTMLButtonElement>("[data-permit-filter]").forEach(button => button.addEventListener("click", () => {
+    state.permitFilter = button.dataset.permitFilter ?? "all";
+    document.querySelectorAll<HTMLButtonElement>("[data-permit-filter]").forEach(item => item.classList.toggle("active", item === button));
+    renderPermits();
   }));
   qs<HTMLButtonElement>("#language-toggle").addEventListener("click", () => {
-    state.locale = state.locale === "zh-CN" ? "en" : "zh-CN"; localStorage.setItem("aegis-locale", state.locale); applyTranslations(); renderAll();
+    state.locale = state.locale === "zh-CN" ? "en" : "zh-CN"; localStorage.setItem("aegis-locale", state.locale); qs("#demo-error").textContent = ""; renderAll();
   });
-  qs<HTMLButtonElement>("#refresh-all").addEventListener("click", () => void refreshAll(true));
-  qs<HTMLButtonElement>("#rescan-discoveries").addEventListener("click", () => void rescanDiscoveries());
-  qs<HTMLButtonElement>("#authorize-button").addEventListener("click", () => void runDemo());
-  qs<HTMLFormElement>("#approval-form").addEventListener("submit", event => void saveApproval(event as SubmitEvent));
-  qs<HTMLButtonElement>("#cancel-approval").addEventListener("click", resetApprovalForm);
-  window.addEventListener("hashchange", () => { const target = location.hash.slice(1); if (validView(target)) navigate(target, false); });
+  qs<HTMLButtonElement>("#refresh-all").addEventListener("click", () => { void refreshAll(true); });
+  qs<HTMLButtonElement>("#run-scenario").addEventListener("click", () => { void runScenario(); });
+  window.addEventListener("hashchange", () => navigate(compatibilityView(location.hash.slice(1)), false));
 }
 
 bindEvents();
-applyTranslations();
-const initialView = location.hash.slice(1);
-navigate(validView(initialView) ? initialView : "overview", false);
-renderDemoResult();
+navigate(compatibilityView(location.hash.slice(1)), false);
 void refreshAll();
