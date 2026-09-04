@@ -65,8 +65,12 @@ func SaveRegistry(path string, entries []RegistryEntry) error {
 }
 
 func ValidateRegistryEntry(entry RegistryEntry, knownTypes []string) error {
+	displayName := strings.TrimSpace(entry.DisplayName)
+	if displayName == "" {
+		displayName = strings.TrimSpace(entry.Name)
+	}
 	fields := map[string]string{
-		"name": entry.Name, "agent_type": entry.AgentType, "path_contains": entry.PathContains, "owner": entry.Owner,
+		"display_name": displayName, "agent_type": entry.AgentType, "path_contains": entry.PathContains, "owner": entry.Owner,
 	}
 	for name, value := range fields {
 		if strings.TrimSpace(value) == "" {
@@ -96,14 +100,34 @@ func ValidateRegistryEntry(entry RegistryEntry, knownTypes []string) error {
 	if len(entry.ApprovalRef) > 160 {
 		return fmt.Errorf("approval_ref must be 160 characters or fewer")
 	}
+	for name, value := range map[string]string{
+		"agent_id": entry.AgentID, "workload_identity": entry.WorkloadID, "environment": entry.Environment,
+		"framework": entry.Framework, "policy_profile": entry.PolicyProfile,
+	} {
+		if len(value) > 160 {
+			return fmt.Errorf("%s must be 160 characters or fewer", name)
+		}
+	}
 	return nil
 }
 
 func normalizeRegistry(entries []RegistryEntry) []RegistryEntry {
 	result := make([]RegistryEntry, 0, len(entries))
 	for _, entry := range entries {
+		entry.AgentID = strings.TrimSpace(entry.AgentID)
+		entry.WorkloadID = strings.TrimSpace(entry.WorkloadID)
+		entry.DisplayName = strings.TrimSpace(entry.DisplayName)
 		entry.Name = strings.TrimSpace(entry.Name)
+		if entry.DisplayName == "" {
+			entry.DisplayName = entry.Name
+		}
+		if entry.Name == "" {
+			entry.Name = entry.DisplayName
+		}
 		entry.AgentType = strings.TrimSpace(entry.AgentType)
+		entry.Environment = strings.TrimSpace(entry.Environment)
+		entry.Framework = strings.TrimSpace(entry.Framework)
+		entry.PolicyProfile = strings.TrimSpace(entry.PolicyProfile)
 		entry.Fingerprint = strings.ToLower(strings.TrimSpace(entry.Fingerprint))
 		entry.PathContains = filepath.ToSlash(strings.TrimSpace(entry.PathContains))
 		entry.Owner = strings.TrimSpace(entry.Owner)
@@ -114,7 +138,7 @@ func normalizeRegistry(entries []RegistryEntry) []RegistryEntry {
 			entry.State = "active"
 		}
 		if entry.ID == "" {
-			entry.ID = "approval-" + strings.TrimPrefix(fingerprint(entry.Name+"\x00"+entry.AgentType+"\x00"+entry.Fingerprint+"\x00"+entry.PathContains), "sha256:")
+			entry.ID = "approval-" + strings.TrimPrefix(fingerprint(entry.AgentID+"\x00"+entry.WorkloadID+"\x00"+entry.Name+"\x00"+entry.AgentType+"\x00"+entry.Fingerprint+"\x00"+entry.PathContains), "sha256:")
 		}
 		result = append(result, entry)
 	}

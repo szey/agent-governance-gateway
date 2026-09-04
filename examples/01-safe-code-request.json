@@ -1,17 +1,53 @@
 {
   "id": "safe-code",
-  "title": "Safe coding request",
-  "description": "A code-scoped agent reads a non-sensitive workspace and follows its declared plan.",
+  "title": "Safe code request",
+  "description": "Valid identity, delegation, capability, tool, resource, and operation produce an execution permit; demo telemetry stays inside it.",
   "expected_route": "allow",
   "request": {
-    "user_id": "user-01",
-    "agent_id": "coder-agent",
-    "token_scopes": ["code.read"],
-    "requested_action": "Generate a parser for this JSON document",
+    "principal": {
+      "principal_id": "user-01",
+      "principal_type": "human",
+      "tenant": "demo",
+      "environment": "local"
+    },
+    "agent": {
+      "agent_id": "coder-agent",
+      "workload_id": "coder-workload-v1",
+      "owner": "engineering",
+      "environment": "demo",
+      "framework": "synthetic"
+    },
+    "delegated_authority": {
+      "credential_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+      "issuer": "demo-idp",
+      "scopes": ["code.read"],
+      "subject": "user-01"
+    },
+    "tool": {
+      "tool_id": "tool-coder-01",
+      "name": "coder",
+      "provider": "instrumented-demo"
+    },
+    "action": {
+      "capability": "generate_code",
+      "operation": "generate",
+      "target_resource": "public_workspace",
+      "side_effect": "none"
+    },
     "claimed_intent": "code_generation",
-    "requested_capability": "generate_code",
-    "target_resource": "public_workspace",
-    "planned_actions": ["read_safe_files", "generate_code"],
-    "simulated_actions": ["read_safe_files", "generate_code"]
-  }
+    "planned_actions": ["generate"]
+  },
+  "simulated_demo": [{
+    "event_id": "demo-safe-001",
+    "permit_id": "PERMIT_FROM_AUTHORIZATION",
+    "request_id": "REQUEST_FROM_AUTHORIZATION",
+    "agent_id": "coder-agent",
+    "workload_id": "coder-workload-v1",
+    "source": "simulated_demo",
+    "trust_level": "simulated",
+    "capability": "generate_code",
+    "tool": "coder",
+    "operation": "generate",
+    "resource": "public_workspace"
+  }]
 }

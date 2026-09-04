@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"agent-governance-gateway/internal/discovery"
@@ -52,9 +53,13 @@ func main() {
 		}
 	case "table":
 		writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(writer, "STATUS\tDEPLOYMENT\tRISK\tCONFIDENCE\tTYPE\tNAME\tEVIDENCE")
+		fmt.Fprintln(writer, "STATUS\tDEPLOYMENT\tPOTENTIAL EXPOSURE\tCONFIDENCE\tTYPE\tNAME\tEVIDENCE")
 		for _, agent := range report.Agents {
-			fmt.Fprintf(writer, "%s\t%s\t%s/%d\t%.0f%%\t%s\t%s\t%d\n", agent.Status, agent.DeploymentState, agent.Risk.Level, agent.Risk.Score, agent.Confidence*100, agent.AgentType, agent.Name, len(agent.Evidence))
+			exposure := agent.Exposure.Classification
+			if len(agent.Exposure.PotentialCapabilities) > 0 {
+				exposure += ":" + strings.Join(agent.Exposure.PotentialCapabilities, ",")
+			}
+			fmt.Fprintf(writer, "%s\t%s\t%s\t%.0f%%\t%s\t%s\t%d\n", agent.Status, agent.DeploymentState, exposure, agent.Confidence*100, agent.AgentType, agent.Name, len(agent.Evidence))
 		}
 		_ = writer.Flush()
 		fmt.Printf("\nTotal: %d  Approved: %d  Shadow: %d  Available only: %d  Coverage gaps: %d\n", report.Summary.Total, report.Summary.Approved, report.Summary.Shadow, report.Summary.Available, report.Summary.CoverageGaps)

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -18,6 +19,7 @@ import (
 	"agent-governance-gateway/internal/httpapi"
 	"agent-governance-gateway/internal/models"
 	"agent-governance-gateway/internal/router"
+	"agent-governance-gateway/internal/scenario"
 	"agent-governance-gateway/internal/sessionaudit"
 )
 
@@ -57,6 +59,220 @@ func TestRouteEndpointRejectsUnknownFields(t *testing.T) {
 	handler.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+}
+
+func TestAuthorizeIssuesPermitWithoutInventingRuntimeEvents(t *testing.T) {
+	handler := testHandler(t)
+	input := structuredSafeRequest()
+	body, _ := json.Marshal(input)
+	req := httptest.NewRequest(http.MethodPost, "/api/authorize", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var record models.AuditRecord
+	if err := json.NewDecoder(response.Body).Decode(&record); err != nil {
+		t.Fatal(err)
+	}
+	if !record.PolicyDecision.Authorized || record.AuthorizationEnvelope == nil {
+		t.Fatalf("authorization result = %#v", record)
+	}
+	if len(record.RuntimeObservation.Events) != 0 || len(record.RuntimeObservation.EventEvaluations) != 0 {
+		t.Fatalf("authorize invented runtime evidence: %#v", record.RuntimeObservation)
+	}
+	if record.DispatchDecision.ExecutorInvoked {
+		t.Fatal("routing must not claim that an unconnected executor ran")
+	}
+}
+
+func TestPublicRequestRejectsLegacySimulatedActionsField(t *testing.T) {
+	handler := testHandler(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/authorize", bytes.NewBufferString(`{
+		"user_id":"user-01","agent_id":"coder-agent","token_scopes":["code.read"],
+		"requested_capability":"generate_code","target_resource":"public_workspace",
+		"simulated_actions":["read_secret"]
+	}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRuntimeEventEndpointEvaluatesPermitAndReservesDemoSource(t *testing.T) {
+	handler := testHandler(t)
+	authorizeBody, _ := json.Marshal(structuredSafeRequest())
+	authorizeRequest := httptest.NewRequest(http.MethodPost, "/api/authorize", bytes.NewReader(authorizeBody))
+	authorizeResponse := httptest.NewRecorder()
+	handler.ServeHTTP(authorizeResponse, authorizeRequest)
+	var record models.AuditRecord
+	if err := json.NewDecoder(authorizeResponse.Body).Decode(&record); err != nil {
+		t.Fatal(err)
+	}
+	if record.AuthorizationEnvelope == nil {
+		t.Fatalf("authorize body = %s", authorizeResponse.Body.String())
+	}
+	permit := record.AuthorizationEnvelope
+	event := models.RuntimeEvent{
+		EventID: "event-1", PermitID: permit.PermitID, RequestID: record.RequestID,
+		AgentID: permit.AgentID, WorkloadID: permit.WorkloadID,
+		Source: models.RuntimeSourceInstrumentedAdapter, TrustLevel: models.RuntimeTrustAdapterReported,
+		Capability: permit.AllowedCapability, Tool: permit.AllowedTool,
+		Operation: permit.AllowedOperations[0], Resource: permit.AllowedResource,
+	}
+	eventBody, _ := json.Marshal(event)
+	eventRequest := httptest.NewRequest(http.MethodPost, "/api/runtime-events", bytes.NewReader(eventBody))
+	eventResponse := httptest.NewRecorder()
+	handler.ServeHTTP(eventResponse, eventRequest)
+	if eventResponse.Code != http.StatusOK {
+		t.Fatalf("event status = %d, body = %s", eventResponse.Code, eventResponse.Body.String())
+	}
+	var evaluation models.RuntimeEventEvaluation
+	if err := json.NewDecoder(eventResponse.Body).Decode(&evaluation); err != nil {
+		t.Fatal(err)
+	}
+	if !evaluation.Accepted || !evaluation.WithinEnvelope {
+		t.Fatalf("evaluation = %#v", evaluation)
+	}
+
+	event.EventID = "event-demo-forgery"
+	event.Source = models.RuntimeSourceSimulatedDemo
+	event.TrustLevel = models.RuntimeTrustSimulated
+	eventBody, _ = json.Marshal(event)
+	eventRequest = httptest.NewRequest(http.MethodPost, "/api/runtime-events", bytes.NewReader(eventBody))
+	eventResponse = httptest.NewRecorder()
+	handler.ServeHTTP(eventResponse, eventRequest)
+	if eventResponse.Code != http.StatusBadRequest {
+		t.Fatalf("reserved demo source status = %d, body = %s", eventResponse.Code, eventResponse.Body.String())
+	}
+}
+
+func TestDemoLabRunsServerOwnedTelemetryAndShowsBoundaryViolation(t *testing.T) {
+	handler := testHandlerWithDemoScenarios(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/demo-lab/authorization-boundary-violation/run", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var record models.AuditRecord
+	if err := json.NewDecoder(response.Body).Decode(&record); err != nil {
+		t.Fatal(err)
+	}
+	if record.FinalVerdict != "AUTHORIZATION_BOUNDARY_VIOLATION" {
+		t.Fatalf("final verdict = %q", record.FinalVerdict)
+	}
+	if len(record.RuntimeObservation.Events) != 2 || len(record.RuntimeObservation.EventEvaluations) != 2 {
+		t.Fatalf("runtime observation = %#v", record.RuntimeObservation)
+	}
+	for _, event := range record.RuntimeObservation.Events {
+		if event.Source != models.RuntimeSourceSimulatedDemo || event.TrustLevel != models.RuntimeTrustSimulated {
+			t.Fatalf("demo event provenance = %q/%q", event.Source, event.TrustLevel)
+		}
+	}
+	if len(record.RuntimeObservation.AuthorizationViolations) == 0 {
+		t.Fatal("boundary violation must be explicit in the audit record")
+	}
+}
+
+func TestDemoLabCompletesSafeScenarioWithinAuthorization(t *testing.T) {
+	handler := testHandlerWithDemoScenarios(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/demo-lab/safe-code/run", bytes.NewBufferString(`{}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var record models.AuditRecord
+	if err := json.NewDecoder(response.Body).Decode(&record); err != nil {
+		t.Fatal(err)
+	}
+	if record.FinalVerdict != "COMPLETED_WITHIN_AUTHORIZATION" {
+		t.Fatalf("final verdict = %q", record.FinalVerdict)
+	}
+	if len(record.RuntimeObservation.Events) != 1 || record.RuntimeObservation.Events[0].Source != models.RuntimeSourceSimulatedDemo {
+		t.Fatalf("runtime observation = %#v", record.RuntimeObservation)
+	}
+}
+
+func TestRuntimeCoverageNeverPresentsMissingSensorsAsZeroEvents(t *testing.T) {
+	handler := testHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/runtime-coverage", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Coverage  models.RuntimeCoverage `json:"coverage"`
+		Principle string                 `json:"principle"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Coverage.Filesystem != "not_instrumented" || body.Coverage.Network != "not_instrumented" || body.Coverage.IsolationBackend != "not_connected" {
+		t.Fatalf("coverage = %#v", body.Coverage)
+	}
+	if !strings.Contains(body.Principle, "zero events never implies") {
+		t.Fatalf("principle = %q", body.Principle)
+	}
+}
+
+func TestDiscoveryAPIClassifiesLocalRootsAndKeepsEvidenceRelative(t *testing.T) {
+	root := t.TempDir()
+	privateSegment := "private-user-segment"
+	configDir := filepath.Join(root, privateSegment, ".workbuddy")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "mcp.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := testHandlerWithOptions(t, filepath.Join(t.TempDir(), "session-audit.jsonl"), nil, []string{root})
+	req := httptest.NewRequest(http.MethodGet, "/api/discoveries", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var report discovery.Report
+	if err := json.NewDecoder(response.Body).Decode(&report); err != nil {
+		t.Fatal(err)
+	}
+	responseText := strings.ToLower(response.Body.String())
+	if len(report.Roots) != 1 || filepath.IsAbs(report.Roots[0]) || strings.Contains(responseText, strings.ToLower(filepath.ToSlash(root))) || strings.Contains(responseText, privateSegment) {
+		t.Fatalf("discovery API exposed a local root: %s", response.Body.String())
+	}
+	if len(report.Agents) != 1 || len(report.Agents[0].Evidence) == 0 || report.Agents[0].Evidence[0].Source != ".workbuddy/mcp.json" {
+		t.Fatalf("evidence is not a relative inventory reference: %#v", report)
+	}
+}
+
+func TestAgentsAPIDistinguishesGovernedIdentitiesFromAssetRegistry(t *testing.T) {
+	handler := testHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		GovernedIdentities []map[string]any          `json:"governed_identities"`
+		AssetRegistry      []discovery.RegistryEntry `json:"asset_registry"`
+		Principle          string                    `json:"principle"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.GovernedIdentities) != 4 || len(body.AssetRegistry) != 0 {
+		t.Fatalf("agents response conflated policy identities and registration: %#v", body)
+	}
+	if !strings.Contains(strings.ToLower(body.Principle), "behavioral permissions live in policy") {
+		t.Fatalf("principle = %q", body.Principle)
 	}
 }
 
@@ -174,10 +390,24 @@ func TestSessionEventsEndpointDistinguishesEvidenceTrust(t *testing.T) {
 
 func testHandler(t *testing.T) http.Handler {
 	t.Helper()
-	return testHandlerWithSessionAudit(t, filepath.Join(t.TempDir(), "session-audit.jsonl"))
+	return testHandlerWithOptions(t, filepath.Join(t.TempDir(), "session-audit.jsonl"), nil, nil)
 }
 
 func testHandlerWithSessionAudit(t *testing.T, sessionAuditPath string) http.Handler {
+	t.Helper()
+	return testHandlerWithOptions(t, sessionAuditPath, nil, nil)
+}
+
+func testHandlerWithDemoScenarios(t *testing.T) http.Handler {
+	t.Helper()
+	scenarios, err := scenario.LoadDirectory(filepath.Join("..", "..", "examples"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testHandlerWithOptions(t, filepath.Join(t.TempDir(), "session-audit.jsonl"), scenarios, nil)
+}
+
+func testHandlerWithOptions(t *testing.T, sessionAuditPath string, scenarios []models.Scenario, discoveryRoots []string) http.Handler {
 	t.Helper()
 	cfg, err := config.Load(filepath.Join("..", "..", "configs", "policy.json"))
 	if err != nil {
@@ -198,9 +428,21 @@ func testHandlerWithSessionAudit(t *testing.T, sessionAuditPath string) http.Han
 	}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manager, err := discovery.NewManager(discoveryConfig, filepath.Join(t.TempDir(), "approved-agents.json"), nil)
+	manager, err := discovery.NewManager(discoveryConfig, filepath.Join(t.TempDir(), "approved-agents.json"), discoveryRoots)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return httpapi.New(router.New(cfg, store), store, nil, manager, sessionAuditPath, static, logger).Handler()
+	return httpapi.New(router.New(cfg, store), store, cfg, scenarios, manager, sessionAuditPath, static, logger).Handler()
+}
+
+func structuredSafeRequest() models.Request {
+	return models.Request{
+		Principal: models.PrincipalContext{PrincipalID: "user-01", PrincipalType: "human", Environment: "test"},
+		Agent:     models.AgentIdentity{AgentID: "coder-agent", WorkloadID: "coder-workload-v1", Environment: "test"},
+		Authority: models.DelegatedAuthority{
+			CredentialFingerprint: strings.Repeat("a", 64), Scopes: []string{"code.read"}, Subject: "user-01",
+		},
+		Tool:   models.ToolContext{Name: "coder", Provider: "demo-adapter"},
+		Action: models.ActionRequest{Capability: "generate_code", Operation: "generate", TargetResource: "public_workspace", SideEffect: "none"},
+	}
 }

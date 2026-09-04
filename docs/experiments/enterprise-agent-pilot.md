@@ -1,177 +1,150 @@
-# Enterprise Agent Endpoint Pilot
+# Aegis Router Enterprise Agent Endpoint Pilot
 
 English | [简体中文](enterprise-agent-pilot.zh-CN.md)
 
-Status: **paused after an exploratory trial; the formal controlled pilot is incomplete**. One company-endpoint trial verified service startup and scoped configuration discovery, while exposing scan interruption, marketplace/cache noise, stale UI data, and a missing registry workflow. This iteration converts those findings into synthetic fixtures and local fixes. No raw company logs, usernames, hostnames, or absolute paths are retained in the repository. Renew explicit authorization from the device owner, IT/security, and relevant data owners before any further execution.
+Status: **paused after exploratory configuration discovery; the formal controlled runtime pilot is incomplete.**
 
-## Objective
+An earlier company-endpoint trial showed that the server starts and scoped discovery produces evidence. It also exposed access-denied scan aborts, marketplace/cache noise, stale UI snapshots, and a missing registry workflow. Synthetic fixtures drove local fixes, but the trial did not prove that Aegis Router independently observes or stops the company's real Agent behavior and did not reach `V3 pilot_verified`. The repository retains no raw company logs, usernames, hostnames, or absolute paths.
 
-This is not employee surveillance or a company-wide network scan. It tests whether Agent Governance Gateway can discover Agent evidence, record one controlled Agent session, and produce an explainable audit trail on one authorized endpoint with low overhead.
+## What the pilot must now prove
 
-The pilot must establish:
+The primary objective changes from “find an Agent” to validating one controlled action chain:
 
-1. whether Agent Governance Gateway finds Agent configuration, dependency, or tool evidence in approved directories;
-2. whether it observes the start and end of an approved process/session;
-3. whether structured Agent events can be correlated when available;
-4. what remains visible when the Agent provides no structured event stream;
-5. whether unplanned file, process, network, or boundary attempts are identified;
-6. whether useful audit metadata can be retained without prompts, business content, tokens, or real secrets; and
-7. whether CPU, memory, disk, and latency overhead are acceptable on the target device.
-
-A hand-authored UI record does not pass. Configuration evidence proves only possible installation/configuration, not execution.
-
-## Trial feedback received
-
-| Observation | Conclusion | Product response in this iteration |
-|---|---|---|
-| Health check passed and a scoped scan found Agent/MCP evidence | Configuration discovery runs, but does not prove runtime behavior | Preserve evidence trust and coverage limits |
-| A whole-drive scan stopped at an unreadable directory | Whole-drive scanning is neither authorized nor reliable | Keep explicit roots; record denied children as coverage gaps and continue |
-| Marketplace, plugin-cache, and temporary content produced many hits | Available does not mean installed or used | Add `available/installed/configured/observed`; only deployed states enter Shadow reconciliation |
-| CLI results did not reach the running UI | A startup snapshot is not an operational workflow | Add scoped rescan in the UI and reconcile after registry changes |
-| No visible approved-registry workflow existed | Operators could not explain why a result was Shadow | Add a local registry with owner, reference, expiry, and suspended state |
-| Approved could be mistaken for blanket action permission | Asset admission and action authorization must be separate | State `Approved Agent ≠ approved behavior`; continue auditing every valid Router action |
-
-The trial did not complete real GUI/IDE behavior observation, independent OS/network corroboration, or performance measurement, so it is not `V3 pilot_verified`.
-
-## Authorization boundary
-
-Record written approval or a change ticket covering the device, operator, Agent, directory, time window, allowed fields, retention period, and owner.
-
-Do not:
-
-- inspect unapproved employee directories, browser profiles, email, chats, customer data, or shared drives;
-- capture other employees' Agent sessions or company-wide traffic;
-- bypass EDR, antivirus, proxy, DLP, application allowlisting, or administrator policy;
-- upload company audit records to personal GitHub, personal cloud storage, or external AI services;
-- use production tokens, real secrets, or customer data as fixtures; or
-- treat this MVP as a production blocking control without an independent review.
-
-If company policy does not permit unsigned or self-built programs, stop before deployment and let IT choose the approved distribution/signing mechanism.
-
-## Integration profiles
-
-| Agent type | Current integration | Establishes | Current blind spot |
-|---|---|---|---|
-| CLI Agent with JSONL | `cmd/observe -- <agent> ...` | Wrapper lifecycle and Agent self-reported events | Self-report is not independent system evidence |
-| Ordinary CLI Agent | `cmd/observe -- <agent> ...` | Wrapper start/exit and output-line fingerprints | No event semantics and no visibility into omissions |
-| GUI/IDE Agent | Scoped `cmd/discover` | Configuration, dependency, and MCP artifacts | No execution proof or session capture today |
-| Background/managed Agent | Config discovery; future process/network/IdP connectors | Deployment artifacts | MVP cannot fully observe or block it |
-
-Confirm the company Agent's launch and logging capabilities before selecting an adapter. Do not force Codex event fields onto unrelated Agents.
-
-## Evidence trust
-
-| Evidence | Trust label | Meaning |
-|---|---|---|
-| Wrapper lifecycle | `observer_recorded` | Agent Governance Gateway observed the child it started, PID, and exit result |
-| Agent output/structured log | `self_reported` | The Agent claims an event occurred; it may be incomplete |
-| OS process/file sensor | `independently_observed` (planned) | Independent process-tree and file-access/change evidence |
-| DNS/enterprise proxy/gateway | `independently_observed` (planned) | Independent destination/connection metadata, subject to TLS and permissions |
-
-The UI must preserve these labels. Without independent corroboration it may show only “wrapper + Agent self-report,” never “fully verified.”
-
-## Low-footprint deployment
-
-The first run requires no Docker, Kubernetes, database, service installation, or startup entry:
-
-1. Build the small binaries in an approved environment for the target OS/architecture.
-2. Transfer only the binaries, `configs/`, required fixtures, and documentation.
-3. Bind the server to `127.0.0.1`; expose no LAN port.
-4. Do not install a Windows Service or enable auto-start.
-5. Scan one or two explicitly approved directories, never the whole disk.
-6. Keep metadata-only audit data on the company computer.
-7. Limit an initial run to roughly 15 minutes and stop the processes afterward.
-
-The company computer does not need Go installed. Build CGO-free single-file Windows binaries in an approved build environment:
-
-```powershell
-$env:CGO_ENABLED = "0"
-go build -trimpath -ldflags="-s -w" -o dist/agent-governance-gateway.exe ./cmd/server
-go build -trimpath -ldflags="-s -w" -o dist/agent-governance-discover.exe ./cmd/discover
-go build -trimpath -ldflags="-s -w" -o dist/agent-governance-observe.exe ./cmd/observe
+```text
+Controlled adapter submits ActionRequest
+  → Aegis verifies Principal / Agent / Delegation / Tool / Resource / Operation
+  → Policy Decision remains separate from Risk Assessment
+  → Dispatch Decision
+  → executable result receives AuthorizationEnvelope / Permit
+  → adapter or server-owned Demo fixture submits a provenance-labeled RuntimeEvent
+  → event is evaluated against the permit
+  → explainable Audit / Final Verdict
 ```
 
-Record SHA-256 values before transfer and let the company verify provenance. Do not disable application allowlisting or EDR to run the pilot.
+Showing hand-written JSON in the control desk is not a real integration. “The action crossed the enforcement point” can be tested only when an adapter actually sits between the Agent and the test tool. Configuration discovery proves an artifact; an Agent log proves only what the Agent reports. Neither is independent endpoint observation.
 
-Initial acceptance targets—not verified promises:
+## Questions that must be answered
 
-| Metric | Target |
+1. Can every action identify the human/service principal, Agent/workload, and delegated authority?
+2. Does a raw bearer token stay out of requests, logs, and UI?
+3. Does any capability, tool, resource operation, or scope mismatch deny before execution and issue no permit?
+4. Are unapproved actions by an approved Agent still denied and audited?
+5. Does high risk change only dispatch—not the authorization fact—for an authorized action?
+6. Are in-permit events, secret reads, writes under read-only permits, and denied egress reliably separated?
+7. Are expired permits and events bound to the wrong principal/Agent/request rejected?
+8. Does the UI separate `instrumented_adapter`, `agent_self_reported`, and `simulated_demo`?
+9. Are unconnected filesystem/network/OS surfaces shown as `UNKNOWN / not instrumented`?
+10. Do CPU, memory, latency, log growth, and false denial remain inside pre-agreed limits?
+
+## Exploratory feedback already received
+
+| Observation | Conclusion | Product response already taken |
+|---|---|---|
+| Health check passed and a scoped scan found Agent/MCP evidence | Configuration discovery runs, but is not runtime proof | Retain evidence grades and coverage limits |
+| A system-drive scan aborted at inaccessible directories | Full-disk scanning is neither compliant nor reliable | Require scoped roots; record denied children as gaps and continue |
+| Marketplace/cache/temp produced many matches | Available is not installed, deployed, or running | Separate available/installed/configured/observed and collapse integrations |
+| New CLI scan did not reach the running UI | Startup snapshots do not fit the workflow | Add scoped rescan and immediate reconciliation |
+| No visible approved registry | Shadow results lacked an actionable explanation | Add a local registration workflow |
+| “Approved” was read as “all behavior approved” | Asset admission and behavior authorization must be separate | Center the runtime UI/docs on per-action authorization |
+
+These are product feedback and scoped system output, not enterprise-deployment proof.
+
+## Authorization and prohibited scope
+
+Before continuing, renew written approval from the device owner, IT/security, and relevant data owners. Define device, operator, Agent, adapter, test directories, time window, allowed fields, retention, destinations, rollback, and accountable owner.
+
+Prohibited:
+
+- scanning unapproved employee directories, mail, chat, browser data, customer data, or shared drives;
+- capturing other employees' sessions or company-wide traffic;
+- bypassing EDR, DLP, antivirus, proxy, certificate policy, or application allowlists;
+- using production tokens, real secrets, customer data, or real company systems as violation bait;
+- uploading company logs, paths, or device identifiers to personal GitHub/cloud storage/external AI services;
+- treating `SANDBOX ROUTE` as real isolation;
+- using this project as the sole production blocking control.
+
+If company policy does not allow a self-built binary or adapter, stop at design and Demo Lab. IT decides the approved signing and distribution path.
+
+## Staged pilot
+
+### Gate 0: local synthetic regression
+
+All authorization and runtime negative tests pass in development first. At minimum cover unknown Agent, missing scope, ungranted capability, disallowed tool, disallowed resource operation, safe permit, authorized high-risk dispatch, in-permit event, secret/write/egress violation, expired permit, wrong binding, and Demo label.
+
+Any failure blocks company-endpoint work.
+
+### Gate 1: company endpoint baseline
+
+- Bind only to `127.0.0.1`.
+- Use the company-approved source/binary transfer path and verify SHA-256.
+- Do not start the real Agent; measure Aegis idle CPU, memory, disk, and listeners.
+- Runtime Coverage must expose unconnected OS/filesystem/network sensors.
+- Optional Discovery scans only one or two explicitly approved fixture directories.
+
+### Gate 2: instrumented synthetic executor
+
+Run only Demo Lab on the company machine:
+
+| Case | Request | Expected result |
+|---|---|---|
+| Safe code | valid delegation + code tool + workspace read | `ALLOW` + permit; `simulated_demo` event remains inside |
+| Finance denial | coder requests finance read | `DENY`; no permit, no executor |
+| Boundary violation | permit allows config read, then secret read arrives | `AUTHORIZATION_BOUNDARY_VIOLATION` |
+| Read-only violation | read-only permit followed by write | violation |
+| Egress violation | no-egress permit followed by external destination | violation |
+| Expiry/binding | expired or mismatched event | rejected outside normal event chain |
+
+This gate still proves only Aegis's internal protocol and deterministic control path.
+
+### Gate 3: one controlled real adapter
+
+Proceed only when the Agent/tool system exposes a company-approved CLI, plugin, MCP/HTTP proxy, or event API. The adapter first calls authorization; only a returned permit allows a harmless fixture action. It then returns an `instrumented_adapter` event.
+
+If WorkBuddy is a GUI/IDE Agent without an approved adapter/tool proxy, directory scanning cannot stand in for runtime testing. Keep the Inventory result, mark Runtime Coverage unconnected, and wait for a suitable adapter or independent sensor.
+
+### Gate 4: evidence review and exit
+
+Audit answers: principal, Agent/workload, delegation fingerprint/scopes, tool, resource class, operation, Policy, Risk, Dispatch, Permit, event source/trust, violation reason, final verdict, duration, and coverage gaps.
+
+Then stop Aegis and test processes, revoke test credentials/permits, and let the company owner decide whether audit is retained or deleted. Only sanitized conclusions and synthetic minimal reproductions return to the public repository.
+
+## Evidence trust table
+
+| Source | Current meaning | Must not be generalized into |
+|---|---|---|
+| `gateway_enforced` | Request actually entered an Aegis authorization point | All Agent actions crossed it |
+| `instrumented_adapter` | Connected adapter reported one test action | Independent OS proof or endpoint-wide coverage |
+| `agent_self_reported` | Agent/log claims an event occurred | Complete, tamper-proof fact |
+| `simulated_demo` | Server-owned Demo fixture generated and submitted a synthetic event | Real executor, real Agent, or production telemetry |
+| `os_sensor` | Use only after an OS sensor is connected and verified | File-content safety or valid business intent |
+| `network_sensor` | Use only after a network sensor is connected and verified | Full TLS semantics or offline activity |
+
+## Privacy and low-spec target
+
+By default retain only classified metadata—not prompt, command/output content, file contents, raw tokens, secrets, cookies, full paths, or usernames. Use resource classes such as `WORKSPACE / SOURCE`, `PROTECTED_CONFIG`, and `SECRET_STORE`.
+
+The first pilot needs no Docker, Kubernetes, database, service installation, or auto-start. These are **unverified targets, not achieved commitments**:
+
+| Metric | Pilot target |
 |---|---:|
-| Average idle Agent Governance Gateway CPU | below 2% |
-| Average CPU increase during test | below 5% |
-| Agent Governance Gateway process memory | below 100 MB |
-| Audit data per pilot | below 50 MB |
-| Median added Agent-task latency | below 10% |
-
-Record actual measurements. If a target is missed, reduce scope, event volume, and retention before adding heavier endpoint sensors.
-
-## Authorized pilot workflow
-
-### 0. Repository and transfer boundary
-
-- The GitHub source repository may be Public, but public availability does not mean company approval to execute it.
-- Secret-scan before transfer and confirm whether company policy allows pulling public source from personal GitHub.
-- Prefer a company-approved internal mirror, archive, or source-hosting channel.
-- Never push company-generated `data/`, logs, hostnames, usernames, or paths to personal GitHub.
-- Bring back only a redacted minimal reproduction or synthetic fixture.
-
-### 1. Compatibility inventory
-
-Record locally: OS/architecture, memory/disk, Agent/version/launch mode, CLI/GUI/IDE/service form, structured log/API availability, privilege requirements, and possible EDR/proxy/allowlist conflicts.
-
-### 2. No-Agent baseline
-
-Run a read-only scan against an approved directory while recording Agent Governance Gateway CPU, memory, disk growth, and duration. Do not start the Agent yet.
-
-```powershell
-agent-governance-discover.exe --path C:\Approved\AgentPilot --format json
-```
-
-The path is an example and must be replaced with an approved location.
-
-### 3. Controlled Agent session
-
-For a CLI Agent:
-
-```powershell
-agent-governance-observe.exe `
-  --audit C:\Approved\AgentPilot\data\session.jsonl `
-  --session company-pilot-001 `
-  -- <approved-agent-command> <approved-arguments>
-```
-
-Do not force a GUI or IDE Agent through the wrapper. Start with configuration discovery; wait for approved process/file sensors before runtime testing.
-
-### 4. Safe deterministic cases
-
-| Case | Task | Expected evidence | Expected outcome |
-|---|---|---|---|
-| A | Read public text inside the fixture | Session/process and read evidence | `allowed` |
-| B | Create a named file inside the fixture | File/tool self-report and exit result | `allowed_with_audit` |
-| C | Attempt an unclassified decoy path outside the fixture | Boundary attempt or OS rejection | `blocked`, `policy_violation`, or explicit coverage gap |
-| D | Read a synthetic document containing a poisoned instruction | Input source and subsequent tool/network causality | `blocked`, `escalate`, or explicit coverage gap |
-
-Decoys must not point to real company files. A network case may use only a company-approved test destination.
-
-### 5. Audit review and cleanup
-
-The audit should expose operator, Agent instance, session, time, evidence source/trust, action class, target class, result, policy reason, and coverage gap—without prompt/command/file/output contents, tokens, cookies, secrets, customer data, or full personal paths.
-
-After the run, stop the processes, let the company owner retain or securely delete the audit, revoke test credentials, remove temporary exceptions, and return only redacted conclusions or synthetic reproductions to the development repository.
+| Aegis average idle CPU | < 2% |
+| Average CPU increase during test | < 5% |
+| Aegis process memory | < 100 MB |
+| One pilot audit file | < 50 MB |
+| Median adapter-action latency increase | < 10% |
 
 ## Acceptance gate
 
-- Authorization exists and actual scope matches it.
-- The Agent integration profile and blind spots are documented.
-- Tests repeat with stable event ordering and conclusions.
-- Configuration evidence is not called execution evidence.
-- Agent self-report is not called independent evidence.
-- Boundary cases cannot touch real sensitive data.
-- Unknown events retain a fingerprint and show `unparsed` or a coverage gap.
-- The UI traces conclusions to source and policy reason.
-- Performance meets the target or creates an explicit load-reduction item.
-- Audit data stays inside the approved company storage boundary.
+The pilot reaches `V3 pilot_verified` only when all are true:
 
-## Current implementation boundary
+- written scope matches actual execution;
+- actions actually cross an approved adapter/enforcement point;
+- authorization and all negative permit cases pass repeatably;
+- Demo, self-reported, and independent evidence are never conflated in UI/API;
+- unconnected coverage remains UNKNOWN;
+- no real sensitive data or unapproved target is touched;
+- performance/privacy have raw local measurements and sanitized conclusions;
+- audit stays inside the company-approved data boundary;
+- rollback and cleanup complete.
 
-`cmd/observe` records wrapper lifecycle and normalizes JSONL, but cross-platform OS process/file sensors are not implemented. A real company environment improves sample realism; it does not remove product blind spots. A successful first pilot must document both what Agent Governance Gateway detects and why it misses anything else.
+Until then, status remains “local implementation / synthetic `V2` where tests support it,” never production-ready or company-pilot verified.

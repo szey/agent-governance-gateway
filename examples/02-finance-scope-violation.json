@@ -1,17 +1,40 @@
 {
   "id": "scope-violation",
   "title": "Unauthorized finance access",
-  "description": "A coder token attempts to cross into a critical finance resource without finance scope.",
+  "description": "A coder workload with code-scoped delegation requests finance access and is denied before execution; no permit is issued.",
   "expected_route": "deny",
   "request": {
-    "user_id": "user-01",
-    "agent_id": "coder-agent",
-    "token_scopes": ["code.read"],
-    "requested_action": "Summarize anomalies in the internal finance report",
+    "principal": {
+      "principal_id": "user-01",
+      "principal_type": "human",
+      "tenant": "demo",
+      "environment": "local"
+    },
+    "agent": {
+      "agent_id": "coder-agent",
+      "workload_id": "coder-workload-v1",
+      "owner": "engineering",
+      "environment": "demo",
+      "framework": "synthetic"
+    },
+    "delegated_authority": {
+      "credential_fingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+      "issuer": "demo-idp",
+      "scopes": ["code.read"],
+      "subject": "user-01"
+    },
+    "tool": {
+      "tool_id": "tool-finance-01",
+      "name": "finance_reader",
+      "provider": "instrumented-demo"
+    },
+    "action": {
+      "capability": "read_finance_data",
+      "operation": "read",
+      "target_resource": "finance_data",
+      "side_effect": "read_only"
+    },
     "claimed_intent": "report_summary",
-    "requested_capability": "read_finance_data",
-    "target_resource": "finance_data",
-    "planned_actions": ["read_finance_data", "summarize_reports"],
-    "simulated_actions": []
+    "planned_actions": ["read"]
   }
 }

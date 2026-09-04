@@ -1,6 +1,8 @@
 package discovery_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,8 +37,8 @@ func TestScannerFindsAndReconcilesShadowAgent(t *testing.T) {
 	if len(agent.Evidence) != 2 {
 		t.Fatalf("evidence = %d, want 2", len(agent.Evidence))
 	}
-	if agent.Risk.Level != "high" {
-		t.Fatalf("risk = %#v, want high", agent.Risk)
+	if agent.Exposure.Classification != "configured_or_observed_workload" {
+		t.Fatalf("exposure = %#v, want configured workload", agent.Exposure)
 	}
 	if agent.Fingerprint == "" {
 		t.Fatal("fingerprint is empty")
@@ -55,6 +57,38 @@ func TestScannerFindsAndReconcilesShadowAgent(t *testing.T) {
 	}
 	if reconciled.Summary.Approved != 1 || reconciled.Summary.Shadow != 0 {
 		t.Fatalf("summary = %#v", reconciled.Summary)
+	}
+}
+
+func TestDependencyIndicatorAloneIsEvidenceNotShadowWorkload(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "editor-extension", "requirements.txt"), "autogen==1.0.0")
+	cfg := discovery.Config{
+		Signatures: []discovery.Signature{{
+			AgentType: "autogen", DisplayName: "AutoGen",
+			ContentFiles: []string{"requirements.txt"}, ContentIndicators: []string{"autogen"},
+		}},
+	}
+	report, err := discovery.NewScanner(cfg).Scan([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.Available != 1 || report.Summary.Shadow != 0 {
+		t.Fatalf("summary = %#v, dependency presence must not create a Shadow workload", report.Summary)
+	}
+	finding := report.Agents[0]
+	if finding.DeploymentState != discovery.DeploymentAvailable || finding.Exposure.Classification != "discovery_evidence_only" {
+		t.Fatalf("finding = %#v, want evidence-only", finding)
+	}
+	if len(finding.Exposure.PotentialCapabilities) != 1 || finding.Exposure.PotentialCapabilities[0] != "agent_workflow" {
+		t.Fatalf("dependency-only potential capabilities = %v", finding.Exposure.PotentialCapabilities)
+	}
+	encoded, err := json.Marshal(finding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"risk"`)) || !bytes.Contains(encoded, []byte(`"potential_exposure"`)) {
+		t.Fatalf("discovery JSON must expose potential exposure, not runtime risk: %s", encoded)
 	}
 }
 

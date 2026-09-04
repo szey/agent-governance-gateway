@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"agent-governance-gateway/internal/audit"
@@ -24,7 +25,8 @@ func main() {
 	sessionAuditPath := flag.String("session-audit", "data/session-audit.jsonl", "local Agent session audit path")
 	discoveryConfig := flag.String("discovery-config", "configs/discovery.json", "discovery signature and registry path")
 	approvalRegistry := flag.String("approval-registry", "data/approved-agents.json", "local approved-Agent registry managed by the control desk")
-	discoveryRoot := flag.String("discovery-root", "examples/shadow-agent-sample", "directory represented in the discovery demo; empty disables discovery")
+	var discoveryRoots stringList
+	flag.Var(&discoveryRoots, "discovery-root", "optional approved inventory root; repeat for multiple roots")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -43,18 +45,14 @@ func main() {
 		logger.Error("open audit store", "error", err)
 		os.Exit(1)
 	}
-	roots := []string{}
-	if *discoveryRoot != "" {
-		roots = append(roots, *discoveryRoot)
-	}
-	discoveryManager, err := discovery.NewManager(*discoveryConfig, *approvalRegistry, roots)
+	discoveryManager, err := discovery.NewManager(*discoveryConfig, *approvalRegistry, discoveryRoots)
 	if err != nil {
 		logger.Error("load discovery control plane", "error", err)
 		os.Exit(1)
 	}
 
 	r := router.New(cfg, store)
-	api := httpapi.New(r, store, scenarios, discoveryManager, *sessionAuditPath, web.Assets(), logger)
+	api := httpapi.New(r, store, cfg, scenarios, discoveryManager, *sessionAuditPath, web.Assets(), logger)
 	server := &http.Server{
 		Addr:              *addr,
 		Handler:           api.Handler(),
@@ -64,9 +62,23 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	logger.Info("Agent Governance Gateway listening", "address", *addr)
+	logger.Info("Aegis Router listening", "address", *addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+type stringList []string
+
+func (values *stringList) String() string {
+	return strings.Join(*values, ",")
+}
+
+func (values *stringList) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		*values = append(*values, value)
+	}
+	return nil
 }

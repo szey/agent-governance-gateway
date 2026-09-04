@@ -25,14 +25,14 @@ func TestSensitiveReadThenEgressIsCorrelated(t *testing.T) {
 		RequestID: "evt-read", SessionID: "session-chain", RequestedCapability: "read_config",
 		DataAccess: &models.DataAccess{Operation: "read", PathClass: "company_config", Protected: true, Sensitivity: "high"},
 	}, 40)
-	if !hasRule(first.Findings, "data.sensitive_read_observed") {
+	if !hasRule(first.Findings, "data.protected_read_requested") {
 		t.Fatalf("sensitive read not detected: %#v", first)
 	}
 	second := engine.Evaluate(models.Request{
 		RequestID: "evt-send", SessionID: "session-chain", ParentEventID: "evt-read", RequestedCapability: "external_request",
 		Destination: &models.Destination{Kind: "https_api", TrustBoundary: "internet", External: true},
 	}, 20)
-	if second.RecommendedRoute != models.RouteDeny || !hasRule(second.Findings, "sequence.sensitive_read_then_egress") {
+	if second.RecommendedRoute != models.RouteDeny || !hasRule(second.Findings, "sequence.protected_read_context_then_egress") {
 		t.Fatalf("cross-tool chain not denied: %#v", second)
 	}
 	if len(second.Context.Ancestors) != 1 || second.Context.Ancestors[0] != "evt-read" {
@@ -47,7 +47,7 @@ func TestProtectedReadProvenanceCanTriggerCrossToolRule(t *testing.T) {
 		InputSources: []models.InputSource{{EventID: "evt-read", Kind: "protected_read", Trust: "observer_recorded"}},
 		Destination:  &models.Destination{Kind: "https_api", External: true},
 	}, 20)
-	if result.RecommendedRoute != models.RouteDeny || !hasRule(result.Findings, "sequence.sensitive_read_then_egress") {
+	if result.RecommendedRoute != models.RouteDeny || !hasRule(result.Findings, "sequence.protected_read_context_then_egress") {
 		t.Fatalf("adapter provenance was not enforced: %#v", result)
 	}
 }
@@ -80,7 +80,7 @@ func TestPrivacyBudgetEscalatesRepeatedProtectedReads(t *testing.T) {
 	engine.Evaluate(request, 0)
 	request.RequestID = "evt-2"
 	result := engine.Evaluate(request, 0)
-	if result.RecommendedRoute != models.RouteEscalate || !hasRule(result.Findings, "data.privacy_read_budget") {
+	if result.RecommendedRoute != models.RouteEscalate || !hasRule(result.Findings, "data.privacy_read_request_budget") {
 		t.Fatalf("privacy budget did not escalate: %#v", result)
 	}
 }

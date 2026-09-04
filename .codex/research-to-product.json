@@ -1,7 +1,7 @@
 {
   "schema_version": "research-to-product.v1",
   "skill": "research-to-product",
-  "project_name": "Agent Governance Gateway",
+  "project_name": "Aegis Router",
   "working_language": "zh-CN",
   "research_register": {
     "source": "docs/research-product-mapping-iteration.zh-CN.md",

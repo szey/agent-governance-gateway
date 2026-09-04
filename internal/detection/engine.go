@@ -75,17 +75,19 @@ func (e *Engine) Evaluate(req models.Request, baseRisk int) Result {
 		candidates = recent(state.order, 12)
 	}
 
+	action := req.EffectiveAction()
+	tool := req.EffectiveTool()
 	sensitiveRead := isSensitiveRead(req)
 	poisonedInput := hasPoisonedInput(req.InputSources, e.controls.InjectionRiskSignals)
-	egress := req.Destination != nil && req.Destination.External || contains(e.controls.EgressCapabilities, req.RequestedCapability)
-	sideEffect := egress || contains(e.controls.SideEffectCapabilities, req.RequestedCapability)
+	egress := action.Destination != nil && action.Destination.External || contains(e.controls.EgressCapabilities, action.Capability)
+	sideEffect := egress || contains(e.controls.SideEffectCapabilities, action.Capability) || (action.SideEffect != "" && action.SideEffect != "none" && action.SideEffect != "read_only")
 
 	result := Result{Findings: []models.SecurityFinding{}}
 	if sensitiveRead {
 		state.protectedReads++
 		result.RiskDelta += 10
-		result.Findings = append(result.Findings, finding(req.RequestID, "sensitive_read", "medium", "data.sensitive_read_observed",
-			"protected file-read metadata was recorded without storing the path or contents",
+		result.Findings = append(result.Findings, finding(req.RequestID, "sensitive_read_request", "medium", "data.protected_read_requested",
+			"the attempted action declares a protected file read; no runtime execution is inferred from this request metadata",
 			[]string{fmt.Sprintf("operation=%s", req.DataAccess.Operation), "path_class=" + safeValue(req.DataAccess.PathClass, "protected"), "content_recorded=false"}))
 	}
 
@@ -103,12 +105,12 @@ func (e *Engine) Evaluate(req models.Request, baseRisk int) Result {
 			inputEvidence(req)))
 	}
 
-	if schemaMismatch(req.ToolIdentity) {
+	if schemaMismatch(&tool) {
 		result.RiskDelta += 50
 		result.RecommendedRoute = stronger(result.RecommendedRoute, models.RouteDeny)
 		result.Findings = append(result.Findings, finding(req.RequestID, "tool_schema_drift", "critical", "tool.schema_hash_mismatch",
 			"the invoked tool schema does not match the approved schema hash",
-			[]string{"tool=" + req.ToolIdentity.Name, "provider=" + safeValue(req.ToolIdentity.Provider, "unknown"), "schema_hash_match=false"}))
+			[]string{"tool=" + tool.Name, "provider=" + safeValue(tool.Provider, "unknown"), "schema_hash_match=false"}))
 	}
 
 	crossToolFound := false
@@ -117,8 +119,8 @@ func (e *Engine) Evaluate(req models.Request, baseRisk int) Result {
 			crossToolFound = true
 			result.RiskDelta += 50
 			result.RecommendedRoute = stronger(result.RecommendedRoute, models.RouteDeny)
-			result.Findings = append(result.Findings, finding(req.RequestID, "cross_tool_exfiltration", "critical", "sequence.sensitive_read_then_egress",
-				"protected-read provenance is followed by an external-boundary action",
+			result.Findings = append(result.Findings, finding(req.RequestID, "cross_tool_exfiltration", "critical", "sequence.protected_read_context_then_egress",
+				"a protected-read provenance claim is followed by an external-boundary action",
 				[]string{"source_event=" + safeValue(sourceEventID, req.ParentEventID), "destination=" + destinationClass(req), "content_recorded=false"}))
 		}
 	}
@@ -133,8 +135,8 @@ func (e *Engine) Evaluate(req models.Request, baseRisk int) Result {
 		if !crossToolFound && prior.sensitiveRead && egress {
 			result.RiskDelta += 50
 			result.RecommendedRoute = stronger(result.RecommendedRoute, models.RouteDeny)
-			result.Findings = append(result.Findings, finding(req.RequestID, "cross_tool_exfiltration", "critical", "sequence.sensitive_read_then_egress",
-				"a protected read is followed by an external-boundary action in the same causal session",
+			result.Findings = append(result.Findings, finding(req.RequestID, "cross_tool_exfiltration", "critical", "sequence.protected_read_context_then_egress",
+				"a prior protected-read request is followed by an external-boundary action in the same causal session",
 				[]string{"source_event=" + eventID, "destination=" + destinationClass(req), "content_recorded=false"}))
 			crossToolFound = true
 			break
@@ -150,7 +152,7 @@ func (e *Engine) Evaluate(req models.Request, baseRisk int) Result {
 			result.RecommendedRoute = stronger(result.RecommendedRoute, models.RouteDeny)
 			result.Findings = append(result.Findings, finding(req.RequestID, "poisoned_input_tool_chain", "critical", "sequence.poisoned_input_then_side_effect",
 				"a prior poisoned-input event causally precedes a side-effecting tool action",
-				[]string{"source_event=" + eventID, "capability=" + req.RequestedCapability}))
+				[]string{"source_event=" + eventID, "capability=" + action.Capability}))
 			break
 		}
 	}
@@ -162,8 +164,8 @@ func (e *Engine) Evaluate(req models.Request, baseRisk int) Result {
 	if state.protectedReads > e.controls.PrivacyReadBudget {
 		result.RiskDelta += 30
 		result.RecommendedRoute = stronger(result.RecommendedRoute, models.RouteEscalate)
-		result.Findings = append(result.Findings, finding(req.RequestID, "privacy_budget_exceeded", "high", "data.privacy_read_budget",
-			"the session exceeded its protected-read privacy budget",
+		result.Findings = append(result.Findings, finding(req.RequestID, "privacy_budget_exceeded", "high", "data.privacy_read_request_budget",
+			"the session exceeded its protected-read request budget",
 			[]string{fmt.Sprintf("budget=%d", e.controls.PrivacyReadBudget), fmt.Sprintf("observed_reads=%d", state.protectedReads)}))
 	}
 
@@ -250,9 +252,11 @@ func recent(items []string, limit int) []string {
 }
 
 func inputEvidence(req models.Request) []string {
-	evidence := []string{"capability=" + req.RequestedCapability, "content_recorded=false"}
-	if req.ToolIdentity != nil {
-		evidence = append(evidence, "tool="+req.ToolIdentity.Name)
+	action := req.EffectiveAction()
+	tool := req.EffectiveTool()
+	evidence := []string{"capability=" + action.Capability, "content_recorded=false"}
+	if tool.Name != "" {
+		evidence = append(evidence, "tool="+tool.Name)
 	}
 	for _, source := range req.InputSources {
 		if source.Kind == "retrieval" && (source.Trust == "untrusted" || source.Trust == "external") {
@@ -264,10 +268,11 @@ func inputEvidence(req models.Request) []string {
 }
 
 func destinationClass(req models.Request) string {
-	if req.Destination == nil {
+	destination := req.EffectiveAction().Destination
+	if destination == nil {
 		return "external"
 	}
-	return safeValue(req.Destination.Kind, "external")
+	return safeValue(destination.Kind, "external")
 }
 
 func finding(eventID, category, severity, rule, summary string, evidence []string) models.SecurityFinding {

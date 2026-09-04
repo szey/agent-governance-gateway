@@ -1,11 +1,34 @@
 {
-  "user_id": "user-01",
-  "agent_id": "coder-agent",
-  "token_scopes": ["code.read"],
-  "requested_action": "Generate a parser for this JSON document",
+  "principal": {
+    "principal_id": "user-01",
+    "principal_type": "human",
+    "tenant": "demo",
+    "environment": "local"
+  },
+  "agent": {
+    "agent_id": "coder-agent",
+    "workload_id": "coder-workload-v1",
+    "owner": "engineering",
+    "environment": "demo",
+    "framework": "synthetic"
+  },
+  "delegated_authority": {
+    "credential_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "issuer": "demo-idp",
+    "scopes": ["code.read"],
+    "subject": "user-01"
+  },
+  "tool": {
+    "tool_id": "tool-coder-01",
+    "name": "coder",
+    "provider": "instrumented-demo"
+  },
+  "action": {
+    "capability": "generate_code",
+    "operation": "generate",
+    "target_resource": "public_workspace",
+    "side_effect": "none"
+  },
   "claimed_intent": "code_generation",
-  "requested_capability": "generate_code",
-  "target_resource": "public_workspace",
-  "planned_actions": ["read_safe_files", "generate_code"],
-  "simulated_actions": ["read_safe_files", "generate_code"]
+  "planned_actions": ["generate"]
 }

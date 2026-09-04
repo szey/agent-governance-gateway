@@ -68,7 +68,7 @@ func (s *Scanner) Scan(roots []string) (Report, error) {
 	for _, key := range keys {
 		agent := findings[key]
 		s.reconcile(agent)
-		agent.Risk = scoreRisk(*agent)
+		agent.Exposure = assessExposure(*agent)
 		sort.Slice(agent.Evidence, func(i, j int) bool { return agent.Evidence[i].Source < agent.Evidence[j].Source })
 		report.Agents = append(report.Agents, *agent)
 		switch agent.Status {
@@ -192,47 +192,43 @@ func (s *Scanner) reconcile(agent *DiscoveredAgent) {
 	}
 }
 
-func scoreRisk(agent DiscoveredAgent) RiskAssessment {
-	score := 0
-	var factors []string
+func assessExposure(agent DiscoveredAgent) ExposureAssessment {
+	assessment := ExposureAssessment{
+		Classification:        "discovery_evidence_only",
+		PotentialCapabilities: []string{},
+		Factors:               []string{},
+	}
+	switch agent.AgentType {
+	case "mcp":
+		assessment.PotentialCapabilities = append(assessment.PotentialCapabilities, "tool_integration")
+	case "langchain", "crewai", "autogen", "openai-agents":
+		assessment.PotentialCapabilities = append(assessment.PotentialCapabilities, "agent_workflow")
+	}
 	if agent.DeploymentState == DeploymentAvailable {
-		return RiskAssessment{
-			Score: 5, Level: "low",
-			Factors: []string{"catalog, marketplace, cache, or temporary evidence only; not counted as a deployed Agent"},
-		}
+		assessment.Factors = []string{"dependency, catalog, marketplace, cache, or temporary evidence only; not counted as a deployed Agent"}
+		return assessment
+	}
+	assessment.Classification = "configured_or_observed_workload"
+	if agent.AgentType == "mcp" {
+		assessment.Factors = append(assessment.Factors, "MCP configuration may expose tool capabilities")
 	}
 	if agent.Status == StatusShadow {
-		score += 45
-		factors = append(factors, "not present in the approved Agent registry (+45)")
+		assessment.Factors = append(assessment.Factors, "workload evidence is not matched to the asset registry")
+	} else if agent.Status == StatusApproved {
+		assessment.Factors = append(assessment.Factors, "workload evidence is matched to an active asset registration")
 	}
-	if agent.Owner == "" {
-		score += 15
-		factors = append(factors, "no accountable owner identified (+15)")
+	if len(assessment.Factors) == 0 {
+		assessment.Factors = []string{"configuration evidence requires operator assessment"}
 	}
-	if agent.AgentType == "mcp" {
-		score += 15
-		factors = append(factors, "tool-capable MCP integration detected (+15)")
-	}
-	if agent.Confidence >= 0.9 {
-		score += 10
-		factors = append(factors, "high-confidence configuration evidence (+10)")
-	}
-	if score > 100 {
-		score = 100
-	}
-	level := "low"
-	if score >= 70 {
-		level = "high"
-	} else if score >= 40 {
-		level = "medium"
-	}
-	if len(factors) == 0 {
-		factors = []string{"approved Agent with an accountable owner"}
-	}
-	return RiskAssessment{Score: score, Level: level, Factors: factors}
+	return assessment
 }
 
 func deploymentState(root, relative, basis string) DeploymentState {
+	// A dependency string proves only that code or an integration may be
+	// available. It does not prove a configured, deployed, or running Agent.
+	if basis == "dependency_or_config_indicator" {
+		return DeploymentAvailable
+	}
 	context := filepath.ToSlash(filepath.Join(filepath.Base(root), relative))
 	for _, segment := range strings.Split(strings.ToLower(context), "/") {
 		segment = strings.Trim(segment, ". ")

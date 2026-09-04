@@ -17,15 +17,17 @@ func New(cfg models.PolicyConfig) *Scorer {
 func (s *Scorer) Assess(req models.Request) models.RiskAssessment {
 	score := 0
 	var signals []string
+	action := req.EffectiveAction()
+	authority := req.EffectiveAuthority()
 
-	if resource, ok := s.config.Resources[req.TargetResource]; ok {
+	if resource, ok := s.config.Resources[action.TargetResource]; ok {
 		points := map[string]int{"low": 0, "medium": 20, "high": 35, "critical": 50}[resource.Sensitivity]
 		score += points
 		if points > 0 {
 			signals = append(signals, fmt.Sprintf("%s resource sensitivity (+%d)", resource.Sensitivity, points))
 		}
 		for _, required := range resource.Scopes {
-			if !contains(req.TokenScopes, required) {
+			if !contains(authority.Scopes, required) {
 				score += 35
 				signals = append(signals, "delegated scope mismatch (+35)")
 				break
@@ -36,20 +38,25 @@ func (s *Scorer) Assess(req models.Request) models.RiskAssessment {
 		signals = append(signals, "unclassified resource (+50)")
 	}
 
-	if contains(s.config.SensitiveActions, req.RequestedCapability) {
+	if contains(s.config.SensitiveActions, action.Capability) {
 		score += 20
 		signals = append(signals, "sensitive capability (+20)")
 	}
-	if contains(s.config.ProhibitedActions, req.RequestedCapability) {
+	if contains(s.config.ProhibitedActions, action.Capability) {
 		score += 60
 		signals = append(signals, "prohibited capability (+60)")
 	}
-	for _, action := range req.PlannedActions {
-		if contains(s.config.SuspiciousActions, action) {
-			score += 30
-			signals = append(signals, "suspicious planned action (+30)")
-			break
-		}
+	if action.Destination != nil && action.Destination.External {
+		score += 25
+		signals = append(signals, "external trust-boundary crossing (+25)")
+	}
+	if action.SideEffect != "" && action.SideEffect != "none" && action.SideEffect != "read_only" {
+		score += 15
+		signals = append(signals, "side-effecting operation (+15)")
+	}
+	if req.DataAccess != nil && req.DataAccess.Protected {
+		score += 10
+		signals = append(signals, "protected data class (+10)")
 	}
 
 	if score > 100 {

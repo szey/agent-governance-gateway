@@ -1,20 +1,307 @@
 {
   "agents": {
     "coder-agent": {
-      "allowed_capabilities": ["generate_code", "read_safe_files", "read_config", "run_limited_commands"],
-      "denied_resources": ["finance_data", "secrets_store"]
+      "workload_ids": ["coder-agent", "coder-workload-v1"],
+      "capabilities": {
+        "generate_code": {
+          "allowed_tools": ["coder"],
+          "required_scopes": ["code.read"],
+          "resources": {
+            "public_workspace": {
+              "allowed_operations": ["generate"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "deny",
+                "allowed_side_effects": [],
+                "max_bytes": 1048576,
+                "max_duration_ms": 30000
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "deny",
+            "allowed_side_effects": [],
+            "executor_profile": "standard-route"
+          }
+        },
+        "read_safe_files": {
+          "allowed_tools": ["filesystem"],
+          "required_scopes": ["code.read"],
+          "resources": {
+            "public_workspace": {
+              "allowed_operations": ["read"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "deny",
+                "allowed_side_effects": [],
+                "max_bytes": 1048576,
+                "max_duration_ms": 30000
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "deny",
+            "allowed_side_effects": []
+          }
+        },
+        "read_config": {
+          "allowed_tools": ["config_reader"],
+          "required_scopes": ["config.read"],
+          "route": "sandbox",
+          "resources": {
+            "protected_config": {
+              "allowed_operations": ["read"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "deny",
+                "allowed_side_effects": [],
+                "max_bytes": 262144,
+                "max_duration_ms": 15000
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "deny",
+            "allowed_side_effects": [],
+            "executor_profile": "sandbox-route"
+          }
+        },
+        "run_limited_commands": {
+          "allowed_tools": ["shell.exec"],
+          "required_scopes": ["code.read"],
+          "route": "restrict",
+          "resources": {
+            "public_workspace": {
+              "allowed_operations": ["execute"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "allow",
+                "allowed_side_effects": ["process_execution"],
+                "max_duration_ms": 5000
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "allow",
+            "allowed_side_effects": ["process_execution"],
+            "executor_profile": "restricted-route"
+          }
+        }
+      }
     },
     "finance-agent": {
-      "allowed_capabilities": ["read_finance_data", "summarize_reports"],
-      "denied_resources": ["shell", "external_network", "secrets_store"]
+      "workload_ids": ["finance-agent", "finance-workload-v1"],
+      "capabilities": {
+        "read_finance_data": {
+          "allowed_tools": ["finance_reader"],
+          "required_scopes": ["finance.read"],
+          "resources": {
+            "finance_data": {
+              "allowed_operations": ["read"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "deny",
+                "allowed_side_effects": [],
+                "max_bytes": 524288,
+                "max_duration_ms": 15000
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "deny",
+            "allowed_side_effects": []
+          }
+        },
+        "summarize_reports": {
+          "allowed_tools": ["report_reader"],
+          "required_scopes": ["finance.read"],
+          "resources": {
+            "finance_data": {
+              "allowed_operations": ["summarize"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "deny",
+                "allowed_side_effects": []
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "deny",
+            "allowed_side_effects": []
+          }
+        }
+      }
     },
     "ops-agent": {
-      "allowed_capabilities": ["read_config", "write_config", "run_limited_commands"],
-      "denied_resources": ["finance_data", "secrets_store"]
+      "workload_ids": ["ops-agent", "ops-workload-v1"],
+      "capabilities": {
+        "read_config": {
+          "allowed_tools": ["config_reader"],
+          "required_scopes": ["config.read"],
+          "route": "sandbox",
+          "resources": {
+            "protected_config": {
+              "allowed_operations": ["read"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "deny",
+                "allowed_side_effects": [],
+                "max_bytes": 262144
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "deny",
+            "allowed_side_effects": []
+          }
+        },
+        "write_config": {
+          "allowed_tools": ["config_writer"],
+          "required_scopes": ["config.write"],
+          "route": "restrict",
+          "resources": {
+            "protected_config": {
+              "allowed_operations": ["write"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "allow",
+                "allowed_side_effects": ["configuration_change"],
+                "max_bytes": 65536
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "allow",
+            "allowed_side_effects": ["configuration_change"],
+            "executor_profile": "restricted-route"
+          }
+        },
+        "run_limited_commands": {
+          "allowed_tools": ["shell.exec"],
+          "required_scopes": ["config.write"],
+          "route": "restrict",
+          "resources": {
+            "protected_config": {
+              "allowed_operations": ["execute"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "allow",
+                "allowed_side_effects": ["process_execution"],
+                "max_duration_ms": 5000
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "allow",
+            "allowed_side_effects": ["process_execution"],
+            "executor_profile": "restricted-route"
+          }
+        }
+      }
     },
     "integration-agent": {
-      "allowed_capabilities": ["read_config", "external_request", "run_limited_commands"],
-      "denied_resources": ["finance_data", "secrets_store"]
+      "workload_ids": ["integration-agent", "integration-workload-v1"],
+      "capabilities": {
+        "read_config": {
+          "allowed_tools": ["config_reader"],
+          "required_scopes": ["config.read"],
+          "route": "sandbox",
+          "resources": {
+            "protected_config": {
+              "allowed_operations": ["read"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "deny",
+                "allowed_side_effects": [],
+                "max_bytes": 262144
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "deny",
+            "allowed_side_effects": []
+          }
+        },
+        "external_request": {
+          "allowed_tools": ["http.post"],
+          "required_scopes": ["network.access"],
+          "route": "restrict",
+          "resources": {
+            "external_network": {
+              "allowed_operations": ["send"],
+              "constraints": {
+                "network_egress": "allow",
+                "secret_access": "deny",
+                "write_access": "deny",
+                "allowed_side_effects": ["external_egress"],
+                "max_bytes": 65536,
+                "max_duration_ms": 5000
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "allow",
+            "secret_access": "deny",
+            "write_access": "deny",
+            "allowed_side_effects": ["external_egress"],
+            "executor_profile": "restricted-route"
+          }
+        },
+        "run_limited_commands": {
+          "allowed_tools": ["shell.exec"],
+          "required_scopes": ["code.read"],
+          "route": "restrict",
+          "resources": {
+            "public_workspace": {
+              "allowed_operations": ["execute"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "allow",
+                "allowed_side_effects": ["process_execution"],
+                "max_duration_ms": 5000
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "allow",
+            "allowed_side_effects": ["process_execution"],
+            "executor_profile": "restricted-route"
+          }
+        }
+      }
     }
   },
   "resources": {
@@ -34,5 +321,13 @@
     "egress_capabilities": ["external_request", "send_data", "upload_file", "exfiltrate_data"],
     "side_effect_capabilities": ["write_config", "run_limited_commands", "external_request", "invoke_admin_tool"],
     "injection_risk_signals": ["instruction_like_content", "tool_directive", "policy_override", "credential_request"]
+  },
+  "compatibility": {
+    "allow_legacy_flat_requests": true,
+    "allow_missing_tool": true,
+    "allow_missing_operation": true
+  },
+  "permits": {
+    "ttl_seconds": 300
   }
 }

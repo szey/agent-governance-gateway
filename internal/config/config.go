@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"agent-governance-gateway/internal/models"
 )
@@ -20,6 +21,33 @@ func Load(path string) (models.PolicyConfig, error) {
 	}
 	if len(cfg.Agents) == 0 || len(cfg.Resources) == 0 {
 		return models.PolicyConfig{}, fmt.Errorf("policy config must define agents and resources")
+	}
+	if cfg.Permits.TTLSeconds <= 0 {
+		cfg.Permits.TTLSeconds = 300
+	}
+	for agentID, agent := range cfg.Agents {
+		if strings.TrimSpace(agentID) == "" {
+			return models.PolicyConfig{}, fmt.Errorf("policy config contains an empty agent id")
+		}
+		for capability, grant := range agent.Capabilities {
+			if len(grant.AllowedTools) == 0 {
+				return models.PolicyConfig{}, fmt.Errorf("agent %q capability %q must define allowed_tools", agentID, capability)
+			}
+			if len(grant.Resources) == 0 {
+				return models.PolicyConfig{}, fmt.Errorf("agent %q capability %q must define resources", agentID, capability)
+			}
+			if grant.Route != "" && grant.Route != models.RouteAllow && grant.Route != models.RouteRestrict && grant.Route != models.RouteSandbox {
+				return models.PolicyConfig{}, fmt.Errorf("agent %q capability %q has invalid authorized route %q", agentID, capability, grant.Route)
+			}
+			for resourceID, resourceGrant := range grant.Resources {
+				if _, ok := cfg.Resources[resourceID]; !ok {
+					return models.PolicyConfig{}, fmt.Errorf("agent %q capability %q references unknown resource %q", agentID, capability, resourceID)
+				}
+				if len(resourceGrant.AllowedOperations) == 0 {
+					return models.PolicyConfig{}, fmt.Errorf("agent %q capability %q resource %q must define allowed_operations", agentID, capability, resourceID)
+				}
+			}
+		}
 	}
 	return cfg, nil
 }

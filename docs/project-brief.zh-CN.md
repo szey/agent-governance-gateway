@@ -1,167 +1,132 @@
-# Agent Governance Gateway 项目说明
+# Aegis Router 项目说明
 
 [English](project-brief.md) | 简体中文
 
+> **A Policy-Driven Security Router for AI Agents**
+
 ## 一句话定位
 
-**Agent Governance Gateway 是一个面向 AI Agent 的零信任安全控制面：在 Agent 的高风险动作执行前进行策略判断和分级路由，在执行中观察行为偏移，并生成可审计的决策链路。**
+Aegis Router 是位于 AI Agent 与工具/资源之间的零信任安全控制面：执行前逐次验证身份、委托、能力、工具、资源、操作与约束，签发明确的执行许可，并在执行中将有来源标记的事件与许可边界核对。
 
-英文副标题固定为：
+仓库暂时保留 `agent-governance-gateway` 名称；产品品牌使用 **Aegis Router**。
 
-> 发现 Shadow Agent，治理工具动作，审计因果行为
+## 核心安全原则
 
-## 它解决什么问题
+> **批准一个 Agent 存在，不等于批准它的行为。**
 
-Agent 获得文件、Shell、数据库、网络和业务 API 等工具后，真正的风险不只来自 Prompt 内容，而来自它最终执行了什么动作：
+资产登记与行为授权是两个不同控制：
 
-- Agent 是否在代表正确的用户行动；
-- 委托给 Agent 的 token scope 是否覆盖当前能力；
-- Agent 是否越权触碰敏感资源；
-- 只读计划是否在执行时变成写入或提权动作；
-- 实际工具调用链是否偏离声明的计划；
-- 安全决策和执行过程是否能被审计与复盘。
+- 资产登记回答：“这个工作负载能否参与受治理环境，负责人是谁？”
+- 逐次授权回答：“这个工作负载此刻能否代表这个主体，凭这份委托，用这个工具，对这个资源执行这个操作？”
 
-Agent Governance Gateway 位于 Agent 与执行目标之间，将这些问题收敛成一个可执行的控制点。
+即使 WorkBuddy、Codex 或其他 Agent 已登记，每一次进入 Aegis Router 的工具调用和资源访问仍要独立授权并审计。登记状态不能绕过策略。
 
-资产批准和行为授权必须分离：批准清单只表示 Agent 可以存在并明确了负责人，不授予其全部工具、参数和资源权限。已批准 Agent 与 Shadow Agent 到达已接入控制点或观察点的所有可观察动作都必须记录；经过执行控制点的动作还必须逐次判断。
+## 产品边界
 
-## 企业版必须增加发现平面
+本项目的中心是 Runtime Gateway / Enforcement，第二层是 Runtime Observation + Audit，Agent Inventory / Discovery 仅为可选的辅助可见性模块。目标权重约为 60% / 25% / 15%。
 
-原来的 MVP 只解决“经过 Agent Governance Gateway 的 Agent 请求如何治理”。它无法看到绕过 Router 的 Agent，因此不能直接发现企业内部未报备的 Shadow Agent。
+Aegis Router 不定位为：
 
-企业目标架构拆成两个平面：
+- EDR 或通用终端监控产品；
+- 主要依赖文件扫描的 Shadow Agent 清单；
+- Prompt 意图分类器；
+- 只靠数值风险分数授权的网关；
+- 已具备真实隔离的沙箱；
+- MCP-only 防火墙或完整企业 RBAC 平台。
 
-1. **Discovery / Visibility Plane**：从配置、进程、代码仓库、网络出口、API 网关、OAuth/IdP 和 CI/CD 日志收集证据，建立 Agent 资产清单并与批准清单核对；
-2. **Enforcement / Execution Plane**：对已经进入控制点的请求执行身份校验、权限判断、风险分流、行为观察和审计。
+## 请求和授权模型
 
-“发现”与“阻止”不能混为一谈。被动网络或日志传感器可以发现可疑行为，但只有当请求经过出口代理、API 网关、服务网格、端点控制或 Agent Governance Gateway 时，系统才可能在执行前阻止它。
+一个请求代表一次动作，而不是一个 Agent 的永久权限：
 
-## 两个关键设计取舍
+| 上下文 | 关键字段 | 安全含义 |
+|---|---|---|
+| `PrincipalContext` | principal ID/type、tenant/environment | 谁承担这次动作的主体责任 |
+| `AgentIdentity` | agent/workload ID、owner、environment、framework/version | 哪个工作负载实际行动 |
+| `DelegatedAuthority` | credential fingerprint、issuer、subject、scopes、expiry | 主体委托了什么；绝不存 raw bearer token |
+| `ToolContext` | tool ID/name、provider、schema hash | 通过哪个工具能力发起 |
+| `ActionRequest` | capability、operation、resource、side effect、destination | 这一次具体想做什么 |
 
-### 1. 不使用“MoE 推理网关”作为定位
+`claimed_intent` 可以作为调查上下文或风险信号，但不是主要授权输入。策略使用可验证字段：身份 + 委托 + 能力 + 工具 + 资源 + 操作 + 约束。
 
-MoE 通常指模型内部的专家网络和 token-level routing。本项目做的是模型外部的 request-level 安全控制、权限治理和执行分流。如果继续使用 MoE，容易让工程师误以为这是模型推理架构。
+策略至少需要表达：工作负载身份、能力、允许工具、资源授权、资源上的允许操作、所需委托 Scope、网络出口、秘密访问和副作用约束。未知身份、能力、工具、资源或操作必须 fail closed。
 
-因此项目统一使用以下术语：
+## Policy、Risk 与 Dispatch
 
-- policy-driven；
-- zero-trust；
-- capability-based；
-- secure dispatch；
-- sandbox isolation；
-- runtime observation；
-- audit trail。
+三者必须分离：
 
-### 2. 意图识别只是辅助信号
+1. **Policy Decision** 先回答动作是否获得授权；明确未授权一律 `DENY`。
+2. **Risk Assessment** 再评估已经获得授权的动作有多危险或不确定。
+3. **Dispatch Decision** 根据策略和风险选择 `ALLOW / RESTRICT / SANDBOX / DENY / ESCALATE`。
 
-危险请求常常会伪装成“调试配置”“验证连接”或“整理文件”等正常任务。系统不能只判断 Prompt 看起来想做什么，而应该以更硬的事实作为主判断：
+例如：未授权财务读取无论风险分数多少都必须拒绝；已获准的高敏感配置读取可以因风险被送入 `RESTRICT` 或 `SANDBOX ROUTE`。
 
-1. 谁在行动：human user、agent identity、delegated authority；
-2. 申请什么能力：read、write、exec、network、database；
-3. 访问什么资源：普通文件、受保护配置、财务数据、密钥；
-4. token scope 是否足够；
-5. 实际动作是否偏离计划。
+## AuthorizationEnvelope（Execution Permit）：真正的运行时边界
 
-## 当前 MVP
+可执行结果会签发绑定 request、principal 和 Agent 且有时效的 `AuthorizationEnvelope`；API 字段为 `authorization_envelope`，标识为 `permit_id`。其中记录：
 
-仓库已经实现一个可运行的最小闭环：
+- 本次允许的 capability、tool、resource 和 operations；
+- `network_egress`、`secret_access`、`write_access`；
+- 可选的 `max_bytes`、`max_duration` 和 `executor_profile`；
+- `permit_id`、`issued_at`、`expires_at`。
 
-```text
-Request
-  → Identity / scope check
-  → Capability and resource policy
-  → Explainable risk scoring
-  → Session causality / provenance / sequence detection
-  → Allow / Restrict / Sandbox / Deny / Escalate
-  → Planned vs observed behavior comparison
-  → JSONL audit record
-```
+Agent 的声明计划不等于安全边界。运行时事件应与执行许可比较：许可内事件通过；越权读密钥、只读许可下写入、禁网许可下外发、过期许可或身份绑定不匹配都应产生明确的违规/拒绝结论。
 
-当前策略判断、风险评分、路由结果、行为对比和审计落盘都是真实执行的。为了不让演示程序直接获得宿主机高权限，executor 的具体动作由 `simulated_actions` 安全模拟；当前的 `sandbox` 表示路由决策，还不是已经接入 Docker、gVisor 或 Firecracker 的强隔离环境。
+## 运行时证据与审计
 
-Router 还实现了会话内的确定性安全检测：输入来源与风险信号、工具身份与 Schema 哈希、父事件链、受保护 open/read 元数据、隐私预算、累计风险，以及“敏感读取 → 外部发送”和“污染输入 → 副作用工具”两类序列阻断。状态目前保存在单个 Router 进程内；它只能判断经过 Router 或 Adapter 上报的事件，不能替代 OS/EDR/网络传感器。
+正常请求 API 不接受“模拟动作”并把它们包装成真实观察。运行时事件必须来自明确入口，并携带 `request_id / permit_id`、session、capability、tool、operation、resource/destination class、source、trust level 和 timestamp。
 
-当前还实现了第一阶段 Shadow Agent Discovery：
+信任来源至少区分：
 
-- 对明确指定目录做只读配置与依赖扫描；
-- 为发现结果记录证据来源、判断依据和置信度；
-- 按项目和 Agent 类型生成指纹并合并证据；
-- 区分 `available`、`installed`、`configured`，避免把 marketplace/cache 线索直接判为 Shadow；
-- 与本地持久化批准清单核对，标记 `approved`、`shadow` 或 `unassessed`；
-- 扫描无权限子目录时记录覆盖缺口并继续；
-- 在网页新增、编辑、暂停和移除批准记录，保存或重新扫描后立即核对；
-- 对未知负责人、MCP 能力和高置信证据进行可解释风险评分。
+- `gateway_enforced`；
+- `instrumented_adapter`；
+- `agent_self_reported`；
+- `os_sensor` / `network_sensor`（仅实际连接后）；
+- `simulated_demo`。
 
-实时进程、网络、OAuth 和云审计传感器尚未实现。
+审计链应保存请求安全上下文、策略结果、风险评估、分流、执行许可、运行时证据来源、事件、越界项、最终结论、耗时和因果/会话关系，但不保存 raw Token、秘密值、检索正文或完整本地路径。
 
-仓库还加入了实验性 `cmd/observe` 会话观察器，用于包裹公司批准的 CLI Agent：Agent Governance Gateway 独立记录子进程生命周期，将 Agent 输出的 JSONL 标为自报证据，只保存事件分类与载荷哈希，不默认保存命令、Prompt 和输出正文。所有经过 Router 的有效请求无论允许、拒绝或升级都会记录；但 GUI、IDE、后台或绕过控制点的行为仍需要后续 OS/网络传感器。项目已收到一次公司端点试用的脱敏反馈，完整受控协议仍未完成。详见 [`experiments/enterprise-agent-pilot.zh-CN.md`](experiments/enterprise-agent-pilot.zh-CN.md)。
+## Demo Lab
 
-## 六个演示场景
+六个 synthetic 场景被保留为明确标识的 Demo Lab 和安全回归。核心三项是：
 
-### 正常代码请求
+1. **Safe code request**：合法身份、委托、能力、工具、资源与操作 → `ALLOW` + Permit → Demo 事件保持在许可内。
+2. **Unauthorized finance access**：coder Agent 只有 code Scope，却请求 `finance.read` → 执行前 `DENY` → 无 Permit、无 executor。
+3. **Authorization-boundary violation**：只签发 `config.read` 许可，服务端 Demo 夹具随后提交 `config.read` 和 `secret.read` → 后者超出许可 → `AUTHORIZATION_BOUNDARY_VIOLATION`。
 
-- `coder-agent` 持有 `code.read`；
-- 申请 `generate_code`；
-- 目标是低敏感度 `public_workspace`；
-- 结果：`allow → normal-executor`。
+间接 Prompt Injection、受保护文件读取、敏感读取后外发继续作为回归，但所有合成事件必须标记为 `simulated_demo`，不能展示成生产环境的“Observed”。
 
-### 越权财务访问
+## Agent Inventory / Discovery
 
-- `coder-agent` 尝试访问 `finance_data`；
-- 资源被该 Agent 的策略明确拒绝；
-- 委托 token 也没有 `finance.read`；
-- 结果：`deny → no execution`。
+发现代码保留，但降级为辅助模块：
 
-### 调试过程发生行为偏移
+- Registered Agent：登记的工作负载资产；
+- Shadow workload：有部署证据但未匹配登记的工作负载；
+- Discovery evidence：配置、依赖、进程或其他信号；
+- Available integration：marketplace/catalog/cache 中可获得但未证明部署的组件。
 
-- 请求表面是读取受保护配置；
-- 高敏感度资源使请求进入 `sandbox`；
-- 声明计划只有 `read_config`；
-- 执行中出现 `read_secret` 和 `invoke_admin_tool`；
-- 结果：`sandbox → suspicious_behavior`，计划外动作写入审计记录。
+依赖中出现 `autogen`、`@openai/agents` 或 MCP manifest 只是证据，不是 Agent 身份。发现置信度和部署状态属于 Inventory；运行时风险只属于具体动作或会话。
 
-### 间接 Prompt Injection
+## 真实能力与限制
 
-- 不可信检索输入带有 `instruction_like_content` 和 `tool_directive` 风险信号；
-- 工具身份与 Schema 哈希进入审计；
-- 在执行有副作用的命令前命中确定性规则；
-- 结果：`deny → blocked`。
+当前 MVP 能对进入控制点的结构化动作执行确定性授权、签发 Permit、接收带来源标签的事件、核对边界并写入本地审计。Demo Lab 使用服务端拥有的无害事件夹具，并经过相同的许可核对流程；它不是真实执行器。
 
-### 受保护文件读取
+当前 MVP 不能：
 
-- 只记录 `operation`、`path_class`、敏感度和字节数；
-- 不记录完整路径或文件内容；
-- 会话隐私预算扣减；
-- 结果：`sandbox`，并生成 `data.sensitive_read_observed` 发现。
+- 自动观察或阻止绕过 Router/Adapter 的 Agent；
+- 独立看到所有 OS 文件、进程、系统调用或网络活动；
+- 将 `SANDBOX` 分流变成真实 Docker/gVisor/Firecracker 隔离；
+- 保证 Agent 自报事件完整可信；
+- 提供生产级身份认证、RBAC、多租户、中央持久化或防篡改审计。
 
-### 敏感读取后外发
+Coverage 未接入就是 `UNKNOWN / not instrumented`，不能写成“0 个缺口”。公司环境更真实，但不会自动消除这些盲点。
 
-- 外部请求引用受保护读取父事件；
-- 单次读取和单次网络请求可能各自合理；
-- 会话序列命中 `sequence.sensitive_read_then_egress`；
-- 结果：`deny → blocked`。
+## 下一阶段顺序
 
-## GitHub 展示重点
+1. 用自动化测试固定身份、委托、工具、资源操作和 Permit 语义；
+2. 完成 Runtime Event API、过期/错绑/越界负向测试和最终结论；
+3. 将第一个真实 MCP/HTTP/工具 Adapter 接入控制点；
+4. 在重新授权的 synthetic 企业试点中验证证据、性能和隐私；
+5. 接入独立 OS/网络传感器并清楚标记覆盖；
+6. 再评估真实隔离后端、Permit 撤销、企业认证和防篡改审计。
 
-项目首页应该优先展示以下内容：
-
-1. “不是 Prompt 过滤器，而是动作控制面”的定位；
-2. 一张从身份、策略、风险到观察与审计的决策流程图；
-3. 六个可重复的演示场景，包括间接注入和跨工具外泄；
-4. 行为偏移场景的控制台截图或短 GIF；
-5. 对当前安全边界的诚实说明；
-6. 从模拟 executor 到真实 Docker sandbox 的路线图。
-
-## 下一阶段建议
-
-优先级从高到低：
-
-1. 用隔离 fixture 回归本轮公司端点试用暴露的分类、刷新、无权限目录和清单问题；
-2. 在重新获得公司批准后完成受控审计试点，并增加跨平台进程/文件传感器，用独立证据佐证 Agent 自报事件；
-3. 持久化已经实现的会话因果状态，并把 Agent 实例与完整委托链接入企业身份；
-4. 定义 executor adapter 接口，接入第一个真实 Docker sandbox；
-5. 为 `escalate` 增加人工批准与一次性授权；
-6. 为审计记录增加哈希链，把现有 Schema 哈希比较接入签名工具注册表；
-7. 再考虑网络策略、OpenTelemetry、gVisor、Firecracker 或 eBPF 观测。
-
-这个顺序能让项目从“完整、安全的演示闭环”逐步成长为真正的 Agent 安全基础设施，而不会在第一版就被复杂隔离技术拖垮。
+这条路线优先证明一件事：一个 Agent 动作在执行前获得精确授权，执行中不能越过该授权，并能留下不夸大的可审计证据。

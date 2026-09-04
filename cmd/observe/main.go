@@ -22,7 +22,7 @@ func run(args []string) int {
 	flags := flag.NewFlagSet("observe", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	auditPath := flags.String("audit", filepath.Join("data", "session-audit.jsonl"), "append-only normalized audit path")
-	sessionID := flags.String("session", fmt.Sprintf("local-%d", time.Now().UnixNano()), "Agent Governance Gateway correlation session ID")
+	sessionID := flags.String("session", fmt.Sprintf("local-%d", time.Now().UnixNano()), "Aegis Router correlation session ID")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}

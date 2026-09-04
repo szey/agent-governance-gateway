@@ -1,25 +1,66 @@
 {
   "id": "sensitive-file-read",
   "title": "Protected file read",
-  "description": "A protected read is isolated and audited with path class, byte count, sensitivity, and privacy budget—never file contents or the full path.",
+  "description": "An explicitly authorized protected read is routed to the sandbox profile and audited as normalized metadata, never file contents or a full path.",
   "expected_route": "sandbox",
   "request": {
     "request_id": "evt-sensitive-read-001",
     "session_id": "demo-cross-tool",
-    "user_id": "user-04",
-    "agent_id": "integration-agent",
-    "token_scopes": ["config.read"],
-    "requested_action": "Read the approved test configuration",
+    "principal": {
+      "principal_id": "user-04",
+      "principal_type": "human",
+      "tenant": "demo",
+      "environment": "local"
+    },
+    "agent": {
+      "agent_id": "integration-agent",
+      "workload_id": "integration-workload-v1",
+      "owner": "integrations",
+      "environment": "demo",
+      "framework": "synthetic"
+    },
+    "delegated_authority": {
+      "credential_fingerprint": "5555555555555555555555555555555555555555555555555555555555555555",
+      "issuer": "demo-idp",
+      "scopes": ["config.read"],
+      "subject": "user-04"
+    },
+    "tool": {
+      "tool_id": "tool-config-02",
+      "name": "config_reader",
+      "provider": "instrumented-demo"
+    },
+    "action": {
+      "capability": "read_config",
+      "operation": "read",
+      "target_resource": "protected_config",
+      "side_effect": "read_only",
+      "bytes": 2048
+    },
     "claimed_intent": "configuration_review",
-    "requested_capability": "read_config",
-    "target_resource": "protected_config",
-    "planned_actions": ["read_config"],
+    "planned_actions": ["read"],
     "data_access": {
       "operation": "read",
-      "path_class": "protected_company_config",
+      "path_class": "PROTECTED_CONFIG",
       "protected": true,
       "sensitivity": "high",
       "bytes": 2048
     }
-  }
+  },
+  "simulated_demo": [{
+    "event_id": "demo-sensitive-read-001",
+    "permit_id": "PERMIT_FROM_AUTHORIZATION",
+    "request_id": "REQUEST_FROM_AUTHORIZATION",
+    "session_id": "demo-cross-tool",
+    "agent_id": "integration-agent",
+    "workload_id": "integration-workload-v1",
+    "source": "simulated_demo",
+    "trust_level": "simulated",
+    "capability": "read_config",
+    "tool": "config_reader",
+    "operation": "read",
+    "resource": "protected_config",
+    "resource_class": "PROTECTED_CONFIG",
+    "bytes": 2048
+  }]
 }

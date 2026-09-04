@@ -1,167 +1,132 @@
-# Agent Governance Gateway Project Brief
+# Aegis Router Project Brief
 
 English | [简体中文](project-brief.zh-CN.md)
 
+> **A Policy-Driven Security Router for AI Agents**
+
 ## One-line position
 
-**Agent Governance Gateway is a zero-trust security control plane for AI Agents: it evaluates policy and dispatches high-risk actions before execution, observes behavioral drift during execution, and produces an auditable decision trail.**
+Aegis Router is a zero-trust security control plane between AI agents and their tools/resources. It verifies identity, delegation, capability, tool, resource, operation, and constraints before each action, issues an explicit execution permit, and evaluates provenance-labeled runtime events against that permit.
 
-Fixed English subtitle:
+The repository remains named `agent-governance-gateway`; the product brand is **Aegis Router**.
 
-> Discover Shadow Agents, govern tool actions, and audit causal behavior
+## Core security principle
 
-## Problem addressed
+> **Approving an Agent to exist does not approve its behavior.**
 
-Once an Agent can use files, shells, databases, networks, and business APIs, risk is defined by what it ultimately does—not only by prompt content:
+Asset registration and behavioral authorization are separate controls:
 
-- Is the Agent acting for the correct human?
-- Does delegated token scope cover the requested capability?
-- Is it crossing into a sensitive resource?
-- Does a read-only plan become a write or privilege action at runtime?
-- Does the actual tool sequence depart from the declared plan?
-- Can security decisions and execution be audited and reconstructed?
+- Asset registration asks: “may this workload participate in the governed environment, and who owns it?”
+- Per-action authorization asks: “may this workload act for this principal, under this delegation, with this tool, on this resource, using this operation now?”
 
-Agent Governance Gateway sits between the Agent and execution targets and turns these questions into an enforceable checkpoint.
+Even when WorkBuddy, Codex, or another Agent is registered, every tool call and resource access that enters Aegis Router is independently authorized and audited. Registration never bypasses policy.
 
-Asset approval and action authorization are deliberately separate. Registry membership says an Agent may exist and has an accountable owner; it does not grant every tool, parameter, or resource. Every observable action from approved and Shadow Agents that reaches a connected control or observation point must be recorded, and actions crossing an enforcement point must be evaluated per action.
+## Product boundary
 
-## Enterprise deployment needs a discovery plane
+Runtime Gateway / Enforcement is the product center, followed by Runtime Observation + Audit. Agent Inventory / Discovery is an optional supporting visibility module. The intended weighting is roughly 60% / 25% / 15%.
 
-The original MVP governed only requests that passed through Agent Governance Gateway. It could not see an Agent that bypassed the Router, so it could not directly identify unregistered Shadow Agents inside an enterprise.
+Aegis Router is not:
 
-The enterprise architecture therefore has two planes:
+- an EDR or universal endpoint-monitoring product;
+- primarily a filesystem-based Shadow Agent inventory;
+- a prompt-intent classifier;
+- a gateway that authorizes by numerical risk alone;
+- a sandbox that already provides real isolation;
+- an MCP-only firewall or a complete enterprise RBAC platform.
 
-1. **Discovery / Visibility Plane** collects evidence from configuration, processes, source control, network egress, API gateways, OAuth/IdP, and CI/CD; builds an Agent inventory; and reconciles it with an approved registry.
-2. **Enforcement / Execution Plane** validates identity and authority, evaluates policy and risk, observes behavior, and audits requests that reach a control point.
+## Request and authorization model
 
-Discovery and blocking are different. Passive sensors may detect suspicious behavior, but pre-execution blocking requires an egress gateway, API gateway, service mesh, endpoint control, or Agent Governance Gateway in the request path.
+A request represents one action, not permanent permission for an Agent:
 
-## Two design choices
+| Context | Key fields | Security meaning |
+|---|---|---|
+| `PrincipalContext` | principal ID/type, tenant/environment | The accountable human/service principal |
+| `AgentIdentity` | agent/workload ID, owner, environment, framework/version | The workload that performs the action |
+| `DelegatedAuthority` | credential fingerprint, issuer, subject, scopes, expiry | What the principal delegated; never a raw bearer token |
+| `ToolContext` | tool ID/name, provider, schema hash | The tool capability used |
+| `ActionRequest` | capability, operation, resource, side effect, destination | What this individual action attempts |
 
-### 1. Do not position this as an MoE inference gateway
+`claimed_intent` may be investigation context or a risk signal, but is not a primary authorization input. Policy relies on verifiable context: identity + delegation + capability + tool + resource + operation + constraints.
 
-MoE normally describes model-internal expert networks and token-level routing. Agent Governance Gateway performs model-external request/action security, authorization, and secure dispatch. Calling it MoE would confuse it with an inference architecture.
+Policy must express workload identity, capabilities, allowed tools, resource grants, allowed operations per resource, required delegated scopes, network egress, secret access, and side-effect constraints. Unknown identity, capability, tool, resource, or operation fails closed.
 
-Preferred terminology:
+## Policy, Risk, and Dispatch
 
-- policy-driven;
-- zero-trust;
-- capability-based;
-- secure dispatch;
-- sandbox isolation;
-- runtime observation; and
-- audit trail.
+These are separate stages:
 
-### 2. Intent is only a supporting signal
+1. **Policy Decision** asks whether the action is authorized; an explicit authorization failure always yields `DENY`.
+2. **Risk Assessment** estimates the danger or uncertainty of an otherwise authorized action.
+3. **Dispatch Decision** chooses `ALLOW / RESTRICT / SANDBOX / DENY / ESCALATE` from policy and risk.
 
-Dangerous requests may look like ordinary configuration debugging, connection validation, or file organization. Policy must rely primarily on harder facts:
+For example, unauthorized finance access is denied regardless of its score. An authorized sensitive-config read may be routed to `RESTRICT` or `SANDBOX ROUTE` because of risk.
 
-1. actor: human user, Agent identity, delegated authority;
-2. requested capability: read, write, exec, network, database;
-3. target: ordinary file, protected configuration, finance data, secret;
-4. sufficient token scope; and
-5. whether observed behavior departs from plan.
+## AuthorizationEnvelope (Execution Permit): the runtime boundary
 
-## Current MVP
+An executable decision issues a time-bounded `AuthorizationEnvelope` tied to the request, principal, and Agent. The API field is `authorization_envelope`; its identifier is `permit_id`. It records:
 
-The repository implements this minimal loop:
+- the allowed capability, tool, resource, and operations;
+- `network_egress`, `secret_access`, and `write_access` constraints;
+- optional `max_bytes`, `max_duration`, and `executor_profile`;
+- `permit_id`, `issued_at`, and `expires_at`.
 
-```text
-Request
-  → Identity / scope check
-  → Capability and resource policy
-  → Explainable risk scoring
-  → Session causality / provenance / sequence detection
-  → Allow / Restrict / Sandbox / Deny / Escalate
-  → Planned vs observed behavior comparison
-  → JSONL audit record
-```
+The Agent's declared plan is not the security boundary. Runtime events are compared with the permit: in-permit events pass; secret reads outside the grant, writes under a read-only permit, egress when denied, expired permits, or binding mismatches produce explicit violation/rejection results.
 
-Policy, risk, routing, behavior comparison, and audit persistence execute for real. Executor activity is represented with safe `simulated_actions` so the demo does not gain host privileges. The `sandbox` value is a routing result, not Docker, gVisor, or Firecracker isolation.
+## Runtime evidence and audit
 
-The Router also implements deterministic in-session detections: input provenance and risk signals, tool identity/schema hashes, causal parents, protected open/read metadata, privacy budgets, accumulated risk, and sequence blocks for sensitive-read → external-send and poisoned-input → side-effect-tool chains. State is currently local to one Router process. The rules only see events routed through Agent Governance Gateway or reported by an adapter; they do not replace OS, EDR, or network sensors.
+The normal request API must not accept “simulated actions” and present them as independent observation. Runtime events enter through an explicit interface and carry request/permit ID, session, capability, tool, operation, resource/destination class, source, trust level, and timestamp.
 
-The first Shadow Agent Discovery stage is also implemented:
+Evidence sources include:
 
-- read-only scanning of explicitly selected configuration/dependency directories;
-- evidence provenance, rationale, and confidence;
-- project/Agent fingerprints and deduplication;
-- `available`, `installed`, and `configured` deployment states so marketplace/cache evidence is not automatically Shadow;
-- reconciliation against a locally durable registry as `approved`, `shadow`, or `unassessed`;
-- coverage-gap recording that continues past unreadable child directories;
-- UI add, edit, suspend, and remove operations with immediate reconciliation; and
-- explainable risk for unknown owners, MCP capability, and high-confidence findings.
+- `gateway_enforced`;
+- `instrumented_adapter`;
+- `agent_self_reported`;
+- `os_sensor` / `network_sensor` only when connected;
+- `simulated_demo`.
 
-Live process, network, OAuth, and cloud-audit sensors are not implemented.
+The audit chain retains request security context, policy result, risk assessment, dispatch, execution permit, runtime evidence source, events, violations, final verdict, duration, and causal/session relationships. It does not retain raw tokens, secret values, retrieved content, or full local paths.
 
-An experimental `cmd/observe` session wrapper records child-process lifecycle for an approved CLI Agent. Agent JSONL is marked as self-reported evidence; classification and payload fingerprints are retained without raw commands, prompts, or output. Every valid Router request is recorded whether allowed, denied, or escalated, but GUI, IDE, background, and bypassed behavior still requires future OS/network sensors. The project has one sanitized company-endpoint trial report; the full controlled protocol remains incomplete. See [`experiments/enterprise-agent-pilot.md`](experiments/enterprise-agent-pilot.md).
+## Demo Lab
 
-## Six demo scenarios
+Six synthetic scenarios remain as a clearly labeled Demo Lab and security regression suite. The core three are:
 
-### Safe coding request
+1. **Safe code request**: valid identity, delegation, capability, tool, resource, and operation → `ALLOW` + permit → demo event remains inside the permit.
+2. **Unauthorized finance access**: a coder Agent has code scope but requests `finance.read` → pre-execution `DENY` → no permit and no executor.
+3. **Authorization-boundary violation**: a permit allows only `config.read`; the server-owned Demo fixture submits `config.read` and then `secret.read` → the latter exceeds the permit → `AUTHORIZATION_BOUNDARY_VIOLATION`.
 
-- `coder-agent` has `code.read`;
-- requests `generate_code`;
-- targets low-sensitivity `public_workspace`;
-- result: `allow → normal-executor`.
+Indirect prompt injection, protected file read, and sensitive-read-then-egress remain regressions. Every synthetic event is labeled `simulated_demo`, never a production “Observed” event.
 
-### Unauthorized finance access
+## Agent Inventory / Discovery
 
-- `coder-agent` attempts `finance_data`;
-- policy explicitly denies that resource;
-- delegated scope lacks `finance.read`;
-- result: `deny → no execution`.
+Discovery code remains, but as a supporting module:
 
-### Behavioral drift during debugging
+- Registered Agent: a registered workload asset;
+- Shadow workload: deployment evidence that does not match the registry;
+- Discovery evidence: a configuration, dependency, process, or other signal;
+- Available integration: a marketplace/catalog/cache component not proven deployed.
 
-- the request appears to read protected configuration;
-- sensitivity routes it to `sandbox`;
-- the declared plan contains only `read_config`;
-- runtime includes `read_secret` and `invoke_admin_tool`;
-- result: `sandbox → suspicious_behavior`, with unexpected actions audited.
+A dependency containing `autogen`, `@openai/agents`, or an MCP manifest is evidence, not an Agent identity. Discovery confidence and deployment state belong to Inventory; runtime risk belongs to a specific action/session.
 
-### Indirect prompt injection
+## Real capabilities and limitations
 
-- untrusted retrieved input carries `instruction_like_content` and `tool_directive` risk signals;
-- tool identity and schema hashes enter the audit;
-- a deterministic rule fires before a side-effecting command executes;
-- result: `deny → blocked`.
+The MVP can deterministically authorize structured actions that enter its control point, issue permits, receive provenance-labeled events, evaluate permit boundaries, and write local audit records. Demo Lab uses harmless server-owned event fixtures that traverse the same permit checks; it is not a real executor.
 
-### Protected file read
+The MVP cannot:
 
-- only operation, path class, sensitivity, and byte count are retained;
-- full path and contents are not retained;
-- the session privacy budget is charged;
-- result: `sandbox` with a `data.sensitive_read_observed` finding.
+- automatically observe or stop Agents that bypass the Router/adapter;
+- independently see all OS file, process, syscall, or network activity;
+- turn a `SANDBOX` route into Docker/gVisor/Firecracker isolation;
+- guarantee that Agent self-reports are complete;
+- provide production authentication, RBAC, multi-tenancy, central persistence, or tamper-evident audit.
 
-### Sensitive read followed by egress
+Unconnected coverage is `UNKNOWN / not instrumented`, never “zero gaps.” A company environment improves realism but does not remove these blind spots.
 
-- an external request references a protected-read parent event;
-- each call can look reasonable in isolation;
-- the session triggers `sequence.sensitive_read_then_egress`;
-- result: `deny → blocked`.
+## Next-stage order
 
-## GitHub presentation priorities
+1. Fix identity, delegation, tool, resource-operation, and permit semantics with automated tests.
+2. Complete Runtime Event API, expired/wrong-binding/boundary negative tests, and final verdicts.
+3. Connect the first real MCP/HTTP/tool adapter as an enforcement point.
+4. Validate evidence, performance, and privacy in a re-authorized synthetic enterprise pilot.
+5. Add independent OS/network sensors with explicit coverage labels.
+6. Then evaluate a real isolation backend, permit revocation, enterprise authentication, and tamper-evident audit.
 
-The project page should prioritize:
-
-1. “an action control plane, not a prompt filter”;
-2. a decision flow from identity through policy, risk, observation, and audit;
-3. six repeatable demos, including indirect injection and cross-tool exfiltration;
-4. a screenshot or short GIF of behavioral drift;
-5. an honest security boundary; and
-6. a roadmap from simulated execution toward a real isolated executor.
-
-## Recommended next stage
-
-In priority order:
-
-1. Regress the classification, refresh, unreadable-directory, and registry failures exposed by the company-endpoint trial with isolated fixtures.
-2. After renewed company authorization, complete the controlled audit pilot and add cross-platform process/file sensors to corroborate Agent self-reporting.
-3. Persist the implemented causal-session state and connect Agent instance/full delegation chains to enterprise identity.
-4. Define the executor adapter and connect the first real Docker sandbox.
-5. Add human approval and one-time grants for `escalate`.
-6. Add tamper-evident chaining and connect the existing schema-hash comparison to a signed tool registry.
-7. Then consider network policy, OpenTelemetry, gVisor, Firecracker, or eBPF.
-
-This sequence grows the project from an honest, complete demo loop into Agent security infrastructure without making the first release depend on heavyweight isolation technology.
+This order prioritizes one demonstrable property: an Agent action receives precise authorization before execution, cannot silently exceed that authorization during execution, and leaves an audit trail that does not overstate its evidence.

@@ -27,23 +27,25 @@ type Evidence struct {
 	Confidence float64 `json:"confidence"`
 }
 
-type RiskAssessment struct {
-	Score   int      `json:"score"`
-	Level   string   `json:"level"`
-	Factors []string `json:"factors"`
+// ExposureAssessment describes what a discovery signal may enable. It is not
+// a runtime risk score: runtime risk belongs to a concrete attempted action.
+type ExposureAssessment struct {
+	Classification        string   `json:"classification"`
+	PotentialCapabilities []string `json:"potential_capabilities"`
+	Factors               []string `json:"factors"`
 }
 
 type DiscoveredAgent struct {
-	Fingerprint     string          `json:"fingerprint"`
-	Name            string          `json:"name"`
-	AgentType       string          `json:"agent_type"`
-	DeploymentState DeploymentState `json:"deployment_state"`
-	Status          Status          `json:"status"`
-	ApprovalID      string          `json:"approval_id,omitempty"`
-	Owner           string          `json:"owner,omitempty"`
-	Confidence      float64         `json:"confidence"`
-	Evidence        []Evidence      `json:"evidence"`
-	Risk            RiskAssessment  `json:"risk"`
+	Fingerprint     string             `json:"fingerprint"`
+	Name            string             `json:"name"`
+	AgentType       string             `json:"agent_type"`
+	DeploymentState DeploymentState    `json:"deployment_state"`
+	Status          Status             `json:"status"`
+	ApprovalID      string             `json:"approval_id,omitempty"`
+	Owner           string             `json:"owner,omitempty"`
+	Confidence      float64            `json:"confidence"`
+	Evidence        []Evidence         `json:"evidence"`
+	Exposure        ExposureAssessment `json:"potential_exposure"`
 }
 
 type Report struct {
@@ -77,15 +79,21 @@ type Signature struct {
 }
 
 type RegistryEntry struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	AgentType    string `json:"agent_type"`
-	Fingerprint  string `json:"fingerprint,omitempty"`
-	PathContains string `json:"path_contains"`
-	Owner        string `json:"owner"`
-	ApprovalRef  string `json:"approval_ref,omitempty"`
-	ExpiresOn    string `json:"expires_on,omitempty"`
-	State        string `json:"state,omitempty"`
+	ID            string `json:"id"`
+	AgentID       string `json:"agent_id,omitempty"`
+	WorkloadID    string `json:"workload_identity,omitempty"`
+	DisplayName   string `json:"display_name,omitempty"`
+	Name          string `json:"name"`
+	AgentType     string `json:"agent_type"`
+	Environment   string `json:"environment,omitempty"`
+	Framework     string `json:"framework,omitempty"`
+	PolicyProfile string `json:"policy_profile,omitempty"`
+	Fingerprint   string `json:"fingerprint,omitempty"`
+	PathContains  string `json:"path_contains"`
+	Owner         string `json:"owner"`
+	ApprovalRef   string `json:"approval_ref,omitempty"`
+	ExpiresOn     string `json:"expires_on,omitempty"`
+	State         string `json:"state,omitempty"`
 }
 
 type Config struct {

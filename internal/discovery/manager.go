@@ -161,7 +161,8 @@ func cloneReport(report Report) Report {
 	for index, agent := range report.Agents {
 		result.Agents[index] = agent
 		result.Agents[index].Evidence = slices.Clone(agent.Evidence)
-		result.Agents[index].Risk.Factors = slices.Clone(agent.Risk.Factors)
+		result.Agents[index].Exposure.Factors = slices.Clone(agent.Exposure.Factors)
+		result.Agents[index].Exposure.PotentialCapabilities = slices.Clone(agent.Exposure.PotentialCapabilities)
 	}
 	return result
 }
