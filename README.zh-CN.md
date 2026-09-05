@@ -4,7 +4,7 @@
 
 **AI Agent 动作的执行许可**
 
-Aegis Router 实现一套不绑定 Agent 框架的执行许可模型，并提供一个聚焦的 MCP 执行路径。特权工具动作执行前，Aegis 根据已认证身份和精确业务语义作出确定性授权，再签发短时、动作绑定、默认单次使用的签名执行许可。执行器在真实副作用发生前验证并消费该许可。
+Aegis Router 实现一套不绑定 Agent 框架的执行许可模型，并提供一个聚焦的 MCP 执行路径和服务端拥有的语义动作配置。特权工具动作执行前，Aegis 根据已认证身份和精确业务语义作出确定性授权，再签发短时、动作绑定、默认单次使用的签名执行许可。执行器在真实副作用发生前验证并消费该许可。
 
 如果 Agent 在授权后改变工具、操作、资源或安全相关参数，许可不再匹配，工具不得执行。
 
@@ -16,7 +16,7 @@ Aegis 不是沙箱、EDR、IAM、Agent 管理平台或企业 Inventory 产品。
 
 ```text
 已认证身份 + Agent 提议动作
-  → 规范化 CanonicalAction
+  → 由一个服务端拥有的语义配置解析为 CanonicalAction
   → 确定性 Policy 授权
   → 签发 Execution Permit
   → MCP 执行边界验证并消费 Permit
@@ -30,9 +30,9 @@ Aegis 不是沙箱、EDR、IAM、Agent 管理平台或企业 Inventory 产品。
 
 ## 能力状态
 
-- **已实现：**默认拒绝、本地 loopback 开发和可信反向代理三种授权入口模式；签名绑定的 `execution`/`simulation` 用途隔离；短时单次 Permit；replay protection；CanonicalAction 绑定；唯一的 `payment.send/v1` 语义配置；以及对应的聚焦 MCP HTTP `POST` 执行路径。
+- **已实现：**默认拒绝、本地 loopback 开发和可信反向代理三种授权入口模式；签名绑定的 `execution`/`simulation` 用途隔离；短时单次 Permit；replay protection；CanonicalAction 绑定；恰好两个内置配置（`payment.send/v1` 与逻辑 `workspace.write/v1`）；以及共用的一条聚焦 MCP HTTP `POST` 执行路径。
 - **演示或实验能力：**Server-owned simulation 场景与 telemetry；冻结的 Inventory 只有显式开启才显示。
-- **未实现：**审批完成流程、sandbox/EDR/IAM、业务副作用 exactly-once、更多语义配置或执行 Adapter，以及完整 MCP 协议兼容。`REQUIRES_APPROVAL` 目前只是模型/配置结果，没有受支持的审批流程可以把它转换成可执行 Permit。
+- **未实现：**审批完成流程、sandbox/EDR/IAM、业务副作用 exactly-once、第三个或动态加载的语义配置、额外执行 Adapter、真实文件系统写入，以及完整 MCP 协议兼容。`REQUIRES_APPROVAL` 目前只是模型/配置结果，没有受支持的审批流程可以把它转换成可执行 Permit。
 
 ## 核心对象
 
@@ -43,7 +43,7 @@ Aegis 不是沙箱、EDR、IAM、Agent 管理平台或企业 Inventory 产品。
 - principal identity；
 - Agent 与 workload identity；
 - delegated authority fingerprint；
-- tool、capability、resource 与 operation；
+- tool、capability、resource、operation、profile ID/version 与 audience；
 - 安全相关 arguments。
 
 Arguments 使用确定性 canonical JSON 表示并以 SHA-256 摘要。空参数归一化为 `{}`；对象键递归按 Unicode 字典序排列，重复键、畸形 UTF-8 和未配对 surrogate 拒绝；数组保持原顺序；数字在不转为浮点数的情况下精确归一化（例如 `100.0` 与 `1e2` 等价）。对象键顺序不影响摘要；改变金额、资源、工具、操作或其他受绑定字段会改变摘要。摘要格式为 `sha256:<64 位小写十六进制>`。正常审计只保存 `action_digest`，不保存原始敏感参数。
@@ -103,7 +103,7 @@ MCP client
 
 任何验证失败都必须发生在上游 `tools/call` 之前。即使动作字段完全匹配，`simulation` Token 也会在消费和上游调用之前被拒绝。此里程碑不实现 HTTP、A2A、数据库、Shell 或云策略 Adapter。
 
-在现有 Server 上配置上游即可挂载 permit-gated `POST /mcp`。下面的 `--allow-development-intake` 只允许 loopback 请求将 body 身份作为 `development_only` 上下文，不能用于生产：
+配置一个服务端拥有的 control upstream 即可挂载 permit-gated `POST /mcp`。`--mcp-upstream` 必须与某个内置 profile 的 `upstream_url` 完全相同；协议初始化/列表兼容方法使用该目标，而每个 `tools/call` 会被发送到其已解析 profile 自己拥有的 upstream。下面的 `--allow-development-intake` 只允许 loopback 请求将 body 身份作为 `development_only` 上下文，不能用于生产：
 
 ```bash
 go run ./cmd/server --allow-development-intake --mcp-upstream http://127.0.0.1:3001/mcp
@@ -113,9 +113,13 @@ go run ./cmd/server --allow-development-intake --mcp-upstream http://127.0.0.1:3
 
 对 MCP `2026-07-28` 请求，Proxy 还要求 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与 `params._meta`/JSON-RPC 正文精确一致，并根据已验证正文重建转发 Header；重复 JSON key 会在 Permit 验证前拒绝。`tools/call` 的 `_meta` 只接受已校验的协议版本，未绑定的扩展元数据会被拒绝。当前是刻意收窄的 HTTP `POST` 子集：支持 `server/discover`、`tools/list` 和 permit-gated `tools/call`，不声称完整 MCP conformance。MRTR 的 `inputResponses`/`requestState` 与需要 Schema 感知验证的 `Mcp-Param-*` 暂未纳入 CanonicalAction，因此会 fail closed；未声明现代版本的旧 `initialize` 路径只作为兼容能力保留。
 
-### 唯一的语义动作：`payment.send/v1`
+### 恰好两个内置语义动作
 
-`configs/policy.json` 是服务端拥有的映射：把 MCP Tool `payment.send` 和已配置上游 URL 绑定到 capability `payment_transfer`、resource `account-123`、operation `transfer`、profile `payment.send/v1` 与 audience `mcp://local-payment-sandbox`。客户端不能选择上游 URL；如果 `--mcp-upstream` 与配置中的 `upstream_url` 不完全一致，Server 会拒绝启动。未知 MCP Tool，以及冲突的 capability/resource/operation/profile/audience 声明，都会在消费 Permit 和调用上游之前拒绝。
+一个小型不可变 registry 按 MCP Tool 把请求分发给唯一的内置 profile。重复 profile ID、有歧义的 Tool 归属、未知 Tool 和冲突的 profile 声明全部 fail closed。调用方不能注册代码、加载 schema、选择目标或切换到更宽松的 profile；这是固定 dispatcher，不是 plugin system。
+
+#### `payment.send/v1`
+
+`configs/policy.json` 是服务端拥有的映射：把 MCP Tool `payment.send` 和已配置上游 URL 绑定到 capability `payment_transfer`、resource `account-123`、operation `transfer`、profile `payment.send/v1` 与 audience `mcp://local-payment-sandbox`。客户端不能选择上游 URL。未知 MCP Tool，以及冲突的 capability/resource/operation/profile/audience 声明，都会在消费 Permit 和调用上游之前拒绝。
 
 支付参数只能是：
 
@@ -124,6 +128,16 @@ go run ./cmd/server --allow-development-intake --mcp-upstream http://127.0.0.1:3
 ```
 
 `amount_minor` 是正 JSON 整数，表示该币种的最小货币单位；示例配置中 USD 使用美分、CNY 使用分。系统不使用浮点、不做字符串转数字，也不做隐式汇率换算。零、负数、`int64` 溢出、字段缺失/类型错误、重复 key 和未知业务字段都会拒绝。配置把每个允许币种与该币种的单笔最小单位上限明确关联，并另行维护收款人 allowlist。Authorizer 与 MCP Proxy 共同使用同一个 `payment.send/v1` 解析器；Proxy 转发规范化后的三个字段，而不是调用方原始 JSON 序列化。
+
+#### `workspace.write/v1`
+
+该 profile 用一个语义完全不同的动作证明同一安全 primitive 可以复用。它把 MCP Tool `workspace.write` 绑定到 capability `workspace_write`、逻辑 resource `demo-workspace`、operation `write`、audience `mcp://local-workspace-sandbox` 及其自己配置的测试 upstream。参数只能是：
+
+```json
+{"path":"reports/result.txt","content":"hello"}
+```
+
+`path` 是逻辑 workspace-relative 标识，不是操作系统路径。它只使用 `/`，示例限制为 1,024 bytes，并拒绝绝对路径、盘符前缀、反斜杠、空/`.`/`..`/`~` segment、首尾斜杠和控制字符；Aegis 不会修复或进行文件系统 normalization。`content` 必须是已提供的 JSON string，示例限制为 4 KiB。只接受 `path` 与 `content` 两个字段。两者都进入规范动作语义，因此任一变化都会使 Permit 失效，但原始 content 绝不进入正常审计。该 profile 只向本地/mock 逻辑 workspace upstream 转发；Aegis 不写主机文件，也不提供 workspace sandbox。
 
 在仓库根目录运行授权示例：在终端 1 保持服务运行，再从终端 2 发送两个请求。
 
@@ -134,9 +148,10 @@ go run ./cmd/server --allow-development-intake
 # 终端 2
 curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/payment-send-valid.json http://127.0.0.1:8080/api/actions/authorize
 curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/payment-send-over-limit.json http://127.0.0.1:8080/api/actions/authorize
+curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/workspace-write-valid.json http://127.0.0.1:8080/api/actions/authorize
 ```
 
-第一个响应是 `AUTHORIZED`，并包含绑定 `payment.send/v1` 和配置 audience 的 `execution` Permit；第二个响应是 `DENIED`，没有 Permit，并包含稳定原因 `PAYMENT_AMOUNT_EXCEEDS_LIMIT`。这些命令只使用本地开发 intake，不会连接真实支付服务商。
+第一个响应是 `AUTHORIZED`，并包含绑定 `payment.send/v1` 和配置 audience 的 `execution` Permit；第二个响应是 `DENIED`，没有 Permit，并包含稳定原因 `PAYMENT_AMOUNT_EXCEEDS_LIMIT`；第三个响应是 `AUTHORIZED`，Permit 绑定到 `workspace.write/v1`，但仅授权并不会写文件或调用 upstream。这些命令只使用本地开发 intake，不会连接真实支付服务商或主机文件系统。
 
 ## Policy、Risk 与 obligations
 
@@ -145,7 +160,7 @@ curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/paymen
 - `AUTHORIZED`；
 - `DENIED`。
 
-模型可以表达 `REQUIRES_APPROVAL`，但当前版本没有受支持的审批完成流程，因此不把它宣称为已实现能力。确定性 Policy 与 `payment.send/v1` 语义配置是仅有的授权权威，也是 Permit 是否存在的唯一决定者。Risk score 和 detection findings 只写入 `advisory_signals`，不能改变确定性结果、不能签发 Permit，也不能选择 executor。隔离、只读、禁止网络出口、人工批准和增强审计只能由确定性 Policy/配置映射为 decision/permit obligations，例如：
+模型可以表达 `REQUIRES_APPROVAL`，但当前版本没有受支持的审批完成流程，因此不把它宣称为已实现能力。确定性 Policy 与两个内置语义配置是仅有的授权权威，也是 Permit 是否存在的唯一决定者。Risk score 和 detection findings 只写入 `advisory_signals`，不能改变确定性结果、不能签发 Permit，也不能选择 executor。隔离、只读、禁止网络出口、人工批准和增强审计只能由确定性 Policy/配置映射为 decision/permit obligations，例如：
 
 ```json
 {

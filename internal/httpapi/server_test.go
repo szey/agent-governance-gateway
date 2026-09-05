@@ -23,7 +23,6 @@ import (
 	"agent-governance-gateway/internal/models"
 	"agent-governance-gateway/internal/router"
 	"agent-governance-gateway/internal/scenario"
-	"agent-governance-gateway/internal/semanticaction"
 	"agent-governance-gateway/internal/sessionaudit"
 )
 
@@ -135,11 +134,7 @@ func TestTrustedProxyAuthorizationExecutesOneNormalizedPaymentThroughMCP(t *test
 		t.Fatal(err)
 	}
 	r := router.New(cfg, store)
-	profile, err := semanticaction.NewPaymentSendV1(cfg.SemanticActions.PaymentSendV1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mcpProxy, err := mcp.New(r, profile, nil)
+	mcpProxy, err := mcp.New(r, r.SemanticRegistry(), upstream.URL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +229,125 @@ func TestTrustedProxyAuthorizationExecutesOneNormalizedPaymentThroughMCP(t *test
 	for _, forbidden := range []string{authorized.Permit.PermitToken, "forged-admin", "attacker-agent", "attacker-workload", "merchant-456"} {
 		if bytes.Contains(persisted, []byte(forbidden)) {
 			t.Fatalf("audit leaked caller-controlled or secret value %q", forbidden)
+		}
+	}
+}
+
+func TestTrustedProxyAuthorizationExecutesWorkspaceWriteThroughSharedMCPBoundary(t *testing.T) {
+	const rawContentMarker = "TRUSTED_WORKSPACE_CONTENT_MUST_STAY_PRIVATE_9c42"
+	var workspaceCalls atomic.Int32
+	workspaceUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		workspaceCalls.Add(1)
+		var rpc struct {
+			Params struct {
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&rpc); err != nil {
+			t.Errorf("decode workspace upstream request: %v", err)
+		} else if rpc.Params.Name != "workspace.write" || string(rpc.Params.Arguments) != `{"path":"reports/result.txt","content":"`+rawContentMarker+`"}` {
+			t.Errorf("workspace upstream action=%#v", rpc.Params)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`))
+	}))
+	defer workspaceUpstream.Close()
+	paymentUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer paymentUpstream.Close()
+
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SemanticActions.PaymentSendV1.UpstreamURL = paymentUpstream.URL
+	cfg.SemanticActions.WorkspaceWriteV1.UpstreamURL = workspaceUpstream.URL
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	store, err := audit.NewStore(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.New(cfg, store)
+	mcpProxy, err := mcp.New(r, r.SemanticRegistry(), paymentUpstream.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustedProxy, err := intake.NewTrustedProxy([]string{"127.0.0.1/32"}, "local-auth-gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	static, err := fs.Sub(fstest.MapFS{"static/index.html": {Data: []byte("ok")}}, "static")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	api := httpapi.NewWithOptions(r, store, cfg, nil, nil, filepath.Join(t.TempDir(), "session-audit.jsonl"), static, logger, httpapi.Options{
+		MCPHandler: mcpProxy, AuthorizationIntake: trustedProxy,
+	})
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+
+	proposal := models.Request{
+		Principal: models.PrincipalContext{PrincipalID: "forged-admin", PrincipalType: "service"},
+		Agent:     models.AgentIdentity{AgentID: "attacker-agent", WorkloadID: "attacker-workload"},
+		Authority: models.DelegatedAuthority{CredentialFingerprint: strings.Repeat("a", 64), Scopes: []string{"workspace.admin"}},
+		Tool:      models.ToolContext{Name: "workspace.write", Provider: "mcp"},
+		Action: models.ActionRequest{
+			Capability: "workspace_write", TargetResource: "demo-workspace", Operation: "write",
+			Arguments: json.RawMessage(`{"content":"` + rawContentMarker + `","path":"reports/result.txt"}`),
+		},
+	}
+	proposalBody, _ := json.Marshal(proposal)
+	authorizeRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/actions/authorize", bytes.NewReader(proposalBody))
+	authorizeRequest.Header.Set("Content-Type", "application/json")
+	setTrustedProxyWorkspaceAuthorizationHeaders(authorizeRequest.Header)
+	authorizeResponse, err := server.Client().Do(authorizeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authorizeResponse.Body.Close()
+	var authorized models.ActionAuthorizationResponse
+	if err := json.NewDecoder(authorizeResponse.Body).Decode(&authorized); err != nil {
+		t.Fatal(err)
+	}
+	if authorizeResponse.StatusCode != http.StatusOK || authorized.Permit == nil || authorized.Permit.ProfileID != "workspace.write/v1" ||
+		authorized.Decision.Request.Agent.AgentID != "workspace-agent" || authorized.Decision.Request.Agent.WorkloadID != "workspace-workload-v1" {
+		t.Fatalf("workspace authorization status=%d result=%#v", authorizeResponse.StatusCode, authorized)
+	}
+
+	mcpBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workspace.write","arguments":{"path":"reports/result.txt","content":"` + rawContentMarker + `"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`)
+	executeRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/mcp", bytes.NewReader(mcpBody))
+	executeRequest.Header.Set("Authorization", "AegisPermit "+authorized.Permit.PermitToken)
+	executeRequest.Header.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion20260728)
+	executeRequest.Header.Set(mcp.HeaderMethod, "tools/call")
+	executeRequest.Header.Set(mcp.HeaderName, "workspace.write")
+	executeRequest.Header.Set(mcp.HeaderPrincipalID, "user-01")
+	executeRequest.Header.Set(mcp.HeaderAgentID, "workspace-agent")
+	executeRequest.Header.Set(mcp.HeaderWorkloadID, "workspace-workload-v1")
+	executeRequest.Header.Set(mcp.HeaderDelegationFingerprint, strings.Repeat("e", 64))
+	executeRequest.Header.Set(mcp.HeaderCapability, "workspace_write")
+	executeRequest.Header.Set(mcp.HeaderResource, "demo-workspace")
+	executeRequest.Header.Set(mcp.HeaderOperation, "write")
+	executeResponse, err := server.Client().Do(executeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer executeResponse.Body.Close()
+	if executeResponse.StatusCode != http.StatusOK || workspaceCalls.Load() != 1 {
+		t.Fatalf("workspace execution status=%d calls=%d", executeResponse.StatusCode, workspaceCalls.Load())
+	}
+	record, ok := store.Get(authorized.Decision.RequestID)
+	if !ok || record.AuthorizationContext == nil || record.AuthorizationContext.ProviderID != "local-auth-gateway" ||
+		record.ExecutionReceipt == nil || record.ExecutionReceipt.ProfileID != "workspace.write/v1" || record.ExecutionReceipt.VerificationOutcome != "VERIFIED" {
+		t.Fatalf("workspace trusted execution audit=%#v", record)
+	}
+	persisted, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{rawContentMarker, authorized.Permit.PermitToken, "forged-admin", "attacker-agent", "attacker-workload"} {
+		if bytes.Contains(persisted, []byte(forbidden)) {
+			t.Fatalf("workspace audit leaked %q", forbidden)
 		}
 	}
 }
@@ -669,7 +783,7 @@ func TestAgentsAPIDistinguishesGovernedIdentitiesFromAssetRegistry(t *testing.T)
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.GovernedIdentities) != 4 || len(body.AssetRegistry) != 0 {
+	if len(body.GovernedIdentities) != 5 || len(body.AssetRegistry) != 0 {
 		t.Fatalf("agents response conflated policy identities and registration: %#v", body)
 	}
 	if !strings.Contains(strings.ToLower(body.Principle), "behavioral permissions live in policy") {
@@ -901,11 +1015,7 @@ func trustedProxyMCPTestHandler(t *testing.T, provider *intake.TrustedProxy, ups
 		t.Fatal(err)
 	}
 	r := router.New(cfg, store)
-	profile, err := semanticaction.NewPaymentSendV1(cfg.SemanticActions.PaymentSendV1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy, err := mcp.New(r, profile, nil)
+	proxy, err := mcp.New(r, r.SemanticRegistry(), upstreamURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -926,4 +1036,12 @@ func setTrustedProxyAuthorizationHeaders(header http.Header) {
 	header.Set(intake.HeaderWorkloadID, "finance-workload-v1")
 	header.Set(intake.HeaderDelegatedScopes, "payment.transfer")
 	header.Set(intake.HeaderDelegationFingerprint, strings.Repeat("b", 64))
+}
+
+func setTrustedProxyWorkspaceAuthorizationHeaders(header http.Header) {
+	header.Set(intake.HeaderAuthenticatedPrincipal, "user-01")
+	header.Set(intake.HeaderAgentID, "workspace-agent")
+	header.Set(intake.HeaderWorkloadID, "workspace-workload-v1")
+	header.Set(intake.HeaderDelegatedScopes, "workspace.write")
+	header.Set(intake.HeaderDelegationFingerprint, strings.Repeat("e", 64))
 }

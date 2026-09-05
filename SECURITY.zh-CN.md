@@ -49,7 +49,7 @@ Aegis 的保证是：同一个 Execution Permit 至多成功消费一次。它�
 
 授权方和执行方必须复用同一 canonicalizer。空参数转为 `{}`；对象键递归按 Unicode 字典序排列；重复键、畸形 UTF-8 和未配对 surrogate 拒绝；数组保持原顺序；字符串采用 JSON 转义；数字不经浮点转换而精确归一化，再以 SHA-256 生成 `sha256:<64 位小写十六进制>` 摘要。
 
-Principal、Agent/workload、delegation fingerprint、tool、capability、resource、operation 或安全相关 arguments 任一改变，都必须导致绑定校验失败。不要依赖 `claimed_intent`、自然语言计划或客户端提供的摘要来替代服务器端规范化。
+Principal、Agent/workload、delegation fingerprint、tool、capability、resource、operation、profile ID/version、audience 或安全相关 arguments 任一改变，都必须导致绑定校验失败。不要依赖 `claimed_intent`、自然语言计划或客户端提供的摘要来替代服务器端规范化。
 
 ## MCP 执行边界
 
@@ -61,7 +61,11 @@ MCP `2026-07-28` 的 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与 JSON
 
 保护只覆盖经过该 Adapter 的调用。Trusted Intake 只让身份来源显式、可拒绝和可审计，并不实现 IAM/SSO/RBAC；真实集成仍必须由已认证的中间件提供上下文。MCP 执行请求里的绑定 Header 只有在与已签名 Permit 完全匹配时才有效，本身不是身份凭据。上游 TLS/认证、transport framing、工具自身副作用、部署绕过和 confused-deputy 风险仍需要独立威胁建模。
 
-唯一的 Server-owned 语义映射是 `payment.send/v1`。它固定 MCP Tool、capability、resource、operation、profile 版本、audience 与 upstream target，调用方不能选择 URL。严格的三个字段解析器只接受正 `int64` `amount_minor`、精确命中 allowlist 的币种和收款人；每个币种的限额都是独立的最小单位上限，不进行隐式汇率换算。未知 Tool/字段/类型、映射缺失或冲突的客户端声明全部 fail closed。授权与 MCP 执行复用同一个解析器，验签通过后转发的是规范化参数，而不是调用方原始序列化。
+当前恰好有两个编译进服务端的语义映射，并通过同一个不可变 registry 分发：`payment.send/v1` 与逻辑 `workspace.write/v1`。重复 profile ID、有歧义的 Tool 映射、未知 Tool、缺失映射及冲突的调用方声明全部 fail closed；调用方不能加载代码、选择 profile 或指定 upstream URL。授权与 MCP 执行使用同一个 registry 和 profile parser，每个已解析 profile 提供自己固定的 upstream target。
+
+`payment.send/v1` 固定 Tool、capability、resource、operation、profile 版本、audience 与 target。严格的三个字段解析器只接受正 `int64` `amount_minor`、精确命中 allowlist 的币种和收款人；每个币种的限额都是独立的最小单位上限，不进行隐式汇率换算。
+
+`workspace.write/v1` 为逻辑 `workspace.write` 固定相同类别的绑定。严格 parser 只接受 JSON string 类型的 `path` 与 `content`。Path 不是 OS 路径：只允许相对的 `/` 分隔 segment，不允许反斜杠、盘符前缀、空/`.`/`..`/`~` segment、首尾斜杠、控制字符，也不进行修复/normalization。示例配置把 path 限制为 1,024 bytes、content 限制为 4 KiB。Content 与 path 都进入动作语义，但不进入 Permit claims 或正常审计。该 profile 只向已配置的逻辑/mock upstream 转发，不写文件，也不提供隔离。
 
 ## Policy、Risk 与隔离
 

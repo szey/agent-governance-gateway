@@ -46,30 +46,33 @@ type Gate interface {
 }
 
 type Proxy struct {
-	gate     Gate
-	upstream *url.URL
-	client   *http.Client
-	profile  *semanticaction.PaymentSendV1
+	gate            Gate
+	registry        *semanticaction.Registry
+	controlUpstream *url.URL
+	client          *http.Client
 }
 
-func New(gate Gate, profile *semanticaction.PaymentSendV1, client *http.Client) (*Proxy, error) {
+func New(gate Gate, registry *semanticaction.Registry, controlUpstreamURL string, client *http.Client) (*Proxy, error) {
 	if gate == nil {
 		return nil, fmt.Errorf("MCP proxy requires an execution-permit gate")
 	}
-	if profile == nil {
-		return nil, fmt.Errorf("MCP proxy requires the server-owned payment.send/v1 profile")
+	if registry == nil || registry.Len() == 0 {
+		return nil, fmt.Errorf("MCP proxy requires at least one server-owned semantic profile")
 	}
-	target, err := url.Parse(profile.UpstreamURL())
+	target, err := url.Parse(strings.TrimSpace(controlUpstreamURL))
 	if err != nil || target.Scheme == "" || target.Host == "" {
-		return nil, fmt.Errorf("MCP upstream must be an absolute HTTP(S) URL")
+		return nil, fmt.Errorf("MCP control upstream must be an absolute HTTP(S) URL")
 	}
 	if target.Scheme != "http" && target.Scheme != "https" {
-		return nil, fmt.Errorf("MCP upstream scheme must be http or https")
+		return nil, fmt.Errorf("MCP control upstream scheme must be http or https")
+	}
+	if !registry.OwnsUpstreamURL(target.String()) {
+		return nil, fmt.Errorf("MCP control upstream must match a server-owned semantic profile upstream")
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Proxy{gate: gate, upstream: target, client: client, profile: profile}, nil
+	return &Proxy{gate: gate, registry: registry, controlUpstream: target, client: client}, nil
 }
 
 type rpcRequest struct {
@@ -141,7 +144,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			writeRPCError(w, http.StatusForbidden, rpc.ID, -32601, "Only MCP protocol setup, tools/list, and permit-gated tools/call are supported", nil)
 			return
 		}
-		p.forward(w, req, body, routing, models.PermitVerification{}, nil)
+		p.forward(w, req, body, routing, models.PermitVerification{}, nil, p.controlUpstream)
 		return
 	}
 
@@ -168,7 +171,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if bound, bindErr := canonicalaction.BindDelegatedAuthorityFingerprint(delegationBinding); bindErr == nil {
 		delegationBinding = bound
 	}
-	resolved, resolveErr := p.profile.Resolve(semanticaction.Input{
+	resolved, resolveErr := p.registry.Resolve(semanticaction.Input{
 		PrincipalID: req.Header.Get(HeaderPrincipalID), AgentID: req.Header.Get(HeaderAgentID),
 		WorkloadID: req.Header.Get(HeaderWorkloadID), DelegatedAuthorityFingerprint: delegationBinding,
 		Tool: params.Name, Capability: req.Header.Get(HeaderCapability), Resource: req.Header.Get(HeaderResource),
@@ -179,6 +182,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeRPCError(w, http.StatusForbidden, rpc.ID, -32005, "MCP action rejected by the server-owned semantic profile", map[string]string{
 			"semantic_result": string(semanticaction.Code(resolveErr)),
 		})
+		return
+	}
+	upstream, upstreamErr := url.Parse(resolved.UpstreamURL)
+	if upstreamErr != nil || upstream.Scheme == "" || upstream.Host == "" ||
+		(upstream.Scheme != "http" && upstream.Scheme != "https") || !p.registry.OwnsUpstreamURL(upstream.String()) {
+		writeRPCError(w, http.StatusInternalServerError, rpc.ID, -32603, "Aegis semantic profile has an invalid upstream binding", nil)
 		return
 	}
 	action := resolved.Action
@@ -217,7 +226,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		})
 		return
 	}
-	p.forward(w, req, normalizedBody, routing, verification, &action)
+	p.forward(w, req, normalizedBody, routing, verification, &action, upstream)
 }
 
 func normalizedToolCallBody(rpc rpcRequest, params toolCallParams, normalizedArguments json.RawMessage) ([]byte, error) {
@@ -230,8 +239,8 @@ func normalizedToolCallBody(rpc rpcRequest, params toolCallParams, normalizedArg
 	return json.Marshal(rpc)
 }
 
-func (p *Proxy) forward(w http.ResponseWriter, inbound *http.Request, body []byte, routing routingMetadata, verification models.PermitVerification, action *canonicalaction.Action) {
-	outbound, err := http.NewRequestWithContext(inbound.Context(), http.MethodPost, p.upstream.String(), bytes.NewReader(body))
+func (p *Proxy) forward(w http.ResponseWriter, inbound *http.Request, body []byte, routing routingMetadata, verification models.PermitVerification, action *canonicalaction.Action, upstream *url.URL) {
+	outbound, err := http.NewRequestWithContext(inbound.Context(), http.MethodPost, upstream.String(), bytes.NewReader(body))
 	if err != nil {
 		if verification.Verified {
 			_, _ = p.gate.CompleteVerifiedExecution(models.ExecutionCompletion{

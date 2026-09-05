@@ -115,8 +115,8 @@ type PermitPolicy struct {
 	Issuer     string `json:"issuer,omitempty"`
 }
 
-// PaymentSendV1Config is the only server-owned business-semantic profile in
-// the focused MVP. Amount limits are integer minor currency units.
+// PaymentSendV1Config is one of two compiled-in business-semantic profiles.
+// Amount limits are integer minor currency units.
 type PaymentSendV1Config struct {
 	ProfileID                string           `json:"profile_id"`
 	MCPTool                  string           `json:"mcp_tool"`
@@ -130,8 +130,23 @@ type PaymentSendV1Config struct {
 	AllowedRecipients        []string         `json:"allowed_recipients"`
 }
 
+// WorkspaceWriteV1Config binds a logical write action to a server-owned MCP
+// target. Paths are logical identifiers and never host filesystem paths.
+type WorkspaceWriteV1Config struct {
+	ProfileID       string `json:"profile_id"`
+	MCPTool         string `json:"mcp_tool"`
+	Capability      string `json:"capability"`
+	Resource        string `json:"resource"`
+	Operation       string `json:"operation"`
+	Audience        string `json:"audience"`
+	UpstreamURL     string `json:"upstream_url"`
+	MaxPathBytes    int    `json:"max_path_bytes"`
+	MaxContentBytes int    `json:"max_content_bytes"`
+}
+
 type SemanticActionsConfig struct {
-	PaymentSendV1 PaymentSendV1Config `json:"payment_send_v1"`
+	PaymentSendV1    PaymentSendV1Config    `json:"payment_send_v1"`
+	WorkspaceWriteV1 WorkspaceWriteV1Config `json:"workspace_write_v1"`
 }
 
 type PolicyConfig struct {

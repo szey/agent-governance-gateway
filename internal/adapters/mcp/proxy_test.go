@@ -87,6 +87,174 @@ func TestValidPermitInvokesMCPUpstreamExactlyOnceAndAuditsReceipt(t *testing.T) 
 	}
 }
 
+func TestWorkspaceWriteV1TrustedPermitInvokesOnlyItsConfiguredUpstream(t *testing.T) {
+	const rawContentMarker = "WORKSPACE_RAW_CONTENT_MUST_NOT_ENTER_AUDIT_7f13"
+	var paymentCalls atomic.Int32
+	paymentUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		paymentCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer paymentUpstream.Close()
+	var workspaceCalls atomic.Int32
+	workspaceUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		workspaceCalls.Add(1)
+		var forwarded struct {
+			Params struct {
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&forwarded); err != nil {
+			t.Errorf("decode workspace upstream request: %v", err)
+		} else if forwarded.Params.Name != "workspace.write" || string(forwarded.Params.Arguments) != `{"path":"reports/result.txt","content":"`+rawContentMarker+`"}` {
+			t.Errorf("workspace upstream received non-normalized action: %#v", forwarded.Params)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`)
+	}))
+	defer workspaceUpstream.Close()
+
+	r, store, auditPath, proxy := twoProfileProxy(t, paymentUpstream.URL, workspaceUpstream.URL)
+	action := workspaceRequest(`{"content":"` + rawContentMarker + `","path":"reports/result.txt"}`)
+	authorized, err := authorizeAction(t, r, action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorized.Permit == nil || authorized.Permit.ProfileID != "workspace.write/v1" || authorized.Permit.Audience != "mcp://local-workspace-sandbox" {
+		t.Fatalf("workspace Permit missing server-owned bindings: %#v", authorized.Permit)
+	}
+	response := invoke(t, proxy, authorized.Permit.PermitToken, action, "workspace.write", json.RawMessage(`{"path":"reports/result.txt","content":"`+rawContentMarker+`"}`))
+	if response.Code != http.StatusOK || workspaceCalls.Load() != 1 || paymentCalls.Load() != 0 {
+		t.Fatalf("status=%d workspace=%d payment=%d body=%s", response.Code, workspaceCalls.Load(), paymentCalls.Load(), response.Body.String())
+	}
+	permitRecord, ok := r.GetPermit(authorized.Permit.PermitID)
+	if !ok || permitRecord.State != "CONSUMED" {
+		t.Fatalf("workspace Permit state=%#v exists=%v", permitRecord, ok)
+	}
+	record, ok := store.Get(authorized.Decision.RequestID)
+	if !ok || record.ExecutionReceipt == nil || record.ExecutionReceipt.VerificationOutcome != "VERIFIED" ||
+		record.ExecutionReceipt.ProfileID != "workspace.write/v1" || record.ExecutionReceipt.Audience != "mcp://local-workspace-sandbox" ||
+		record.ExecutionReceipt.Tool != "workspace.write" || record.ExecutionReceipt.Resource != "demo-workspace" {
+		t.Fatalf("workspace audit receipt=%#v", record)
+	}
+	persisted, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{rawContentMarker, authorized.Permit.PermitToken, strings.Repeat("e", 64)} {
+		if bytes.Contains(persisted, []byte(forbidden)) {
+			t.Fatalf("workspace audit leaked forbidden value %q", forbidden)
+		}
+	}
+}
+
+func TestWorkspaceWriteV1MutationAndReplayFailBeforeUpstream(t *testing.T) {
+	mutations := []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{"path", json.RawMessage(`{"path":"reports/other.txt","content":"hello"}`)},
+		{"content", json.RawMessage(`{"path":"reports/result.txt","content":"goodbye"}`)},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			var workspaceCalls atomic.Int32
+			workspaceUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				workspaceCalls.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer workspaceUpstream.Close()
+			paymentUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+			defer paymentUpstream.Close()
+			r, _, _, proxy := twoProfileProxy(t, paymentUpstream.URL, workspaceUpstream.URL)
+			action := workspaceRequest(`{"path":"reports/result.txt","content":"hello"}`)
+			authorized, err := authorizeAction(t, r, action)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := invoke(t, proxy, authorized.Permit.PermitToken, action, "workspace.write", mutation.raw)
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "ACTION_MISMATCH") || workspaceCalls.Load() != 0 {
+				t.Fatalf("status=%d calls=%d body=%s", response.Code, workspaceCalls.Load(), response.Body.String())
+			}
+			permitRecord, ok := r.GetPermit(authorized.Permit.PermitID)
+			if !ok || permitRecord.State != "ISSUED" {
+				t.Fatalf("workspace mismatch consumed Permit: %#v exists=%v", permitRecord, ok)
+			}
+		})
+	}
+
+	t.Run("replay", func(t *testing.T) {
+		var workspaceCalls atomic.Int32
+		workspaceUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			workspaceCalls.Add(1)
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+		}))
+		defer workspaceUpstream.Close()
+		paymentUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+		defer paymentUpstream.Close()
+		r, _, _, proxy := twoProfileProxy(t, paymentUpstream.URL, workspaceUpstream.URL)
+		action := workspaceRequest(`{"path":"reports/result.txt","content":"hello"}`)
+		authorized, err := authorizeAction(t, r, action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first := invoke(t, proxy, authorized.Permit.PermitToken, action, "workspace.write", action.Action.Arguments)
+		second := invoke(t, proxy, authorized.Permit.PermitToken, action, "workspace.write", action.Action.Arguments)
+		if first.Code != http.StatusOK || second.Code != http.StatusForbidden || !strings.Contains(second.Body.String(), "REPLAYED") || workspaceCalls.Load() != 1 {
+			t.Fatalf("first=%d second=%d calls=%d second body=%s", first.Code, second.Code, workspaceCalls.Load(), second.Body.String())
+		}
+	})
+}
+
+func TestCrossProfilePermitsNeverReachEitherUpstream(t *testing.T) {
+	var paymentCalls, workspaceCalls atomic.Int32
+	paymentUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		paymentCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer paymentUpstream.Close()
+	workspaceUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		workspaceCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer workspaceUpstream.Close()
+
+	r, _, _, proxy := twoProfileProxy(t, paymentUpstream.URL, workspaceUpstream.URL)
+	payment := validPaymentRequest()
+	paymentAuthorized, err := authorizeAction(t, r, payment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := workspaceRequest(`{"path":"reports/result.txt","content":"hello"}`)
+	workspaceAuthorized, err := authorizeAction(t, r, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	paymentIdentityWorkspaceAction := workspace
+	paymentIdentityWorkspaceAction.Principal = payment.Principal
+	paymentIdentityWorkspaceAction.Agent = payment.Agent
+	paymentIdentityWorkspaceAction.Authority = payment.Authority
+	first := invoke(t, proxy, paymentAuthorized.Permit.PermitToken, paymentIdentityWorkspaceAction, "workspace.write", workspace.Action.Arguments)
+
+	workspaceIdentityPaymentAction := payment
+	workspaceIdentityPaymentAction.Principal = workspace.Principal
+	workspaceIdentityPaymentAction.Agent = workspace.Agent
+	workspaceIdentityPaymentAction.Authority = workspace.Authority
+	second := invoke(t, proxy, workspaceAuthorized.Permit.PermitToken, workspaceIdentityPaymentAction, "payment.send", payment.Action.Arguments)
+	if first.Code != http.StatusForbidden || second.Code != http.StatusForbidden ||
+		!strings.Contains(first.Body.String(), "WRONG_TOOL") || !strings.Contains(second.Body.String(), "WRONG_TOOL") ||
+		paymentCalls.Load() != 0 || workspaceCalls.Load() != 0 {
+		t.Fatalf("payment->workspace=%d %s; workspace->payment=%d %s; calls=%d/%d", first.Code, first.Body.String(), second.Code, second.Body.String(), paymentCalls.Load(), workspaceCalls.Load())
+	}
+	for _, permitID := range []string{paymentAuthorized.Permit.PermitID, workspaceAuthorized.Permit.PermitID} {
+		permitRecord, ok := r.GetPermit(permitID)
+		if !ok || permitRecord.State != "ISSUED" {
+			t.Fatalf("cross-profile mismatch consumed Permit %s: %#v exists=%v", permitID, permitRecord, ok)
+		}
+	}
+}
+
 func TestActionMutationNeverInvokesMCPUpstream(t *testing.T) {
 	mutations := []struct {
 		name string
@@ -203,7 +371,7 @@ func TestAllBoundPermitFailuresNeverInvokeMCPUpstream(t *testing.T) {
 		{"wrong delegation", "WRONG_DELEGATION", func(action *models.Request, _ *string) {
 			action.Authority.CredentialFingerprint = strings.Repeat("c", 64)
 		}},
-		{"wrong tool", "PAYMENT_TOOL_UNMAPPED", func(_ *models.Request, tool *string) { *tool = "admin-tool" }},
+		{"wrong tool", "SEMANTIC_TOOL_UNMAPPED", func(_ *models.Request, tool *string) { *tool = "admin-tool" }},
 		{"wrong capability", "PAYMENT_BINDING_CONFLICT", func(action *models.Request, _ *string) { action.Action.Capability = "admin" }},
 		{"wrong resource", "PAYMENT_BINDING_CONFLICT", func(action *models.Request, _ *string) { action.Action.TargetResource = "account-999" }},
 		{"wrong operation", "PAYMENT_BINDING_CONFLICT", func(action *models.Request, _ *string) { action.Action.Operation = "delete" }},
@@ -463,7 +631,7 @@ func TestUnmappedMCPToolFailsClosedBeforePermitConsumption(t *testing.T) {
 	action := configReadRequest()
 	proxy := newProxy(t, r, upstream.URL, nil)
 	response := invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
-	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "PAYMENT_TOOL_UNMAPPED") || calls.Load() != 0 {
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "SEMANTIC_TOOL_UNMAPPED") || calls.Load() != 0 {
 		t.Fatalf("status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
 	}
 	permitRecord, _ := r.GetPermit(authorized.Permit.PermitID)
@@ -635,11 +803,36 @@ func newProxy(t *testing.T, r *router.Router, upstreamURL string, client *http.C
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy, err := mcp.New(r, profile, client)
+	registry, err := semanticaction.NewRegistry(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := mcp.New(r, registry, upstreamURL, client)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return proxy
+}
+
+func twoProfileProxy(t *testing.T, paymentUpstreamURL, workspaceUpstreamURL string) (*router.Router, *audit.Store, string, *mcp.Proxy) {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "..", "..", "configs", "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SemanticActions.PaymentSendV1.UpstreamURL = paymentUpstreamURL
+	cfg.SemanticActions.WorkspaceWriteV1.UpstreamURL = workspaceUpstreamURL
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	store, err := audit.NewStore(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.New(cfg, store)
+	proxy, err := mcp.New(r, r.SemanticRegistry(), paymentUpstreamURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r, store, auditPath, proxy
 }
 
 func validPaymentRequest() models.Request {
@@ -657,6 +850,21 @@ func paymentRequest(arguments string) models.Request {
 		Action: models.ActionRequest{
 			Capability: "payment_transfer", Operation: "transfer", TargetResource: "account-123",
 			Arguments: json.RawMessage(arguments), SideEffect: "financial_transaction",
+		},
+	}
+}
+
+func workspaceRequest(arguments string) models.Request {
+	return models.Request{
+		Principal: models.PrincipalContext{PrincipalID: "user-01", PrincipalType: "human"},
+		Agent:     models.AgentIdentity{AgentID: "workspace-agent", WorkloadID: "workspace-workload-v1"},
+		Authority: models.DelegatedAuthority{
+			CredentialFingerprint: strings.Repeat("e", 64), Scopes: []string{"workspace.write"}, Subject: "user-01",
+		},
+		Tool: models.ToolContext{Name: "workspace.write"},
+		Action: models.ActionRequest{
+			Capability: "workspace_write", Operation: "write", TargetResource: "demo-workspace",
+			Arguments: json.RawMessage(arguments), SideEffect: "logical_workspace_write",
 		},
 	}
 }

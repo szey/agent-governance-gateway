@@ -623,7 +623,7 @@ func authorizeAction(t *testing.T, r *router.Router, request models.Request) (mo
 	if tool == "" {
 		tool = request.EffectiveTool().ToolID
 	}
-	if tool != "payment.send" {
+	if tool != "payment.send" && tool != "workspace.write" {
 		return r.AuthorizeSyntheticDemoAction(request, 0)
 	}
 	return r.AuthorizeTrustedAction(trustedAuthorization(t, request))
@@ -748,6 +748,70 @@ func TestPaymentSendV1SemanticPolicyControlsPermitIssuance(t *testing.T) {
 	})
 }
 
+func TestWorkspaceWriteV1UsesTheSharedExecutionPermitCore(t *testing.T) {
+	t.Run("valid semantic action", func(t *testing.T) {
+		r, store, _ := testRouter(t)
+		request := workspaceSemanticRequest(`{"content":"hello","path":"reports/result.txt"}`)
+		authorized, err := authorizeAction(t, r, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if authorized.Permit == nil || authorized.Permit.ProfileID != "workspace.write/v1" || authorized.Permit.Audience != "mcp://local-workspace-sandbox" {
+			t.Fatalf("workspace Permit missing server bindings: %#v", authorized)
+		}
+		verification, err := r.VerifyRequestAndConsume(authorized.Permit.PermitToken, workspaceSemanticRequest(`{"path":"reports/result.txt","content":"hello"}`))
+		if err != nil || !verification.Verified || verification.Outcome != "VERIFIED" {
+			t.Fatalf("workspace verification=%#v err=%v", verification, err)
+		}
+		persisted, _ := json.Marshal(store.Recent(10))
+		if bytes.Contains(persisted, []byte("hello")) {
+			t.Fatal("raw workspace content entered audit persistence")
+		}
+	})
+
+	tests := []struct {
+		name   string
+		mutate func(*models.Request)
+		code   string
+	}{
+		{"invalid path", func(request *models.Request) {
+			request.Action.Arguments = json.RawMessage(`{"path":"../secret.txt","content":"hello"}`)
+		}, "WORKSPACE_PATH_INVALID"},
+		{"oversized content", func(request *models.Request) {
+			request.Action.Arguments = json.RawMessage(`{"path":"reports/a.txt","content":"` + strings.Repeat("x", 4097) + `"}`)
+		}, "WORKSPACE_CONTENT_TOO_LARGE"},
+		{"profile conflict", func(request *models.Request) { request.Action.ProfileID = "workspace.write/v2" }, "WORKSPACE_PROFILE_MISMATCH"},
+		{"audience conflict", func(request *models.Request) { request.Action.Audience = "mcp://attacker" }, "WORKSPACE_AUDIENCE_MISMATCH"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r, _, _ := testRouter(t)
+			request := workspaceSemanticRequest(`{"path":"reports/a.txt","content":"hello"}`)
+			test.mutate(&request)
+			result, err := authorizeAction(t, r, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Permit != nil || result.Decision.AuthorizationStatus != models.AuthorizationStatusDenied || !containsString(result.Decision.PolicyDecision.Reasons, test.code) {
+				t.Fatalf("workspace semantic rejection=%#v, want %s", result, test.code)
+			}
+		})
+	}
+}
+
+func TestUnknownSemanticToolCannotReceiveExecutionPermit(t *testing.T) {
+	r, _, _ := testRouter(t)
+	request := safeRequest()
+	result, err := r.AuthorizeTrustedAction(trustedAuthorization(t, request))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Permit != nil || result.Decision.AuthorizationStatus != models.AuthorizationStatusDenied ||
+		!containsString(result.Decision.PolicyDecision.Reasons, "SEMANTIC_TOOL_UNMAPPED") {
+		t.Fatalf("unknown semantic tool did not fail closed: %#v", result)
+	}
+}
+
 func testRouter(t *testing.T) (*router.Router, *audit.Store, time.Time) {
 	t.Helper()
 	store, err := audit.NewStore("")
@@ -795,6 +859,22 @@ func paymentSemanticRequest(arguments string) models.Request {
 		Action: models.ActionRequest{
 			Capability: "payment_transfer", Operation: "transfer", TargetResource: "account-123",
 			Arguments: json.RawMessage(arguments), SideEffect: "financial_transaction",
+		},
+	}
+}
+
+func workspaceSemanticRequest(arguments string) models.Request {
+	return models.Request{
+		Principal: models.PrincipalContext{PrincipalID: "user-01", PrincipalType: "human", Environment: "local"},
+		Agent:     models.AgentIdentity{AgentID: "workspace-agent", WorkloadID: "workspace-workload-v1", Environment: "demo"},
+		Authority: models.DelegatedAuthority{
+			CredentialFingerprint: strings.Repeat("e", 64), Issuer: "demo-idp",
+			Scopes: []string{"workspace.write"}, Subject: "user-01",
+		},
+		Tool: models.ToolContext{Name: "workspace.write", Provider: "mcp"},
+		Action: models.ActionRequest{
+			Capability: "workspace_write", Operation: "write", TargetResource: "demo-workspace",
+			Arguments: json.RawMessage(arguments), SideEffect: "logical_workspace_write",
 		},
 	}
 }

@@ -1,11 +1,8 @@
-// Package semanticaction owns the one business-semantic action supported by
-// the focused MVP. It is deliberately not a generic rule or plugin framework.
 package semanticaction
 
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -17,8 +14,6 @@ import (
 )
 
 const PaymentSendV1ID = "payment.send/v1"
-
-type RejectionCode string
 
 const (
 	RejectToolUnmapped        RejectionCode = "PAYMENT_TOOL_UNMAPPED"
@@ -32,49 +27,10 @@ const (
 	RejectRecipientNotAllowed RejectionCode = "PAYMENT_RECIPIENT_NOT_ALLOWED"
 )
 
-type Rejection struct {
-	Code   RejectionCode
-	Detail string
-}
-
-func (e *Rejection) Error() string {
-	if e.Detail == "" {
-		return string(e.Code)
-	}
-	return string(e.Code) + ": " + e.Detail
-}
-
-func Code(err error) RejectionCode {
-	var rejection *Rejection
-	if errors.As(err, &rejection) {
-		return rejection.Code
-	}
-	return RejectArgumentsInvalid
-}
-
-type Input struct {
-	PrincipalID                   string
-	AgentID                       string
-	WorkloadID                    string
-	DelegatedAuthorityFingerprint string
-	Tool                          string
-	Capability                    string
-	Resource                      string
-	Operation                     string
-	ProfileID                     string
-	Audience                      string
-	Arguments                     json.RawMessage
-}
-
 type PaymentSendArguments struct {
 	AmountMinor int64  `json:"amount_minor"`
 	Currency    string `json:"currency"`
 	Recipient   string `json:"recipient"`
-}
-
-type Resolved struct {
-	Action              canonicalaction.Action
-	NormalizedArguments json.RawMessage
 }
 
 type PaymentSendV1 struct {
@@ -160,7 +116,7 @@ func (p *PaymentSendV1) Resolve(input Input) (Resolved, error) {
 		Operation: p.config.Operation, ProfileID: p.config.ProfileID, Audience: p.config.Audience,
 		Arguments: normalized,
 	}
-	return Resolved{Action: action, NormalizedArguments: normalized}, nil
+	return Resolved{Action: action, NormalizedArguments: normalized, UpstreamURL: p.upstream.String()}, nil
 }
 
 func (p *PaymentSendV1) parseArguments(raw json.RawMessage) (PaymentSendArguments, error) {

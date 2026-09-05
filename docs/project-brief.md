@@ -6,7 +6,7 @@ English | [简体中文](project-brief.zh-CN.md)
 
 ## One-line position
 
-Aegis Router is a framework-agnostic execution-permit layer. It authorizes an exact normalized action, issues a short-lived, signed, action-bound, single-use permit, and requires the MCP execution boundary to verify and consume it before the real side effect.
+Aegis Router is a framework-agnostic execution-permit layer with server-owned semantic action profiles. It authorizes an exact normalized action, issues a short-lived, signed, action-bound, single-use permit, and requires the MCP execution boundary to verify and consume it before the real side effect.
 
 > **The action that was authorized must be exactly the action that executes.**
 
@@ -26,12 +26,14 @@ Its only core modules are:
 
 Aegis does not provide generic permission management, endpoint sandboxing, workspace isolation, enterprise Agent Inventory, Shadow Agent governance, full IAM, EDR-style observation, or broad risk dashboards. It also does not implement HTTP, A2A, database, shell, or cloud adapters.
 
+The implementation contains exactly two compiled-in semantic profiles—`payment.send/v1` and logical `workspace.write/v1`—plus one immutable server-owned registry and one MCP adapter. It has no third profile, dynamic loading, plugin SDK, arbitrary schemas, or user-selected upstreams.
+
 ## Security property and execution order
 
 ```text
 Authenticated identity + Agent proposes action
     ↓
-Normalize CanonicalAction
+Resolve a server-owned semantic profile into CanonicalAction
     ↓
 Deterministic policy authorization
     ↓
@@ -62,7 +64,7 @@ Sealing alone does not make a deprecated flat request eligible. The execution bo
 
 ## CanonicalAction
 
-The canonical action binds principal ID, Agent ID, workload ID, delegated-authority fingerprint, tool, capability, resource, operation, and security-relevant arguments.
+The canonical action binds principal ID, Agent ID, workload ID, delegated-authority fingerprint, tool, capability, resource, operation, profile ID/version, audience, and security-relevant arguments.
 
 Arguments use deterministic canonical JSON: empty arguments become `{}`; object keys sort recursively by Unicode lexical order; duplicate keys, malformed UTF-8, and unpaired surrogates are rejected; arrays preserve order; strings use JSON escaping; and numbers normalize exactly without float conversion. The full canonical action produces a SHA-256 `sha256:<64 lowercase hex>` digest.
 
@@ -101,7 +103,9 @@ This guarantees only that one Permit is successfully consumed at most once; it d
 
 ## MCP adapter
 
-MCP is the focused MVP's only production-shaped adapter. For the only supported semantic action, `payment.send/v1`, it resolves `tools/call` through the same server-owned parser used at authorization, verifies the signed profile/audience/action binding, consumes the Permit, forwards normalized arguments to the configured upstream, and records only necessary result metadata such as status and duration.
+MCP is the focused MVP's only production-shaped adapter. It dispatches `tools/call` through the same immutable semantic registry used at authorization, verifies the signed profile/audience/action binding, consumes the Permit, forwards normalized arguments only to that profile's configured upstream, and records only necessary result metadata such as status and duration. Payment and workspace writes therefore share the same CanonicalAction, Permit issuer, verifier, replay store, and MCP enforcement boundary.
+
+`payment.send/v1` accepts only positive integer minor-unit amount, allowlisted currency, and allowlisted recipient, with a per-currency limit. `workspace.write/v1` accepts only JSON-string `path` and `content`; the path is a logical relative `/`-separated identifier with no backslash, drive prefix, empty/`.`/`..`/`~` segment, edge slash, control character, or normalization. Sample limits are 1,024 bytes for path and 4 KiB for content. It forwards to a mock/logical upstream and never writes the host filesystem. Raw content participates in the digest but never enters normal audit.
 
 The adapter cannot “call first and alert later” after a failed verification, and cannot forward on `permit_id` alone. Upstream MCP TLS, authentication, tool side effects, and deployment bypass remain separate deployment responsibilities.
 
@@ -109,7 +113,7 @@ For MCP `2026-07-28`, the current adapter validates `MCP-Protocol-Version`, `Mcp
 
 ## Policy, Risk, and obligations
 
-Policy and `payment.send/v1` semantic validation use the structured request context for deterministic authorization. The executable outcomes are `AUTHORIZED / DENIED`. `REQUIRES_APPROVAL` remains representable but has no supported approval-completion workflow and is not an implemented execution capability.
+Policy and both compiled-in semantic profiles use the structured request context for deterministic authorization. The executable outcomes are `AUTHORIZED / DENIED`. `REQUIRES_APPROVAL` remains representable but has no supported approval-completion workflow and is not an implemented execution capability.
 
 Risk/detection remain optional advisory metadata under `advisory_signals`; they cannot change authorization status, create a grant, issue a Permit, or select an executor. Obligations such as `human_approval_required`, `isolation_required`, or `enhanced_audit_required` require an explicit deterministic Policy/configuration mapping.
 

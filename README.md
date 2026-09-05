@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 **Execution Permits for AI Agent Actions**
 
-Aegis Router implements a framework-agnostic execution-permit model with a focused MCP enforcement path. Before a privileged tool action executes, Aegis makes a deterministic decision over authenticated identity and exact semantic intent, then issues a signed, short-lived, action-bound, single-use-by-default execution permit. The executor verifies and consumes that permit immediately before the real side effect.
+Aegis Router implements a framework-agnostic execution-permit model with a focused MCP enforcement path and server-owned semantic action profiles. Before a privileged tool action executes, Aegis makes a deterministic decision over authenticated identity and exact semantic intent, then issues a signed, short-lived, action-bound, single-use-by-default execution permit. The executor verifies and consumes that permit immediately before the real side effect.
 
 If the Agent changes the tool, operation, resource, or security-relevant arguments after authorization, the permit no longer matches and the tool must not execute.
 
@@ -16,7 +16,7 @@ Aegis is not a sandbox, EDR, IAM system, Agent management platform, or enterpris
 
 ```text
 Authenticated identity + Agent proposes action
-  → normalize CanonicalAction
+  → resolve one server-owned semantic profile into CanonicalAction
   → deterministic Policy authorization
   → issue Execution Permit
   → verify and consume Permit at the MCP execution boundary
@@ -30,9 +30,9 @@ The security boundary is **before the real tool side effect**. `POST /api/runtim
 
 ## Capability status
 
-- **Implemented:** fail-closed, loopback-development, and trusted reverse-proxy authorization intake modes; signed `execution`/`simulation` class separation; short-lived single-use permits; replay protection; canonical action binding; one `payment.send/v1` semantic profile; and its focused MCP HTTP `POST` enforcement path.
+- **Implemented:** fail-closed, loopback-development, and trusted reverse-proxy authorization intake modes; signed `execution`/`simulation` class separation; short-lived single-use permits; replay protection; canonical action binding; exactly two compiled-in profiles (`payment.send/v1` and logical `workspace.write/v1`); and one shared focused MCP HTTP `POST` enforcement path.
 - **Demo or experimental:** server-owned simulation scenarios and telemetry; frozen Inventory is hidden unless explicitly enabled.
-- **Not implemented:** an approval completion workflow, sandbox/EDR/IAM, business exactly-once delivery, additional semantic profiles or execution adapters, and full MCP protocol conformance. `REQUIRES_APPROVAL` remains a model/config result only; no supported approval flow can turn it into an executable Permit.
+- **Not implemented:** an approval completion workflow, sandbox/EDR/IAM, business exactly-once delivery, a third or dynamically loaded semantic profile, additional execution adapters, real filesystem writes, and full MCP protocol conformance. `REQUIRES_APPROVAL` remains a model/config result only; no supported approval flow can turn it into an executable Permit.
 
 ## Core objects
 
@@ -43,7 +43,7 @@ The authorizer and executor must derive the same normalized action from the same
 - principal identity;
 - Agent and workload identity;
 - delegated-authority fingerprint;
-- tool, capability, resource, and operation;
+- tool, capability, resource, operation, profile ID/version, and audience;
 - security-relevant arguments.
 
 Arguments use deterministic canonical JSON and a SHA-256 digest. Empty arguments normalize to `{}`; object keys sort recursively by Unicode lexical order; duplicate keys, malformed UTF-8, and unpaired surrogates are rejected; arrays preserve order; and numbers normalize exactly without float conversion (`100.0` and `1e2` are equivalent). Object key order does not change the digest; changing an amount, resource, tool, operation, or another bound field does. The digest is `sha256:<64 lowercase hex>`. Normal audit records retain `action_digest`, not raw sensitive arguments.
@@ -103,7 +103,7 @@ MCP client
 
 Every verification failure must occur before the upstream `tools/call`. A `simulation` token is rejected before consumption and before any upstream call, even when every action field otherwise matches. This milestone does not implement HTTP, A2A, database, shell, or cloud-policy adapters.
 
-Configure an upstream on the existing Server to mount permit-gated `POST /mcp`. The `--allow-development-intake` flag below accepts body identity from loopback requests only and labels it `development_only`; it is not a production mode:
+Configure a server-owned control upstream to mount permit-gated `POST /mcp`. `--mcp-upstream` must exactly match one compiled-in profile's configured `upstream_url`; protocol setup/list compatibility methods use that target, while each `tools/call` is sent to the upstream owned by its resolved profile. The `--allow-development-intake` flag below accepts body identity from loopback requests only and labels it `development_only`; it is not a production mode:
 
 ```bash
 go run ./cmd/server --allow-development-intake --mcp-upstream http://127.0.0.1:3001/mcp
@@ -113,9 +113,13 @@ go run ./cmd/server --allow-development-intake --mcp-upstream http://127.0.0.1:3
 
 For MCP `2026-07-28`, the Proxy also requires `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` to agree exactly with `params._meta` and the JSON-RPC body, then rebuilds forwarded routing headers from the validated body. Duplicate JSON keys are rejected before Permit verification. On `tools/call`, the only accepted `_meta` entry is the validated protocol version; unbound extension metadata is rejected. This is an intentionally narrow HTTP `POST` subset: `server/discover`, `tools/list`, and permit-gated `tools/call` are supported; full MCP conformance is not claimed. MRTR `inputResponses`/`requestState` and schema-aware `Mcp-Param-*` validation are not yet part of `CanonicalAction`, so they fail closed. The old `initialize` path remains compatibility-only when a modern version is not declared.
 
-### The only semantic action: `payment.send/v1`
+### Exactly two compiled-in semantic actions
 
-`configs/policy.json` is the server-owned mapping from MCP tool `payment.send` and its configured upstream URL to capability `payment_transfer`, resource `account-123`, operation `transfer`, profile `payment.send/v1`, and audience `mcp://local-payment-sandbox`. The client cannot select an upstream URL. If `--mcp-upstream` does not exactly match the configured `upstream_url`, server startup fails. Unknown MCP tools and conflicting capability/resource/operation/profile/audience assertions fail before Permit consumption and before upstream.
+A small immutable registry dispatches by MCP tool to exactly one compiled-in profile. Duplicate profile IDs, ambiguous tool ownership, unknown tools, and conflicting profile assertions fail closed. Callers cannot register code, load schemas, select a destination, or choose a more permissive profile. This is a fixed dispatcher, not a plugin system.
+
+#### `payment.send/v1`
+
+`configs/policy.json` is the server-owned mapping from MCP tool `payment.send` and its configured upstream URL to capability `payment_transfer`, resource `account-123`, operation `transfer`, profile `payment.send/v1`, and audience `mcp://local-payment-sandbox`. The client cannot select an upstream URL. Unknown MCP tools and conflicting capability/resource/operation/profile/audience assertions fail before Permit consumption and before upstream.
 
 Payment arguments are exactly:
 
@@ -124,6 +128,16 @@ Payment arguments are exactly:
 ```
 
 `amount_minor` is a positive JSON integer in the currency's smallest unit—USD cents and CNY fen in the sample configuration. No floating point, string conversion, or exchange-rate conversion occurs. Zero, negatives, `int64` overflow, missing/wrongly typed fields, duplicate keys, and unknown business fields are rejected. The configuration explicitly pairs each allowed currency with its per-transaction minor-unit maximum and separately allowlists recipients. Authorizer and MCP proxy use the same `payment.send/v1` parser; the proxy forwards its normalized three-field object, not the caller's original serialization.
+
+#### `workspace.write/v1`
+
+This profile proves reuse of the same security primitive for a semantically different action. It binds MCP tool `workspace.write` to capability `workspace_write`, logical resource `demo-workspace`, operation `write`, audience `mcp://local-workspace-sandbox`, and its own configured test upstream. Its exact arguments are:
+
+```json
+{"path":"reports/result.txt","content":"hello"}
+```
+
+`path` is a logical workspace-relative identifier, not an operating-system path. It uses `/` only, has a 1,024-byte sample limit, and rejects absolute paths, drive prefixes, backslashes, empty/`.`/`..`/`~` segments, leading/trailing slashes, and control characters; Aegis never repairs or filesystem-normalizes it. `content` must be a present JSON string and is limited to 4 KiB in the sample configuration. Only `path` and `content` are accepted. Both values enter normalized action semantics so either mutation invalidates the Permit, but raw content is never persisted in normal audit. This profile only forwards to a local/mock logical workspace upstream; Aegis performs no host filesystem write and provides no workspace sandbox.
 
 Run the authorization examples from the repository root. Keep the server in terminal 1, then send both requests from terminal 2:
 
@@ -134,9 +148,10 @@ go run ./cmd/server --allow-development-intake
 # Terminal 2
 curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/payment-send-valid.json http://127.0.0.1:8080/api/actions/authorize
 curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/payment-send-over-limit.json http://127.0.0.1:8080/api/actions/authorize
+curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/workspace-write-valid.json http://127.0.0.1:8080/api/actions/authorize
 ```
 
-The first response is `AUTHORIZED` and contains an `execution` Permit bound to `payment.send/v1` and the configured audience. The second is `DENIED`, has no Permit, and includes stable reason `PAYMENT_AMOUNT_EXCEEDS_LIMIT`. These commands exercise local development intake; they do not contact a payment provider.
+The first response is `AUTHORIZED` and contains an `execution` Permit bound to `payment.send/v1` and the configured audience. The second is `DENIED`, has no Permit, and includes stable reason `PAYMENT_AMOUNT_EXCEEDS_LIMIT`. The third is `AUTHORIZED` with a Permit bound to `workspace.write/v1`; authorization alone does not write a file or call an upstream. These commands exercise local development intake and do not contact a payment provider or host filesystem.
 
 ## Policy, Risk, and obligations
 
@@ -145,7 +160,7 @@ Authorization stays deterministic. The currently executable flow has two outcome
 - `AUTHORIZED`;
 - `DENIED`.
 
-The model can represent `REQUIRES_APPROVAL`, but this release has no supported approval-completion workflow and therefore does not claim it as an implemented capability. Deterministic Policy and the `payment.send/v1` semantic profile are the only authorization authorities and the only components that decide whether a Permit exists. Risk scores and detection findings are written only under `advisory_signals`; they cannot change a deterministic result, issue a Permit, or select an executor. Isolation, read-only behavior, denied network egress, human approval, and enhanced audit become decision/Permit obligations only through deterministic Policy/configuration mappings, for example:
+The model can represent `REQUIRES_APPROVAL`, but this release has no supported approval-completion workflow and therefore does not claim it as an implemented capability. Deterministic Policy and the two compiled-in semantic profiles are the only authorization authorities and the only components that decide whether a Permit exists. Risk scores and detection findings are written only under `advisory_signals`; they cannot change a deterministic result, issue a Permit, or select an executor. Isolation, read-only behavior, denied network egress, human approval, and enhanced audit become decision/Permit obligations only through deterministic Policy/configuration mappings, for example:
 
 ```json
 {

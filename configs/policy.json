@@ -174,6 +174,35 @@
         }
       }
     },
+    "workspace-agent": {
+      "workload_ids": ["workspace-workload-v1"],
+      "capabilities": {
+        "workspace_write": {
+          "allowed_tools": ["workspace.write"],
+          "required_scopes": ["workspace.write"],
+          "resources": {
+            "demo-workspace": {
+              "allowed_operations": ["write"],
+              "constraints": {
+                "network_egress": "deny",
+                "secret_access": "deny",
+                "write_access": "allow",
+                "allowed_side_effects": ["logical_workspace_write"],
+                "max_bytes": 4096,
+                "max_duration_ms": 10000
+              }
+            }
+          },
+          "constraints": {
+            "network_egress": "deny",
+            "secret_access": "deny",
+            "write_access": "allow",
+            "allowed_side_effects": ["logical_workspace_write"],
+            "executor_profile": "external-executor"
+          }
+        }
+      }
+    },
     "ops-agent": {
       "workload_ids": ["ops-agent", "ops-workload-v1"],
       "capabilities": {
@@ -334,7 +363,8 @@
     "finance_data": {"sensitivity": "critical", "required_scopes": ["finance.read"]},
     "secrets_store": {"sensitivity": "critical", "required_scopes": ["secrets.read"]},
     "external_network": {"sensitivity": "medium", "required_scopes": ["network.access"]},
-    "account-123": {"sensitivity": "critical", "required_scopes": ["payment.transfer"]}
+    "account-123": {"sensitivity": "critical", "required_scopes": ["payment.transfer"]},
+    "demo-workspace": {"sensitivity": "medium", "required_scopes": ["workspace.write"]}
   },
   "sensitive_actions": ["read_config", "write_config", "read_finance_data", "read_secret", "invoke_admin_tool"],
   "restricted_actions": ["write_config", "external_request"],
@@ -371,6 +401,17 @@
         "USD": 10000
       },
       "allowed_recipients": ["merchant-456", "merchant-demo"]
+    },
+    "workspace_write_v1": {
+      "profile_id": "workspace.write/v1",
+      "mcp_tool": "workspace.write",
+      "capability": "workspace_write",
+      "resource": "demo-workspace",
+      "operation": "write",
+      "audience": "mcp://local-workspace-sandbox",
+      "upstream_url": "http://127.0.0.1:3002/mcp",
+      "max_path_bytes": 1024,
+      "max_content_bytes": 4096
     }
   }
 }

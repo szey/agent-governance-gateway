@@ -29,18 +29,18 @@ import (
 var ErrStructuredExecutionContextRequired = errors.New("execution permit requires structured security context")
 
 type Router struct {
-	policy         *policy.Engine
-	risk           *risk.Scorer
-	observer       *observer.Observer
-	audit          *audit.Store
-	detection      *detection.Engine
-	clock          func() time.Time
-	permitTTL      time.Duration
-	policyVersion  string
-	permitIssuer   *permit.Issuer
-	permitStore    *permit.MemoryStore
-	permitVerifier *verifier.Verifier
-	paymentProfile *semanticaction.PaymentSendV1
+	policy           *policy.Engine
+	risk             *risk.Scorer
+	observer         *observer.Observer
+	audit            *audit.Store
+	detection        *detection.Engine
+	clock            func() time.Time
+	permitTTL        time.Duration
+	policyVersion    string
+	permitIssuer     *permit.Issuer
+	permitStore      *permit.MemoryStore
+	permitVerifier   *verifier.Verifier
+	semanticRegistry *semanticaction.Registry
 
 	mu      sync.RWMutex
 	permits map[string]models.AuthorizationEnvelope
@@ -95,19 +95,16 @@ func NewWithClockAndKeyProvider(cfg models.PolicyConfig, store *audit.Store, clo
 	if err != nil {
 		panic(fmt.Sprintf("initialize execution-permit verifier: %v", err))
 	}
-	var paymentProfile *semanticaction.PaymentSendV1
-	if strings.TrimSpace(cfg.SemanticActions.PaymentSendV1.ProfileID) != "" {
-		paymentProfile, err = semanticaction.NewPaymentSendV1(cfg.SemanticActions.PaymentSendV1)
-		if err != nil {
-			panic(fmt.Sprintf("initialize payment.send/v1 semantic profile: %v", err))
-		}
+	semanticRegistry, err := semanticaction.NewRegistryFromConfig(cfg.SemanticActions)
+	if err != nil {
+		panic(fmt.Sprintf("initialize semantic action registry: %v", err))
 	}
 	return &Router{
 		policy: policy.New(cfg), risk: risk.New(cfg), observer: observer.New(cfg), audit: store,
 		detection: detection.New(cfg.SessionControls), clock: clock, permitTTL: ttl,
 		policyVersion: policyVersion, permitIssuer: issuer, permitStore: permitStore, permitVerifier: permitVerifier,
-		paymentProfile: paymentProfile,
-		permits:        make(map[string]models.AuthorizationEnvelope),
+		semanticRegistry: semanticRegistry,
+		permits:          make(map[string]models.AuthorizationEnvelope),
 	}
 }
 
@@ -169,7 +166,7 @@ func (r *Router) authorizeResolvedAction(req models.Request, provenance models.A
 			policyDecision.Status = models.AuthorizationStatusDenied
 			policyDecision.Route = models.RouteDeny
 			policyDecision.Reasons = append(policyDecision.Reasons, code)
-			policyDecision.Rules = append(policyDecision.Rules, "semantic.payment.send.v1."+strings.ToLower(code))
+			policyDecision.Rules = append(policyDecision.Rules, "semantic_action."+strings.ToLower(code))
 			policyDecision.Grant = nil
 			status = models.AuthorizationStatusDenied
 			obligations = models.ExecutionObligations{}
@@ -972,21 +969,16 @@ func (r *Router) resolveAuthorizedAction(req models.Request, grant models.Matche
 	if permitClass != permit.ClassExecution {
 		return canonicalAction(req, grant), nil
 	}
-	return r.resolvePaymentAction(req)
+	return r.resolveSemanticAction(req)
 }
 
 func (r *Router) resolveExecutionAction(req models.Request) (canonicalaction.Action, error) {
-	return r.resolvePaymentAction(req)
+	return r.resolveSemanticAction(req)
 }
 
-func (r *Router) resolvePaymentAction(req models.Request) (canonicalaction.Action, error) {
-	if r.paymentProfile == nil {
-		return canonicalaction.Action{}, &semanticaction.Rejection{
-			Code: semanticaction.RejectToolUnmapped, Detail: "payment.send/v1 is not configured on this server",
-		}
-	}
+func (r *Router) resolveSemanticAction(req models.Request) (canonicalaction.Action, error) {
 	base := executionAction(req)
-	resolved, err := r.paymentProfile.Resolve(semanticaction.Input{
+	resolved, err := r.semanticRegistry.Resolve(semanticaction.Input{
 		PrincipalID: base.PrincipalID, AgentID: base.AgentID, WorkloadID: base.WorkloadID,
 		DelegatedAuthorityFingerprint: base.DelegatedAuthorityFingerprint,
 		Tool:                          base.Tool, Capability: base.Capability, Resource: base.Resource, Operation: base.Operation,
@@ -996,6 +988,13 @@ func (r *Router) resolvePaymentAction(req models.Request) (canonicalaction.Actio
 		return canonicalaction.Action{}, err
 	}
 	return resolved.Action, nil
+}
+
+// SemanticRegistry exposes the immutable, server-owned dispatcher to the MCP
+// enforcement boundary so authorization and execution use the same profile
+// implementations and configuration.
+func (r *Router) SemanticRegistry() *semanticaction.Registry {
+	return r.semanticRegistry
 }
 
 func executionAction(req models.Request) canonicalaction.Action {

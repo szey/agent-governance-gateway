@@ -1,0 +1,28 @@
+{
+  "principal": {
+    "principal_id": "user-01",
+    "principal_type": "human"
+  },
+  "agent": {
+    "agent_id": "workspace-agent",
+    "workload_id": "workspace-workload-v1"
+  },
+  "delegated_authority": {
+    "credential_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "scopes": ["workspace.write"],
+    "subject": "user-01"
+  },
+  "tool": {
+    "name": "workspace.write",
+    "provider": "mcp"
+  },
+  "action": {
+    "capability": "workspace_write",
+    "operation": "write",
+    "target_resource": "demo-workspace",
+    "arguments": {
+      "path": "reports/result.txt",
+      "content": "hello"
+    }
+  }
+}

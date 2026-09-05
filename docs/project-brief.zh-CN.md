@@ -6,7 +6,7 @@
 
 ## 一句话定位
 
-Aegis Router 是不绑定 Agent 框架的 execution-permit 层：它授权精确的规范动作，签发短时、签名、动作绑定、单次使用的许可，并要求 MCP 执行边界在真实副作用前验证和消费许可。
+Aegis Router 是带有 Server-owned 语义动作配置、且不绑定 Agent 框架的 execution-permit 层：它授权精确的规范动作，签发短时、签名、动作绑定、单次使用的许可，并要求 MCP 执行边界在真实副作用前验证和消费许可。
 
 > **获得授权的动作，必须与实际执行的动作完全一致。**
 
@@ -26,12 +26,14 @@ Aegis 只聚焦一个 reference-monitor primitive，而不是广义 AI Agent 安
 
 Aegis 不做通用权限管理、endpoint sandbox、workspace isolation、企业 Agent Inventory、Shadow Agent 治理、完整 IAM、EDR 式观察或泛风险仪表板。它也不实现 HTTP、A2A、数据库、Shell 或云端 Adapter。
 
+实现中恰好有两个编译内置的语义 profile——`payment.send/v1` 与逻辑 `workspace.write/v1`——以及一个不可变的 Server-owned registry 和一个 MCP Adapter。它没有第三个 profile、动态加载、plugin SDK、任意 schema 或由用户选择的 upstream。
+
 ## 安全属性与执行顺序
 
 ```text
 已认证身份 + Agent proposes action
     ↓
-Normalize CanonicalAction
+Resolve a server-owned semantic profile into CanonicalAction
     ↓
 Deterministic policy authorization
     ↓
@@ -62,7 +64,7 @@ TrustedProxy provenance 记录 `source=trusted_integration`、配置的 provider
 
 ## CanonicalAction
 
-规范动作绑定：principal ID、Agent ID、workload ID、delegated-authority fingerprint、tool、capability、resource、operation 与安全相关 arguments。
+规范动作绑定：principal ID、Agent ID、workload ID、delegated-authority fingerprint、tool、capability、resource、operation、profile ID/version、audience 与安全相关 arguments。
 
 Arguments 使用确定性 canonical JSON：空参数变为 `{}`；对象键递归按 Unicode 字典序排列；重复键、畸形 UTF-8 和未配对 surrogate 拒绝；数组保持顺序；字符串按 JSON 规则转义；数字不经浮点转换而精确归一化。完整规范动作以 SHA-256 得到 `sha256:<64 位小写十六进制>` 摘要。
 
@@ -101,7 +103,9 @@ Verifier 在副作用前检查签名、issuer、时间、Permit ID、主体、Ag
 
 ## MCP Adapter
 
-MCP 是 focused MVP 唯一的生产形态 Adapter。对唯一受支持的语义动作 `payment.send/v1`，它使用与授权阶段相同的 Server-owned 解析器处理 `tools/call`，验证签名绑定的 profile/audience/action，消费 Permit，把规范化参数转发给已配置上游，并只记录响应状态、耗时等必要结果元数据。
+MCP 是 focused MVP 唯一的生产形态 Adapter。它使用与授权阶段相同的不可变语义 registry 分发 `tools/call`，验证签名绑定的 profile/audience/action，消费 Permit，只把规范化参数转发到该 profile 自己配置的 upstream，并记录响应状态、耗时等必要结果元数据。因此 payment 与 workspace write 共用同一个 CanonicalAction、Permit issuer、verifier、replay store 和 MCP enforcement boundary。
+
+`payment.send/v1` 只接受正整数最小货币单位金额、allowlist 币种和 allowlist 收款人，并按币种限制单笔金额。`workspace.write/v1` 只接受 JSON string `path` 与 `content`；path 是逻辑相对 `/` 分隔标识，不允许反斜杠、盘符前缀、空/`.`/`..`/`~` segment、首尾斜杠、控制字符或 normalization。示例限制为 path 1,024 bytes、content 4 KiB。它只转发到 mock/逻辑 upstream，不写主机文件；原始 content 参与摘要，但绝不进入正常审计。
 
 Adapter 不能在验证失败时“先调用、后告警”，也不能仅凭 `permit_id` 转发。上游 MCP 的 TLS、认证、工具副作用和部署绕过仍由部署方独立处理。
 
@@ -109,7 +113,7 @@ Adapter 不能在验证失败时“先调用、后告警”，也不能仅凭 `p
 
 ## Policy、Risk 与 obligations
 
-Policy 与 `payment.send/v1` 语义校验继续使用结构化 Request context 进行确定性授权；可执行结果是 `AUTHORIZED / DENIED`。`REQUIRES_APPROVAL` 仍可由模型表达，但没有受支持的审批完成流程，不属于已实现执行能力。
+Policy 与两个内置语义 profile 都使用结构化 Request context 进行确定性授权；可执行结果是 `AUTHORIZED / DENIED`。`REQUIRES_APPROVAL` 仍可由模型表达，但没有受支持的审批完成流程，不属于已实现执行能力。
 
 Risk/detection 保留为可选咨询元数据并单独进入 `advisory_signals`；它们不能改变授权状态、产生 grant、签发 Permit 或选择 executor。只有显式确定性 Policy/配置映射可以产生 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等 obligations。
 
