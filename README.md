@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 **Execution Permits for AI Agent Actions**
 
-Aegis Router implements a framework-agnostic execution-permit model with a focused MCP enforcement path and server-owned semantic action profiles. Before a privileged tool action executes, Aegis makes a deterministic decision over authenticated identity and exact semantic intent, then issues a signed, short-lived, action-bound, single-use-by-default execution permit. The executor verifies and consumes that permit immediately before the real side effect.
+Aegis Router implements a framework-agnostic execution-permit model with a focused MCP enforcement path and server-owned semantic action profiles. Before a privileged tool action executes, Aegis validates the structured request and evaluates deterministic Policy eligibility. After a Policy grant, a server-owned semantic profile resolves the exact executable action; Aegis then issues a signed, short-lived, action-bound, single-use-by-default execution permit. The executor verifies and consumes that permit immediately before the real side effect.
 
 If the Agent changes the tool, operation, resource, or security-relevant arguments after authorization, the permit no longer matches and the tool must not execute.
 
@@ -16,13 +16,16 @@ Aegis is not a sandbox, EDR, IAM system, Agent management platform, or enterpris
 
 ```text
 Authenticated identity + Agent proposes action
-  → resolve one server-owned semantic profile into CanonicalAction
-  → deterministic Policy authorization
+  → validate structured request
+  → deterministic Policy eligibility
+  → resolve server-owned semantic profile into CanonicalAction
   → issue Execution Permit
   → verify and consume Permit at the MCP execution boundary
   → call upstream tool only after VERIFIED
   → write a redacted Audit Receipt
 ```
+
+Deterministic Policy first establishes whether the structured request is eligible for the requested capability, resource, operation, and tool. If Policy grants it, the server-owned semantic profile resolves the exact executable meaning into a `CanonicalAction`. Any semantic mismatch or normalization failure converts the result to `DENIED` before Permit issuance. Policy authorization alone is not sufficient to produce an Execution Permit, and semantic profile resolution never overrides a Policy denial.
 
 `Authenticated identity + exact semantic intent + signed single-use Permit = cryptographically bound execution.`
 
@@ -160,7 +163,7 @@ Authorization stays deterministic. The currently executable flow has two outcome
 - `AUTHORIZED`;
 - `DENIED`.
 
-The model can represent `REQUIRES_APPROVAL`, but this release has no supported approval-completion workflow and therefore does not claim it as an implemented capability. Deterministic Policy and the two compiled-in semantic profiles are the only authorization authorities and the only components that decide whether a Permit exists. Risk scores and detection findings are written only under `advisory_signals`; they cannot change a deterministic result, issue a Permit, or select an executor. Isolation, read-only behavior, denied network egress, human approval, and enhanced audit become decision/Permit obligations only through deterministic Policy/configuration mappings, for example:
+The model can represent `REQUIRES_APPROVAL`, but this release has no supported approval-completion workflow and therefore does not claim it as an implemented capability. Deterministic Policy decides eligibility first; only a Policy grant reaches one of the two compiled-in semantic profiles. Both the grant and successful semantic resolution are required for Permit issuance. Risk scores and detection findings are written only under `advisory_signals`; they cannot change a deterministic result, issue a Permit, or select an executor. Isolation, read-only behavior, denied network egress, human approval, and enhanced audit become decision/Permit obligations only through deterministic Policy/configuration mappings, for example:
 
 ```json
 {
@@ -254,7 +257,7 @@ Open [http://localhost:8080](http://localhost:8080). This runs server-owned Demo
 
 ## Audit and evidence truth
 
-Each action produces an explainable, redacted receipt read as `TRUST CONTEXT → ACTION → POLICY → OBLIGATIONS → PERMIT → VERIFICATION → EXECUTION`; execution states whether upstream was attempted and whether it completed, failed, or terminated. Risk/detection appear only under `ADVISORY SIGNALS`, not as authorization reasons. Audit still excludes tokens, raw arguments, and secrets.
+Each action produces an explainable, redacted receipt read as `TRUST CONTEXT → POLICY ELIGIBILITY/OBLIGATIONS → SEMANTIC ACTION → PERMIT → VERIFICATION → EXECUTION`; execution states whether upstream was attempted and whether it completed, failed, or terminated. Risk/detection appear only under `ADVISORY SIGNALS`, not as authorization reasons. Audit still excludes tokens, raw arguments, and secrets.
 
 Runtime sources remain distinct: `gateway_enforced`, `instrumented_adapter`, `agent_self_reported`, `os_sensor`, `network_sensor`, and `simulated_demo`. Runtime evidence is secondary. Uninstrumented coverage remains `UNKNOWN / not instrumented`: `UNKNOWN != SAFE` and `UNKNOWN != ZERO`.
 

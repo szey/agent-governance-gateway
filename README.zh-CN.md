@@ -4,7 +4,7 @@
 
 **AI Agent 动作的执行许可**
 
-Aegis Router 实现一套不绑定 Agent 框架的执行许可模型，并提供一个聚焦的 MCP 执行路径和服务端拥有的语义动作配置。特权工具动作执行前，Aegis 根据已认证身份和精确业务语义作出确定性授权，再签发短时、动作绑定、默认单次使用的签名执行许可。执行器在真实副作用发生前验证并消费该许可。
+Aegis Router 实现一套不绑定 Agent 框架的执行许可模型，并提供一个聚焦的 MCP 执行路径和服务端拥有的语义动作配置。特权工具动作执行前，Aegis 先验证结构化请求并进行确定性 Policy 资格判断；Policy 授权后，服务端拥有的语义配置才解析精确的可执行动作，随后 Aegis 签发短时、动作绑定、默认单次使用的签名执行许可。执行器在真实副作用发生前验证并消费该许可。
 
 如果 Agent 在授权后改变工具、操作、资源或安全相关参数，许可不再匹配，工具不得执行。
 
@@ -16,13 +16,16 @@ Aegis 不是沙箱、EDR、IAM、Agent 管理平台或企业 Inventory 产品。
 
 ```text
 已认证身份 + Agent 提议动作
-  → 由一个服务端拥有的语义配置解析为 CanonicalAction
-  → 确定性 Policy 授权
+  → 校验结构化请求
+  → 确定性 Policy 资格判断
+  → 由服务端拥有的语义配置解析为 CanonicalAction
   → 签发 Execution Permit
   → MCP 执行边界验证并消费 Permit
   → 仅在 VERIFIED 后调用上游工具
   → 写入脱敏 Audit Receipt
 ```
+
+确定性 Policy 首先判断结构化请求是否具备所请求 capability、resource、operation 与 tool 的资格。只有 Policy 授权后，服务端拥有的语义 profile 才会把精确可执行含义解析为 `CanonicalAction`。任何语义不匹配或规范化失败都会在 Permit 签发前把结果转为 `DENIED`。仅有 Policy 授权不足以产生 Execution Permit，语义 profile 解析也绝不会覆盖 Policy 拒绝。
 
 `已认证身份 + 精确语义意图 + 签名单次 Permit = 密码学绑定的执行。`
 
@@ -160,7 +163,7 @@ curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/worksp
 - `AUTHORIZED`；
 - `DENIED`。
 
-模型可以表达 `REQUIRES_APPROVAL`，但当前版本没有受支持的审批完成流程，因此不把它宣称为已实现能力。确定性 Policy 与两个内置语义配置是仅有的授权权威，也是 Permit 是否存在的唯一决定者。Risk score 和 detection findings 只写入 `advisory_signals`，不能改变确定性结果、不能签发 Permit，也不能选择 executor。隔离、只读、禁止网络出口、人工批准和增强审计只能由确定性 Policy/配置映射为 decision/permit obligations，例如：
+模型可以表达 `REQUIRES_APPROVAL`，但当前版本没有受支持的审批完成流程，因此不把它宣称为已实现能力。确定性 Policy 先决定资格，只有 Policy grant 才会进入两个内置语义 profile 之一；grant 与成功的语义解析缺一不可，才能签发 Permit。Risk score 和 detection findings 只写入 `advisory_signals`，不能改变确定性结果、不能签发 Permit，也不能选择 executor。隔离、只读、禁止网络出口、人工批准和增强审计只能由确定性 Policy/配置映射为 decision/permit obligations，例如：
 
 ```json
 {
@@ -254,7 +257,7 @@ go run ./cmd/server
 
 ## 审计与证据真相
 
-每次动作形成可解释、脱敏的 receipt，按 `TRUST CONTEXT → ACTION → POLICY → OBLIGATIONS → PERMIT → VERIFICATION → EXECUTION` 理解；其中 execution 明确记录 upstream 是否尝试以及 completed/failed/terminated。Risk/detection 只位于 `ADVISORY SIGNALS`，不作为授权理由。审计仍不保存 token、原始参数或秘密。
+每次动作形成可解释、脱敏的 receipt，按 `TRUST CONTEXT → POLICY ELIGIBILITY/OBLIGATIONS → SEMANTIC ACTION → PERMIT → VERIFICATION → EXECUTION` 理解；其中 execution 明确记录 upstream 是否尝试以及 completed/failed/terminated。Risk/detection 只位于 `ADVISORY SIGNALS`，不作为授权理由。审计仍不保存 token、原始参数或秘密。
 
 运行时来源继续区分 `gateway_enforced`、`instrumented_adapter`、`agent_self_reported`、`os_sensor`、`network_sensor` 和 `simulated_demo`。运行时证据是辅助证据；未接入覆盖保持 `UNKNOWN / not instrumented`，且 `UNKNOWN != SAFE`、`UNKNOWN != ZERO`。
 

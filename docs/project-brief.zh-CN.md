@@ -6,7 +6,7 @@
 
 ## 一句话定位
 
-Aegis Router 是带有 Server-owned 语义动作配置、且不绑定 Agent 框架的 execution-permit 层：它授权精确的规范动作，签发短时、签名、动作绑定、单次使用的许可，并要求 MCP 执行边界在真实副作用前验证和消费许可。
+Aegis Router 是带有 Server-owned 语义动作配置、且不绑定 Agent 框架的 execution-permit 层：它先进行确定性 Policy 资格判断，再把获授权的请求解析为精确的规范动作，签发短时、签名、动作绑定、单次使用的许可，并要求 MCP 执行边界在真实副作用前验证和消费许可。
 
 > **获得授权的动作，必须与实际执行的动作完全一致。**
 
@@ -14,15 +14,16 @@ Aegis Router 是带有 Server-owned 语义动作配置、且不绑定 Agent 框�
 
 Aegis 只聚焦一个 reference-monitor primitive，而不是广义 AI Agent 安全平台。
 
-核心模块只有：
+核心模块按当前授权顺序只有：
 
-1. Action normalization；
-2. Deterministic authorization；
-3. Execution Permit issuance；
-4. Permit verification；
-5. Permit consumption / replay prevention；
-6. Audit receipt；
-7. 一个真实执行边界：MCP。
+1. Structured request validation；
+2. Deterministic Policy eligibility；
+3. Server-owned semantic action normalization；
+4. Execution Permit issuance；
+5. Permit verification；
+6. Permit consumption / replay prevention；
+7. Audit receipt；
+8. 一个真实执行边界：MCP。
 
 Aegis 不做通用权限管理、endpoint sandbox、workspace isolation、企业 Agent Inventory、Shadow Agent 治理、完整 IAM、EDR 式观察或泛风险仪表板。它也不实现 HTTP、A2A、数据库、Shell 或云端 Adapter。
 
@@ -33,9 +34,13 @@ Aegis 不做通用权限管理、endpoint sandbox、workspace isolation、企业
 ```text
 已认证身份 + Agent proposes action
     ↓
-Resolve a server-owned semantic profile into CanonicalAction
+Validate structured request
     ↓
-Deterministic policy authorization
+Deterministic Policy eligibility
+    ↓
+Resolve server-owned semantic profile
+    ↓
+CanonicalAction
     ↓
 Issue signed Execution Permit
     ↓
@@ -45,6 +50,8 @@ Execute exactly the authorized action
     ↓
 Write redacted Audit Receipt
 ```
+
+确定性 Policy 首先判断结构化请求是否具备所请求 capability、resource、operation 与 tool 的资格。只有 Policy 授权后，Server-owned 语义 profile 才会把精确可执行含义解析为 `CanonicalAction`。任何语义不匹配或 normalization 失败都会在 Permit 签发前把结果转为 `DENIED`。仅有 Policy 授权不足以产生 Execution Permit，语义 profile 解析也绝不会覆盖 Policy 拒绝。
 
 `已认证身份 + 精确语义意图 + 签名单次 Permit = 密码学绑定的执行。`
 
@@ -113,7 +120,7 @@ Adapter 不能在验证失败时“先调用、后告警”，也不能仅凭 `p
 
 ## Policy、Risk 与 obligations
 
-Policy 与两个内置语义 profile 都使用结构化 Request context 进行确定性授权；可执行结果是 `AUTHORIZED / DENIED`。`REQUIRES_APPROVAL` 仍可由模型表达，但没有受支持的审批完成流程，不属于已实现执行能力。
+Policy 首先对结构化 Request context 进行确定性资格判断。只有 Policy grant 才会进入两个内置语义 profile 之一；grant 与成功的语义解析缺一不可，才能产生 Execution Permit。可执行结果是 `AUTHORIZED / DENIED`。`REQUIRES_APPROVAL` 仍可由模型表达，但没有受支持的审批完成流程，不属于已实现执行能力。
 
 Risk/detection 保留为可选咨询元数据并单独进入 `advisory_signals`；它们不能改变授权状态、产生 grant、签发 Permit 或选择 executor。只有显式确定性 Policy/配置映射可以产生 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等 obligations。
 
@@ -121,7 +128,7 @@ Risk/detection 保留为可选咨询元数据并单独进入 `advisory_signals`�
 
 ## Audit Receipt 与 Runtime Evidence
 
-每次动作按 `TRUST CONTEXT → ACTION → POLICY → OBLIGATIONS → PERMIT → VERIFICATION → EXECUTION` 生成可解释 receipt，并记录 upstream attempted 与 execution outcome。Risk/detection 只出现在 `ADVISORY SIGNALS`。
+每次动作按 `TRUST CONTEXT → POLICY ELIGIBILITY/OBLIGATIONS → SEMANTIC ACTION → PERMIT → VERIFICATION → EXECUTION` 生成可解释 receipt，并记录 upstream attempted 与 execution outcome。Risk/detection 只出现在 `ADVISORY SIGNALS`。
 
 受支持的可执行 Authorization status 使用 `AUTHORIZED / DENIED`；当前执行 final verdict 包括 `EXECUTED_WITH_VALID_PERMIT`、`PERMIT_ACTION_MISMATCH`、`PERMIT_EXPIRED`、`PERMIT_REPLAY`、`PERMIT_INVALID_SIGNATURE`、`PERMIT_REVOKED` 与 `EXECUTION_OBLIGATION_UNSATISFIED`，receipt 内同时保留 verifier 的精确 outcome 和 execution outcome。
 

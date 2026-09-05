@@ -6,7 +6,7 @@ English | [简体中文](project-brief.zh-CN.md)
 
 ## One-line position
 
-Aegis Router is a framework-agnostic execution-permit layer with server-owned semantic action profiles. It authorizes an exact normalized action, issues a short-lived, signed, action-bound, single-use permit, and requires the MCP execution boundary to verify and consume it before the real side effect.
+Aegis Router is a framework-agnostic execution-permit layer with server-owned semantic action profiles. It first evaluates deterministic Policy eligibility, then resolves a granted request into an exact normalized action, issues a short-lived, signed, action-bound, single-use permit, and requires the MCP execution boundary to verify and consume it before the real side effect.
 
 > **The action that was authorized must be exactly the action that executes.**
 
@@ -14,15 +14,16 @@ Aegis Router is a framework-agnostic execution-permit layer with server-owned se
 
 Aegis focuses on one reference-monitor primitive, not a broad AI Agent security platform.
 
-Its only core modules are:
+Its only core modules, listed in current authorization order, are:
 
-1. Action normalization;
-2. Deterministic authorization;
-3. Execution Permit issuance;
-4. Permit verification;
-5. Permit consumption and replay prevention;
-6. Audit receipt;
-7. One real execution boundary: MCP.
+1. Structured request validation;
+2. Deterministic Policy eligibility;
+3. Server-owned semantic action normalization;
+4. Execution Permit issuance;
+5. Permit verification;
+6. Permit consumption and replay prevention;
+7. Audit receipt;
+8. One real execution boundary: MCP.
 
 Aegis does not provide generic permission management, endpoint sandboxing, workspace isolation, enterprise Agent Inventory, Shadow Agent governance, full IAM, EDR-style observation, or broad risk dashboards. It also does not implement HTTP, A2A, database, shell, or cloud adapters.
 
@@ -33,9 +34,13 @@ The implementation contains exactly two compiled-in semantic profiles—`payment
 ```text
 Authenticated identity + Agent proposes action
     ↓
-Resolve a server-owned semantic profile into CanonicalAction
+Validate structured request
     ↓
-Deterministic policy authorization
+Deterministic Policy eligibility
+    ↓
+Resolve server-owned semantic profile
+    ↓
+CanonicalAction
     ↓
 Issue signed Execution Permit
     ↓
@@ -45,6 +50,8 @@ Execute exactly the authorized action
     ↓
 Write redacted Audit Receipt
 ```
+
+Deterministic Policy first establishes whether the structured request is eligible for the requested capability, resource, operation, and tool. If Policy grants it, the server-owned semantic profile resolves the exact executable meaning into a `CanonicalAction`. Any semantic mismatch or normalization failure converts the result to `DENIED` before Permit issuance. Policy authorization alone is not sufficient to produce an Execution Permit, and semantic profile resolution never overrides a Policy denial.
 
 `Authenticated identity + exact semantic intent + signed single-use Permit = cryptographically bound execution.`
 
@@ -113,7 +120,7 @@ For MCP `2026-07-28`, the current adapter validates `MCP-Protocol-Version`, `Mcp
 
 ## Policy, Risk, and obligations
 
-Policy and both compiled-in semantic profiles use the structured request context for deterministic authorization. The executable outcomes are `AUTHORIZED / DENIED`. `REQUIRES_APPROVAL` remains representable but has no supported approval-completion workflow and is not an implemented execution capability.
+Policy first evaluates the structured request for deterministic eligibility. Only a Policy grant reaches one of the two compiled-in semantic profiles; both the grant and successful semantic resolution are required before an Execution Permit can exist. The executable outcomes are `AUTHORIZED / DENIED`. `REQUIRES_APPROVAL` remains representable but has no supported approval-completion workflow and is not an implemented execution capability.
 
 Risk/detection remain optional advisory metadata under `advisory_signals`; they cannot change authorization status, create a grant, issue a Permit, or select an executor. Obligations such as `human_approval_required`, `isolation_required`, or `enhanced_audit_required` require an explicit deterministic Policy/configuration mapping.
 
@@ -121,7 +128,7 @@ An external executor fulfills `isolation_required: true`. Aegis implements no sa
 
 ## Audit Receipt and Runtime Evidence
 
-Each action produces an explainable receipt in `TRUST CONTEXT → ACTION → POLICY → OBLIGATIONS → PERMIT → VERIFICATION → EXECUTION` order, including upstream attempted and execution outcome. Risk/detection appear only under `ADVISORY SIGNALS`.
+Each action produces an explainable receipt in `TRUST CONTEXT → POLICY ELIGIBILITY/OBLIGATIONS → SEMANTIC ACTION → PERMIT → VERIFICATION → EXECUTION` order, including upstream attempted and execution outcome. Risk/detection appear only under `ADVISORY SIGNALS`.
 
 The supported executable authorization status uses `AUTHORIZED / DENIED`. Current execution final verdicts include `EXECUTED_WITH_VALID_PERMIT`, `PERMIT_ACTION_MISMATCH`, `PERMIT_EXPIRED`, `PERMIT_REPLAY`, `PERMIT_INVALID_SIGNATURE`, `PERMIT_REVOKED`, and `EXECUTION_OBLIGATION_UNSATISFIED`, while the receipt also retains the verifier's precise outcome and execution outcome.
 

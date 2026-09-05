@@ -14,7 +14,9 @@
 
 Aegis 是参考实现，不是经独立评审的生产安全边界。它只保护实际经过其 verifier/MCP Adapter 的工具调用；绕过该边界的行为不会因为安装 Aegis 而自动被发现或阻止。
 
-核心控制是：确定性授权精确的 `CanonicalAction`，签发短时、动作绑定、单次使用的签名 `permit_token`，并在真实工具副作用前验证和原子消费。`permit_id` 只是关联标识，不能独立授权。验证失败后上游工具必须保持未调用。
+核心控制首先验证可信的结构化请求，并针对其 capability、resource、operation 与 tool 进行确定性 Policy 资格判断。只有 Policy 授权后，服务端拥有的语义配置才会把精确的可执行含义解析为 `CanonicalAction`。Policy 资格判断与语义解析都成功，Aegis 才会签发短时、动作绑定、单次使用的签名 `permit_token`。任何语义冲突或规范化失败都会在 Permit 签发前把结果转为 `DENIED`。仅有 Policy 授权不足以产生 Execution Permit，语义配置解析也绝不会覆盖 Policy 拒绝。
+
+Permit 会在真实工具副作用前被验证和原子消费。`permit_id` 只是关联标识，不能独立授权。验证失败后上游工具必须保持未调用。
 
 `AuthorizationEnvelope` 继续承载结构化 principal、Agent/workload、delegation、tool、capability、resource、operation 和 policy context，但执行凭据还必须包含可验证签名与相同动作摘要。
 
@@ -69,13 +71,13 @@ MCP `2026-07-28` 的 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与 JSON
 
 ## Policy、Risk 与隔离
 
-Policy 与受支持的语义配置保持确定性，并独占决定 Permit 是否签发及其 signed obligations。当前可执行流程支持 `AUTHORIZED / DENIED`；模型虽能表达 `REQUIRES_APPROVAL`，但没有受支持的审批完成流程，因此不能产生可执行 Permit。Risk score 与 detection findings 只进入 `advisory_signals`，不能覆盖拒绝、创建授权、签发 Permit 或选择 executor。只有显式的确定性 Policy/配置映射才能生成 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等义务。
+Policy 与受支持的两项语义配置保持确定性。Policy 先判断请求资格；只有 Policy 授权的请求才进入服务端语义解析。Policy 授权与语义解析成功两者缺一不可，共同决定 Permit 是否签发及其 signed obligations。当前可执行流程支持 `AUTHORIZED / DENIED`；模型虽能表达 `REQUIRES_APPROVAL`，但没有受支持的审批完成流程，因此不能产生可执行 Permit。Risk score 与 detection findings 只进入 `advisory_signals`，不能覆盖拒绝、创建授权、签发 Permit 或选择 executor。只有显式的确定性 Policy/配置映射才能生成 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等义务。
 
 Aegis 不实现沙箱。`isolation_required: true` 只要求外部 executor 提供隔离；当仍需要隔离或人工批准时，focused MCP Proxy 会以 `EXECUTION_OBLIGATION_UNSATISFIED` fail closed，而不是转发。`read_only` 与 `network_egress_denied` 仍是已签名要求，必须由另一个独立可信的 executor/control 真正落实。兼容输出中的 `SANDBOX` 也是 profile hint。不要声称 Aegis 提供 Docker、gVisor、Firecracker、文件系统或网络隔离。
 
 ## 审计与敏感数据
 
-正常审计按信任上下文、动作、确定性 Policy、obligations、Permit、verification、execution 的顺序解释，并可保存 request/decision/permit ID、`signing_key_id`、`permit_class`、规范化身份字段、`authorization_context_provenance`、tool/resource/operation、`action_digest`、policy version、授权决定、Permit 状态、验证结果/拒绝原因、upstream 是否尝试、execution outcome、时间和 evidence source。Risk/detection 单独标为 `advisory_signals`。
+正常审计按信任上下文、结构化请求验证、确定性 Policy 资格与 obligations、语义动作、Permit、verification、execution 的顺序解释，并可保存 request/decision/permit ID、`signing_key_id`、`permit_class`、规范化身份字段、`authorization_context_provenance`、tool/resource/operation、`action_digest`、policy version、授权决定、Permit 状态、验证结果/拒绝原因、upstream 是否尝试、execution outcome、时间和 evidence source。Risk/detection 单独标为 `advisory_signals`。
 
 调用方必须先对委托凭据做哈希再提交。Aegis 会在 Permit/审计持久化前再次哈希所声明的 64 位十六进制 fingerprint，因此即便输入形状像摘要也不会被原样保存；这层防御不会把授权 API 变成凭据认证器。
 
