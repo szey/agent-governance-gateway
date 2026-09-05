@@ -87,8 +87,7 @@ func TestSafeRequestAllowsAndIssuesLeastPrivilegePermit(t *testing.T) {
 
 func TestSignedPermitCredentialStaysOutsideAuditAndIsSingleUse(t *testing.T) {
 	r, store, _ := testRouter(t)
-	req := safeRequest()
-	req.Action.Arguments = json.RawMessage(`{"language":"go","marker":"sensitive-argument-marker"}`)
+	req := paymentSemanticRequest(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`)
 	result, err := authorizeAction(t, r, req)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +106,7 @@ func TestSignedPermitCredentialStaysOutsideAuditAndIsSingleUse(t *testing.T) {
 	if bytes.Contains(encoded, []byte(result.Permit.PermitToken)) {
 		t.Fatal("permit token leaked into audit")
 	}
-	if bytes.Contains(encoded, []byte("sensitive-argument-marker")) {
+	if bytes.Contains(encoded, []byte("merchant-456")) {
 		t.Fatal("raw action arguments leaked into audit")
 	}
 	first, err := r.VerifyRequestAndConsume(result.Permit.PermitToken, req)
@@ -122,7 +121,7 @@ func TestSignedPermitCredentialStaysOutsideAuditAndIsSingleUse(t *testing.T) {
 
 func TestRevokedSignedPermitIsRejected(t *testing.T) {
 	r, _, _ := testRouter(t)
-	req := safeRequest()
+	req := paymentSemanticRequest(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`)
 	result, err := authorizeAction(t, r, req)
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +154,7 @@ func TestRejectedRawDelegatedCredentialNeverReachesAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := router.New(loadConfig(t), store)
-	request := safeRequest()
+	request := paymentSemanticRequest(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`)
 	request.Authority.CredentialFingerprint = marker
 	authorization := trustedAuthorization(t, request)
 	if _, err := r.AuthorizeTrustedAction(authorization); err == nil {
@@ -439,7 +438,7 @@ func TestRouterRequiresSealedTrustedAuthorization(t *testing.T) {
 	if _, err := r.AuthorizeTrustedAction(intake.Authorization{}); err == nil {
 		t.Fatal("zero-value unsealed authorization was accepted")
 	}
-	result, err := r.AuthorizeTrustedAction(trustedAuthorization(t, safeRequest()))
+	result, err := r.AuthorizeTrustedAction(trustedAuthorization(t, paymentSemanticRequest(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`)))
 	if err != nil || result.Permit == nil {
 		t.Fatalf("explicitly sealed in-process authorization failed: result=%#v err=%v", result, err)
 	}
@@ -562,6 +561,13 @@ func trustedAuthorization(t *testing.T, request models.Request) intake.Authoriza
 
 func authorizeAction(t *testing.T, r *router.Router, request models.Request) (models.ActionAuthorizationResponse, error) {
 	t.Helper()
+	tool := request.EffectiveTool().Name
+	if tool == "" {
+		tool = request.EffectiveTool().ToolID
+	}
+	if tool != "payment.send" {
+		return r.AuthorizeSyntheticDemoAction(request, 0)
+	}
 	return r.AuthorizeTrustedAction(trustedAuthorization(t, request))
 }
 
@@ -579,7 +585,7 @@ func authorizeSyntheticRecord(t *testing.T, r *router.Router, request models.Req
 
 func TestSyntheticDemoPermitCannotReachExecutionVerifier(t *testing.T) {
 	r, _, _ := testRouter(t)
-	request := safeRequest()
+	request := paymentSemanticRequest(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`)
 	authorized, err := r.AuthorizeSyntheticDemoAction(request, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -606,6 +612,82 @@ func TestSyntheticDemoPermitCannotReachExecutionVerifier(t *testing.T) {
 	if err != nil || !accepted.Verified {
 		t.Fatalf("simulation permit was not reusable at its intended boundary: result=%#v err=%v", accepted, err)
 	}
+}
+
+func TestPaymentSendV1SemanticPolicyControlsPermitIssuance(t *testing.T) {
+	t.Run("valid boundary amount", func(t *testing.T) {
+		r, _, _ := testRouter(t)
+		request := paymentSemanticRequest(`{"recipient":"merchant-456","currency":"USD","amount_minor":10000}`)
+		authorized, err := authorizeAction(t, r, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if authorized.Permit == nil || authorized.Permit.ProfileID != "payment.send/v1" || authorized.Permit.Audience != "mcp://local-payment-sandbox" {
+			t.Fatalf("payment permit missing server bindings: %#v", authorized)
+		}
+		verification, err := r.VerifyRequestAndConsume(authorized.Permit.PermitToken, request)
+		if err != nil || !verification.Verified {
+			t.Fatalf("valid normalized payment did not verify: result=%#v err=%v", verification, err)
+		}
+	})
+
+	tests := []struct {
+		name            string
+		mutate          func(*models.Request)
+		code            string
+		validationError bool
+	}{
+		{"amount exceeds limit", func(request *models.Request) {
+			request.Action.Arguments = json.RawMessage(`{"amount_minor":10001,"currency":"USD","recipient":"merchant-456"}`)
+		}, "PAYMENT_AMOUNT_EXCEEDS_LIMIT", false},
+		{"currency denied", func(request *models.Request) {
+			request.Action.Arguments = json.RawMessage(`{"amount_minor":100,"currency":"EUR","recipient":"merchant-456"}`)
+		}, "PAYMENT_CURRENCY_NOT_ALLOWED", false},
+		{"recipient denied", func(request *models.Request) {
+			request.Action.Arguments = json.RawMessage(`{"amount_minor":100,"currency":"USD","recipient":"merchant-999"}`)
+		}, "PAYMENT_RECIPIENT_NOT_ALLOWED", false},
+		{"invalid arguments", func(request *models.Request) {
+			request.Action.Arguments = json.RawMessage(`{"amount_minor":"100","currency":"USD","recipient":"merchant-456"}`)
+		}, "PAYMENT_ARGUMENTS_INVALID", false},
+		{"missing tool cannot use legacy fallback", func(request *models.Request) { request.Tool.Name = "" }, "", true},
+		{"missing operation cannot use legacy fallback", func(request *models.Request) { request.Action.Operation = "" }, "", true},
+		{"profile conflict", func(request *models.Request) { request.Action.ProfileID = "payment.send/v2" }, "PAYMENT_PROFILE_MISMATCH", false},
+		{"audience conflict", func(request *models.Request) { request.Action.Audience = "mcp://attacker" }, "PAYMENT_AUDIENCE_MISMATCH", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r, _, _ := testRouter(t)
+			request := paymentSemanticRequest(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`)
+			test.mutate(&request)
+			result, err := authorizeAction(t, r, request)
+			if test.validationError {
+				if err == nil || result.Permit != nil {
+					t.Fatalf("legacy missing field bypassed validation: result=%#v err=%v", result, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Permit != nil || result.Decision.AuthorizationStatus != models.AuthorizationStatusDenied || !containsString(result.Decision.PolicyDecision.Reasons, test.code) {
+				t.Fatalf("semantic rejection=%#v, want %s and no permit", result, test.code)
+			}
+		})
+	}
+
+	t.Run("mapping missing", func(t *testing.T) {
+		cfg := loadConfig(t)
+		cfg.SemanticActions = models.SemanticActionsConfig{}
+		store, _ := audit.NewStore("")
+		r := router.New(cfg, store)
+		result, err := authorizeAction(t, r, paymentSemanticRequest(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Permit != nil || !containsString(result.Decision.PolicyDecision.Reasons, "PAYMENT_TOOL_UNMAPPED") {
+			t.Fatalf("missing mapping did not fail closed: %#v", result)
+		}
+	})
 }
 
 func testRouter(t *testing.T) (*router.Router, *audit.Store, time.Time) {
@@ -641,6 +723,31 @@ func safeRequest() models.Request {
 		},
 		ClaimedIntent: "code_generation",
 	}
+}
+
+func paymentSemanticRequest(arguments string) models.Request {
+	return models.Request{
+		Principal: models.PrincipalContext{PrincipalID: "user-01", PrincipalType: "human", Environment: "local"},
+		Agent:     models.AgentIdentity{AgentID: "finance-agent", WorkloadID: "finance-workload-v1", Environment: "demo"},
+		Authority: models.DelegatedAuthority{
+			CredentialFingerprint: strings.Repeat("b", 64), Issuer: "demo-idp",
+			Scopes: []string{"payment.transfer"}, Subject: "user-01",
+		},
+		Tool: models.ToolContext{Name: "payment.send", Provider: "mcp"},
+		Action: models.ActionRequest{
+			Capability: "payment_transfer", Operation: "transfer", TargetResource: "account-123",
+			Arguments: json.RawMessage(arguments), SideEffect: "financial_transaction",
+		},
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func eventFor(record models.AuditRecord) models.RuntimeEvent {

@@ -72,6 +72,9 @@
       selectPermit: "\u9009\u62E9\u4E00\u5F20\u8BB8\u53EF\u8BC1\u67E5\u770B\u5B89\u5168\u58F0\u660E\u3002",
       state: "\u72B6\u6001",
       permitId: "\u8BB8\u53EF\u8BC1 ID / jti",
+      permitClass: "\u8BB8\u53EF\u8BC1\u7528\u9014",
+      profileId: "\u52A8\u4F5C\u914D\u7F6E ID / \u7248\u672C",
+      audience: "\u6267\u884C\u76EE\u6807 / audience",
       signingKeyId: "\u7B7E\u540D\u5BC6\u94A5 ID / kid",
       issuer: "\u7B7E\u53D1\u8005",
       issuedAt: "\u7B7E\u53D1\u65F6\u95F4",
@@ -212,6 +215,9 @@
       selectPermit: "Select a permit to inspect its safe claims.",
       state: "State",
       permitId: "Permit ID / jti",
+      permitClass: "Permit class",
+      profileId: "Action profile ID / version",
+      audience: "Execution target / audience",
       signingKeyId: "Signing key ID / kid",
       issuer: "Issuer",
       issuedAt: "Issued at",
@@ -423,7 +429,7 @@
       COMPLETED: "VERIFIED"
     };
     if (aliases[direct]) return aliases[direct];
-    const recognized = ["VERIFIED", "EXPIRED", "INVALID_SIGNATURE", "ACTION_MISMATCH", "WRONG_PRINCIPAL", "WRONG_AGENT", "WRONG_WORKLOAD", "WRONG_DELEGATION", "WRONG_TOOL", "WRONG_CAPABILITY", "WRONG_RESOURCE", "WRONG_OPERATION", "REPLAYED", "REVOKED", "INVALID_ISSUER", "UNKNOWN_PERMIT", "INVALID_PERMIT", "INVALID_ACTION", "NOT_YET_VALID"];
+    const recognized = ["VERIFIED", "EXPIRED", "INVALID_SIGNATURE", "ACTION_MISMATCH", "WRONG_PRINCIPAL", "WRONG_AGENT", "WRONG_WORKLOAD", "WRONG_DELEGATION", "WRONG_TOOL", "WRONG_CAPABILITY", "WRONG_RESOURCE", "WRONG_OPERATION", "WRONG_PROFILE", "WRONG_AUDIENCE", "WRONG_PERMIT_CLASS", "REPLAYED", "REVOKED", "INVALID_ISSUER", "UNKNOWN_PERMIT", "INVALID_PERMIT", "INVALID_ACTION", "NOT_YET_VALID"];
     if (recognized.includes(direct)) return direct;
     return "NOT_REPORTED";
   }
@@ -438,6 +444,9 @@
     const operationList = stringList(value, ["allowed_operations", "authorization_envelope.allowed_operations"]);
     return {
       id,
+      permitClass: safeText(value, ["permit_class", "claims.permit_class", "permit.permit_class", "execution_permit.permit_class", "authorization_envelope.permit_class"]),
+      profileId: safeText(value, ["profile_id", "claims.profile_id", "permit.profile_id", "execution_permit.profile_id", "authorization_envelope.profile_id"]),
+      audience: safeText(value, ["audience", "claims.audience", "permit.audience", "execution_permit.audience", "authorization_envelope.audience"]),
       signingKeyId: safeText(value, ["signing_key_id", "claims.signing_key_id", "permit.signing_key_id", "authorization_envelope.signing_key_id"]),
       state: permitState,
       requestId: safeText(value, ["request_id", "claims.request_id", "permit.request_id", "execution_permit.request_id", "authorization_envelope.request_id"]),
@@ -821,6 +830,9 @@
     seal.append(node("span", "", sealLabel), node("small", "", permit.format));
     const claims = node("div", "claim-grid");
     claims.append(
+      fact(tr("permitClass"), permit.permitClass),
+      fact(tr("profileId"), permit.profileId),
+      fact(tr("audience"), permit.audience),
       fact(tr("principal"), permit.principal),
       fact(tr("agent"), permit.agent),
       fact(tr("workload"), permit.workload),

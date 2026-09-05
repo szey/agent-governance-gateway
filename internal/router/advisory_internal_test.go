@@ -1,6 +1,7 @@
 package router
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -29,11 +30,13 @@ func TestDisabledAdvisoryEnginesDoNotChangeAuthorization(t *testing.T) {
 		Principal: models.PrincipalContext{PrincipalID: "user-01", PrincipalType: "human"},
 		Agent:     models.AgentIdentity{AgentID: "finance-agent", WorkloadID: "finance-workload-v1"},
 		Authority: models.DelegatedAuthority{
-			CredentialFingerprint: strings.Repeat("a", 64), Scopes: []string{"finance.read"}, Subject: "user-01",
+			CredentialFingerprint: strings.Repeat("b", 64), Scopes: []string{"payment.transfer"}, Subject: "user-01",
 		},
-		Tool: models.ToolContext{Name: "finance_reader"},
+		Tool: models.ToolContext{Name: "payment.send"},
 		Action: models.ActionRequest{
-			Capability: "read_finance_data", Operation: "read", TargetResource: "finance_data", SideEffect: "read_only",
+			Capability: "payment_transfer", Operation: "transfer", TargetResource: "account-123",
+			Arguments:  json.RawMessage(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`),
+			SideEffect: "financial_transaction",
 		},
 	}
 	seal := func() intake.Authorization {

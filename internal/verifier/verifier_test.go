@@ -123,6 +123,8 @@ func TestWrongActionBindingsAreRejectedWithoutConsumption(t *testing.T) {
 		{"capability", verifier.OutcomeWrongCapability, func(action *canonicalaction.Action) { action.Capability = "payment.refund" }},
 		{"resource", verifier.OutcomeWrongResource, func(action *canonicalaction.Action) { action.Resource = "account-999" }},
 		{"operation", verifier.OutcomeWrongOperation, func(action *canonicalaction.Action) { action.Operation = "refund" }},
+		{"profile", verifier.OutcomeWrongProfile, func(action *canonicalaction.Action) { action.ProfileID = "payment.send/v2" }},
+		{"audience", verifier.OutcomeWrongAudience, func(action *canonicalaction.Action) { action.Audience = "mcp://other-upstream" }},
 		{"arguments", verifier.OutcomeActionMismatch, func(action *canonicalaction.Action) {
 			action.Arguments = json.RawMessage(`{"amount":10000,"currency":"USD","recipient":"merchant-456"}`)
 		}},
@@ -264,6 +266,7 @@ func newFixtureWithClass(t *testing.T, ttl time.Duration, permitClass permit.Cla
 		PrincipalID: "user-01", AgentID: "finance-agent", WorkloadID: "finance-agent-v3",
 		DelegatedAuthorityFingerprint: "sha256:" + strings.Repeat("a", 64),
 		Tool:                          "payment.send", Capability: "payment.transfer", Resource: "account-123", Operation: "transfer",
+		ProfileID: "payment.send/v1", Audience: "mcp://test-payment-upstream",
 		Arguments: json.RawMessage(`{"amount":100,"currency":"USD","recipient":"super-secret-recipient"}`),
 	}
 	digest, err := action.Digest()
@@ -284,6 +287,7 @@ func newFixtureWithClass(t *testing.T, ttl time.Duration, permitClass permit.Cla
 		AgentID: action.AgentID, WorkloadID: action.WorkloadID,
 		DelegatedAuthorityFingerprint: action.DelegatedAuthorityFingerprint,
 		Tool:                          action.Tool, Capability: action.Capability, Resource: action.Resource, Operation: action.Operation,
+		ProfileID: action.ProfileID, Audience: action.Audience,
 		ActionDigest: digest, PolicyVersion: "policy-v7", TTL: ttl,
 	})
 	if err != nil {

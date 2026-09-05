@@ -95,7 +95,7 @@ Verifier 在副作用前检查签名、issuer、时间、Permit ID、主体、Ag
 
 ## MCP Adapter
 
-MCP 是 focused MVP 唯一的生产形态 Adapter。它把 `tools/call` 与受信任的主体/工作负载/资源元数据规范化，获取或接收 Permit，在转发上游前调用同一 verifier，并只记录响应状态、耗时等必要结果元数据。
+MCP 是 focused MVP 唯一的生产形态 Adapter。对唯一受支持的语义动作 `payment.send/v1`，它使用与授权阶段相同的 Server-owned 解析器处理 `tools/call`，验证签名绑定的 profile/audience/action，消费 Permit，把规范化参数转发给已配置上游，并只记录响应状态、耗时等必要结果元数据。
 
 Adapter 不能在验证失败时“先调用、后告警”，也不能仅凭 `permit_id` 转发。上游 MCP 的 TLS、认证、工具副作用和部署绕过仍由部署方独立处理。
 
@@ -103,7 +103,7 @@ Adapter 不能在验证失败时“先调用、后告警”，也不能仅凭 `p
 
 ## Policy、Risk 与 obligations
 
-Policy 仍使用结构化 Request context 进行确定性授权。概念结果为 `AUTHORIZED / DENIED / REQUIRES_APPROVAL`，且只有 Policy 可以决定状态、Permit 是否签发与 signed obligations。
+Policy 与 `payment.send/v1` 语义校验继续使用结构化 Request context 进行确定性授权；可执行结果是 `AUTHORIZED / DENIED`。`REQUIRES_APPROVAL` 仍可由模型表达，但没有受支持的审批完成流程，不属于已实现执行能力。
 
 Risk/detection 保留为可选咨询元数据并单独进入 `advisory_signals`；它们不能改变授权状态、产生 grant、签发 Permit 或选择 executor。只有显式确定性 Policy/配置映射可以产生 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等 obligations。
 
@@ -113,7 +113,7 @@ Risk/detection 保留为可选咨询元数据并单独进入 `advisory_signals`�
 
 每次动作按 `TRUST CONTEXT → ACTION → POLICY → OBLIGATIONS → PERMIT → VERIFICATION → EXECUTION` 生成可解释 receipt，并记录 upstream attempted 与 execution outcome。Risk/detection 只出现在 `ADVISORY SIGNALS`。
 
-Authorization status 使用 `AUTHORIZED / DENIED / REQUIRES_APPROVAL`；当前执行 final verdict 包括 `EXECUTED_WITH_VALID_PERMIT`、`PERMIT_ACTION_MISMATCH`、`PERMIT_EXPIRED`、`PERMIT_REPLAY`、`PERMIT_INVALID_SIGNATURE`、`PERMIT_REVOKED` 与 `EXECUTION_OBLIGATION_UNSATISFIED`，receipt 内同时保留 verifier 的精确 outcome 和 execution outcome。
+受支持的可执行 Authorization status 使用 `AUTHORIZED / DENIED`；当前执行 final verdict 包括 `EXECUTED_WITH_VALID_PERMIT`、`PERMIT_ACTION_MISMATCH`、`PERMIT_EXPIRED`、`PERMIT_REPLAY`、`PERMIT_INVALID_SIGNATURE`、`PERMIT_REVOKED` 与 `EXECUTION_OBLIGATION_UNSATISFIED`，receipt 内同时保留 verifier 的精确 outcome 和 execution outcome。
 
 RuntimeEvent 与来源/信任模型继续保留，但属于执行中/执行后的辅助证据。`agent_self_reported`、`instrumented_adapter` 与 `simulated_demo` 不能冒充独立 Sensor；未接入覆盖保持 `UNKNOWN`。
 

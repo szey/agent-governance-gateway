@@ -55,9 +55,11 @@ MCP `2026-07-28` 的 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与 JSON
 
 保护只覆盖经过该 Adapter 的调用。Trusted Intake 只让身份来源显式、可拒绝和可审计，并不实现 IAM/SSO/RBAC；真实集成仍必须由已认证的中间件提供上下文。MCP 执行请求里的绑定 Header 只有在与已签名 Permit 完全匹配时才有效，本身不是身份凭据。上游 TLS/认证、transport framing、工具自身副作用、部署绕过和 confused-deputy 风险仍需要独立威胁建模。
 
+唯一的 Server-owned 语义映射是 `payment.send/v1`。它固定 MCP Tool、capability、resource、operation、profile 版本、audience 与 upstream target，调用方不能选择 URL。严格的三个字段解析器只接受正 `int64` `amount_minor`、精确命中 allowlist 的币种和收款人；每个币种的限额都是独立的最小单位上限，不进行隐式汇率换算。未知 Tool/字段/类型、映射缺失或冲突的客户端声明全部 fail closed。授权与 MCP 执行复用同一个解析器，验签通过后转发的是规范化参数，而不是调用方原始序列化。
+
 ## Policy、Risk 与隔离
 
-Policy 授权保持确定性，并且只有 Policy 可以决定 `AUTHORIZED / DENIED / REQUIRES_APPROVAL`、Permit 是否签发以及签名 obligations。Risk score 与 detection findings 只进入 `advisory_signals`，不能覆盖拒绝、创建授权、签发 Permit 或选择 executor。只有显式的确定性 Policy/配置映射才能生成 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等义务。
+Policy 与受支持的语义配置保持确定性，并独占决定 Permit 是否签发及其 signed obligations。当前可执行流程支持 `AUTHORIZED / DENIED`；模型虽能表达 `REQUIRES_APPROVAL`，但没有受支持的审批完成流程，因此不能产生可执行 Permit。Risk score 与 detection findings 只进入 `advisory_signals`，不能覆盖拒绝、创建授权、签发 Permit 或选择 executor。只有显式的确定性 Policy/配置映射才能生成 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等义务。
 
 Aegis 不实现沙箱。`isolation_required: true` 只要求外部 executor 提供隔离；当仍需要隔离或人工批准时，focused MCP Proxy 会以 `EXECUTION_OBLIGATION_UNSATISFIED` fail closed，而不是转发。`read_only` 与 `network_egress_denied` 仍是已签名要求，必须由另一个独立可信的 executor/control 真正落实。兼容输出中的 `SANDBOX` 也是 profile hint。不要声称 Aegis 提供 Docker、gVisor、Firecracker、文件系统或网络隔离。
 

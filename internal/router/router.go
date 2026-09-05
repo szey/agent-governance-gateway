@@ -19,6 +19,7 @@ import (
 	"agent-governance-gateway/internal/permit"
 	"agent-governance-gateway/internal/policy"
 	"agent-governance-gateway/internal/risk"
+	"agent-governance-gateway/internal/semanticaction"
 	"agent-governance-gateway/internal/verifier"
 )
 
@@ -34,6 +35,7 @@ type Router struct {
 	permitIssuer   *permit.Issuer
 	permitStore    *permit.MemoryStore
 	permitVerifier *verifier.Verifier
+	paymentProfile *semanticaction.PaymentSendV1
 
 	mu      sync.RWMutex
 	permits map[string]models.AuthorizationEnvelope
@@ -88,11 +90,19 @@ func NewWithClockAndKeyProvider(cfg models.PolicyConfig, store *audit.Store, clo
 	if err != nil {
 		panic(fmt.Sprintf("initialize execution-permit verifier: %v", err))
 	}
+	var paymentProfile *semanticaction.PaymentSendV1
+	if strings.TrimSpace(cfg.SemanticActions.PaymentSendV1.ProfileID) != "" {
+		paymentProfile, err = semanticaction.NewPaymentSendV1(cfg.SemanticActions.PaymentSendV1)
+		if err != nil {
+			panic(fmt.Sprintf("initialize payment.send/v1 semantic profile: %v", err))
+		}
+	}
 	return &Router{
 		policy: policy.New(cfg), risk: risk.New(cfg), observer: observer.New(cfg), audit: store,
 		detection: detection.New(cfg.SessionControls), clock: clock, permitTTL: ttl,
 		policyVersion: policyVersion, permitIssuer: issuer, permitStore: permitStore, permitVerifier: permitVerifier,
-		permits: make(map[string]models.AuthorizationEnvelope),
+		paymentProfile: paymentProfile,
+		permits:        make(map[string]models.AuthorizationEnvelope),
 	}
 }
 
@@ -137,6 +147,26 @@ func (r *Router) authorizeResolvedAction(req models.Request, provenance models.A
 	status := policyDecision.Status
 	obligations := policyObligations(policyDecision)
 	decisionID := newIdentifier("decision")
+
+	var resolvedAction canonicalaction.Action
+	var resolved bool
+	if status == models.AuthorizationStatusAuthorized && policyDecision.Authorized && policyDecision.Grant != nil {
+		candidate, resolveErr := r.resolveAuthorizedAction(req, *policyDecision.Grant, permitClass)
+		if resolveErr != nil {
+			code := string(semanticaction.Code(resolveErr))
+			policyDecision.Authorized = false
+			policyDecision.Status = models.AuthorizationStatusDenied
+			policyDecision.Route = models.RouteDeny
+			policyDecision.Reasons = append(policyDecision.Reasons, code)
+			policyDecision.Rules = append(policyDecision.Rules, "semantic.payment.send.v1."+strings.ToLower(code))
+			policyDecision.Grant = nil
+			status = models.AuthorizationStatusDenied
+			obligations = models.ExecutionObligations{}
+		} else {
+			resolvedAction = candidate
+			resolved = true
+		}
+	}
 	dispatch := compatibilityDispatchFor(policyDecision)
 
 	observation := models.RuntimeObservation{
@@ -152,6 +182,9 @@ func (r *Router) authorizeResolvedAction(req models.Request, provenance models.A
 	var actionDigest string
 	if policyDecision.Grant != nil {
 		action := canonicalAction(req, *policyDecision.Grant)
+		if resolved {
+			action = resolvedAction
+		}
 		var err error
 		actionDigest, err = action.Digest()
 		if err != nil {
@@ -159,13 +192,14 @@ func (r *Router) authorizeResolvedAction(req models.Request, provenance models.A
 		}
 	}
 	if status == models.AuthorizationStatusAuthorized && policyDecision.Authorized && policyDecision.Grant != nil {
-		issued, issueErr := r.issuePermit(req, *policyDecision.Grant, obligations, actionDigest, started, permitClass, ttlOverride)
+		issued, issueErr := r.issuePermit(req, *policyDecision.Grant, obligations, resolvedActionOrDefault(resolvedAction, resolved, req, *policyDecision.Grant), actionDigest, started, permitClass, ttlOverride)
 		if issueErr != nil {
 			return models.ActionAuthorizationResponse{}, issueErr
 		}
 		envelope = envelopeFor(issued, req.SessionID, policyDecision.Grant.Constraints, dispatch.Route)
 		credential = &models.PermitCredential{
-			PermitID: issued.PermitID, SigningKeyID: issued.Claims.SigningKeyID, PermitClass: string(issued.Claims.PermitClass), PermitToken: issued.Token(), IssuedAt: issued.Claims.IssuedTime(),
+			PermitID: issued.PermitID, SigningKeyID: issued.Claims.SigningKeyID, PermitClass: string(issued.Claims.PermitClass),
+			ProfileID: issued.Claims.ProfileID, Audience: issued.Claims.Audience, PermitToken: issued.Token(), IssuedAt: issued.Claims.IssuedTime(),
 			ExpiresAt: issued.Claims.ExpiresTime(), SingleUse: issued.Claims.SingleUse,
 		}
 		r.mu.Lock()
@@ -248,6 +282,8 @@ func (r *Router) verifyAndConsume(permitToken string, action canonicalaction.Act
 	}
 	if result.Claims != nil {
 		verification.PermitClass = string(result.Claims.PermitClass)
+		verification.ProfileID = result.Claims.ProfileID
+		verification.Audience = result.Claims.Audience
 		verification.Obligations = models.ExecutionObligations{
 			IsolationRequired:     result.Claims.Obligations.IsolationRequired,
 			NetworkEgressDenied:   result.Claims.Obligations.NetworkEgressDenied,
@@ -338,7 +374,11 @@ func (r *Router) VerifyRequestAndConsume(permitToken string, req models.Request)
 	if err := Validate(req); err != nil {
 		return models.PermitVerification{}, err
 	}
-	return r.VerifyAndConsume(permitToken, executionAction(req))
+	action, err := r.resolveExecutionAction(req)
+	if err != nil {
+		return models.PermitVerification{}, err
+	}
+	return r.VerifyAndConsume(permitToken, action)
 }
 
 func (r *Router) VerifySyntheticDemoRequest(permitToken string, req models.Request) (models.PermitVerification, error) {
@@ -394,10 +434,11 @@ func authorizationReceipt(decisionID string, req models.Request, status models.A
 	agent := req.EffectiveAgent()
 	tool := req.EffectiveTool().Name
 	action := req.EffectiveAction()
-	permitID, permitState, permitClass := "", "", ""
+	permitID, permitState, permitClass, profileID, audience := "", "", "", "", ""
 	if envelope != nil {
 		permitID, permitState = envelope.PermitID, envelope.State
 		permitClass = envelope.PermitClass
+		profileID, audience = envelope.ProfileID, envelope.Audience
 		tool = envelope.AllowedTool
 		action.Capability = envelope.AllowedCapability
 		action.TargetResource = envelope.AllowedResource
@@ -405,6 +446,7 @@ func authorizationReceipt(decisionID string, req models.Request, status models.A
 	}
 	return &models.ExecutionReceipt{
 		RequestID: req.RequestID, DecisionID: decisionID, PermitID: permitID, PermitClass: permitClass,
+		ProfileID: profileID, Audience: audience,
 		PrincipalID: principal.PrincipalID, AgentID: agent.AgentID, WorkloadID: agent.WorkloadID,
 		Tool: tool, Capability: action.Capability, Resource: action.TargetResource, Operation: action.Operation,
 		ActionDigest: digest, PolicyVersion: policyVersion, AuthorizationDecision: status,
@@ -418,7 +460,8 @@ func permitVerdict(outcome verifier.Outcome) string {
 		return "PERMIT_VERIFIED"
 	case verifier.OutcomeActionMismatch, verifier.OutcomeWrongPrincipal, verifier.OutcomeWrongAgent,
 		verifier.OutcomeWrongWorkload, verifier.OutcomeWrongDelegation, verifier.OutcomeWrongTool,
-		verifier.OutcomeWrongCapability, verifier.OutcomeWrongResource, verifier.OutcomeWrongOperation:
+		verifier.OutcomeWrongCapability, verifier.OutcomeWrongResource, verifier.OutcomeWrongOperation,
+		verifier.OutcomeWrongProfile, verifier.OutcomeWrongAudience:
 		return "PERMIT_ACTION_MISMATCH"
 	case verifier.OutcomeExpired:
 		return "PERMIT_EXPIRED"
@@ -907,6 +950,43 @@ func canonicalAction(req models.Request, grant models.MatchedAuthorizationGrant)
 	return result
 }
 
+func resolvedActionOrDefault(resolvedAction canonicalaction.Action, resolved bool, req models.Request, grant models.MatchedAuthorizationGrant) canonicalaction.Action {
+	if resolved {
+		return resolvedAction
+	}
+	return canonicalAction(req, grant)
+}
+
+func (r *Router) resolveAuthorizedAction(req models.Request, grant models.MatchedAuthorizationGrant, permitClass permit.Class) (canonicalaction.Action, error) {
+	if permitClass != permit.ClassExecution {
+		return canonicalAction(req, grant), nil
+	}
+	return r.resolvePaymentAction(req)
+}
+
+func (r *Router) resolveExecutionAction(req models.Request) (canonicalaction.Action, error) {
+	return r.resolvePaymentAction(req)
+}
+
+func (r *Router) resolvePaymentAction(req models.Request) (canonicalaction.Action, error) {
+	if r.paymentProfile == nil {
+		return canonicalaction.Action{}, &semanticaction.Rejection{
+			Code: semanticaction.RejectToolUnmapped, Detail: "payment.send/v1 is not configured on this server",
+		}
+	}
+	base := executionAction(req)
+	resolved, err := r.paymentProfile.Resolve(semanticaction.Input{
+		PrincipalID: base.PrincipalID, AgentID: base.AgentID, WorkloadID: base.WorkloadID,
+		DelegatedAuthorityFingerprint: base.DelegatedAuthorityFingerprint,
+		Tool:                          base.Tool, Capability: base.Capability, Resource: base.Resource, Operation: base.Operation,
+		ProfileID: base.ProfileID, Audience: base.Audience, Arguments: base.Arguments,
+	})
+	if err != nil {
+		return canonicalaction.Action{}, err
+	}
+	return resolved.Action, nil
+}
+
 func executionAction(req models.Request) canonicalaction.Action {
 	principal := req.EffectivePrincipal()
 	agent := req.EffectiveAgent()
@@ -925,12 +1005,11 @@ func executionAction(req models.Request) canonicalaction.Action {
 		PrincipalID: principal.PrincipalID, AgentID: agent.AgentID, WorkloadID: agent.WorkloadID,
 		DelegatedAuthorityFingerprint: delegationBinding,
 		Tool:                          toolName, Capability: action.Capability, Resource: action.TargetResource,
-		Operation: action.Operation, Arguments: action.Arguments,
+		Operation: action.Operation, ProfileID: action.ProfileID, Audience: action.Audience, Arguments: action.Arguments,
 	}
 }
 
-func (r *Router) issuePermit(req models.Request, grant models.MatchedAuthorizationGrant, obligations models.ExecutionObligations, actionDigest string, issuedAt time.Time, permitClass permit.Class, ttlOverride time.Duration) (permit.IssuedPermit, error) {
-	action := canonicalAction(req, grant)
+func (r *Router) issuePermit(req models.Request, grant models.MatchedAuthorizationGrant, obligations models.ExecutionObligations, action canonicalaction.Action, actionDigest string, issuedAt time.Time, permitClass permit.Class, ttlOverride time.Duration) (permit.IssuedPermit, error) {
 	ttl := r.permitTTL
 	if ttlOverride > 0 && ttlOverride < ttl {
 		ttl = ttlOverride
@@ -955,6 +1034,7 @@ func (r *Router) issuePermit(req models.Request, grant models.MatchedAuthorizati
 		RequestID: req.RequestID, PermitClass: permitClass, PrincipalID: action.PrincipalID, AgentID: action.AgentID,
 		WorkloadID: action.WorkloadID, DelegatedAuthorityFingerprint: action.DelegatedAuthorityFingerprint,
 		Tool: action.Tool, Capability: action.Capability, Resource: action.Resource, Operation: action.Operation,
+		ProfileID: action.ProfileID, Audience: action.Audience,
 		ActionDigest: actionDigest, PolicyVersion: r.policyVersion, TTL: ttl,
 		Obligations: permit.Obligations{
 			IsolationRequired: obligations.IsolationRequired, NetworkEgressDenied: obligations.NetworkEgressDenied,
@@ -975,7 +1055,7 @@ func envelopeFor(issued permit.IssuedPermit, sessionID string, constraints model
 		PrincipalID: claims.PrincipalID, AgentID: claims.AgentID, WorkloadID: claims.WorkloadID,
 		DelegatedCredentialFingerprint: claims.DelegatedAuthorityFingerprint,
 		AllowedCapability:              claims.Capability, AllowedTool: claims.Tool, AllowedResource: claims.Resource,
-		AllowedOperation: claims.Operation, AllowedOperations: []string{claims.Operation},
+		AllowedOperation: claims.Operation, AllowedOperations: []string{claims.Operation}, ProfileID: claims.ProfileID, Audience: claims.Audience,
 		ActionDigest: claims.ActionDigest, PolicyVersion: claims.PolicyVersion, Issuer: claims.Issuer,
 		SingleUse: claims.SingleUse, State: string(permit.StateIssued), Constraints: constraints, Route: route,
 		Obligations: models.ExecutionObligations{
@@ -992,6 +1072,11 @@ func privacySafeRequest(req models.Request) models.Request {
 	// authorization input and is deliberately omitted from the audit record.
 	req.RequestedAction = ""
 	req.Action.Arguments = nil
+	// Profile and audience assertions are caller input. The authoritative values
+	// are recorded from signed claims/receipts; rejected assertions are reduced
+	// to stable semantic rejection codes instead of persisted verbatim.
+	req.Action.ProfileID = ""
+	req.Action.Audience = ""
 	if bound, err := canonicalaction.BindDelegatedAuthorityFingerprint(req.Authority.CredentialFingerprint); err == nil {
 		req.Authority.CredentialFingerprint = bound
 	} else {

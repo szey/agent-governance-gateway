@@ -99,9 +99,9 @@ These Server fixtures are `simulated_demo` and prove only the local deterministi
 
 ## Gate 3: controlled real MCP boundary
 
-Proceed only if the company Agent/tool system supports an approved MCP client or Proxy configuration:
+Proceed only if the company Agent/tool system supports an approved MCP client or Proxy configuration. The current executable subset supports only `payment.send/v1`; use synthetic amounts and a local mock upstream, never a real payment provider or credential:
 
-1. Use one harmless upstream MCP test server with a call counter.
+1. Set `semantic_actions.payment_send_v1.upstream_url` to one harmless local MCP mock with a call counter, and start Aegis with an exactly matching `--mcp-upstream` value.
 2. Have approved authenticated middleware establish principal, Agent/workload, and delegated authority through Trusted Intake; do not use the `development_only` body intake as company identity assurance.
 3. Derive a canonical action for one `tools/call`, call the authorization API, and retain redacted `authorization_context_provenance` and `signing_key_id`.
 4. Put `permit_token` only in the controlled client-to-Proxy execution channel, never command history or screenshots.
@@ -116,7 +116,7 @@ If WorkBuddy or another Agent cannot configure an approved MCP boundary, this Ga
 
 ## Gate 4: evidence review and exit
 
-Audit must explain trust context, action, deterministic policy, obligations, Permit, verification, and execution in that order. It must answer request/decision/permit ID, `signing_key_id`, principal, Agent/workload, authorization-context provenance, tool, resource, operation, action digest, policy version, authorization decision, Permit state, verification outcome, upstream attempted, execution outcome, timestamp, evidence source, and upstream call count. Risk/detection may appear only under advisory signals. It contains no token or raw sensitive arguments.
+Audit must explain trust context, action, deterministic policy, obligations, Permit, verification, and execution in that order. It must answer request/decision/permit ID, `signing_key_id`, `permit_class`, profile ID, audience, principal, Agent/workload, authorization-context provenance, tool, resource, operation, action digest, policy version, authorization decision, Permit state, verification outcome, upstream attempted, execution outcome, timestamp, evidence source, and upstream call count. Risk/detection may appear only under advisory signals. It contains no token or raw sensitive arguments.
 
 At exit, stop Aegis, the Proxy, and test upstream; revoke every unconsumed Permit; remove temporary private keys and synthetic payloads; and let the company owner decide local audit retention/deletion. Only redacted conclusions and a synthetic minimal reproduction may return to the public repository.
 

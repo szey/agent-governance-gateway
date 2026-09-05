@@ -355,5 +355,22 @@
   "permits": {
     "ttl_seconds": 30,
     "issuer": "aegis-router"
+  },
+  "semantic_actions": {
+    "payment_send_v1": {
+      "profile_id": "payment.send/v1",
+      "mcp_tool": "payment.send",
+      "capability": "payment_transfer",
+      "resource": "account-123",
+      "operation": "transfer",
+      "audience": "mcp://local-payment-sandbox",
+      "upstream_url": "http://127.0.0.1:3001/mcp",
+      "allowed_currencies": ["CNY", "USD"],
+      "max_amount_minor_by_currency": {
+        "CNY": 50000,
+        "USD": 10000
+      },
+      "allowed_recipients": ["merchant-456", "merchant-demo"]
+    }
   }
 }

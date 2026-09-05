@@ -50,6 +50,8 @@ type Action struct {
 	Capability                    string
 	Resource                      string
 	Operation                     string
+	ProfileID                     string
+	Audience                      string
 	Arguments                     json.RawMessage
 }
 
@@ -79,6 +81,25 @@ func (a Action) Validate() error {
 	}
 	if a.DelegatedAuthorityFingerprint != "" && !fingerprintBinding.MatchString(a.DelegatedAuthorityFingerprint) {
 		return fmt.Errorf("%w: delegated_authority_fingerprint must be an Aegis-bound SHA-256 digest", ErrInvalidAction)
+	}
+	if (a.ProfileID == "") != (a.Audience == "") {
+		return fmt.Errorf("%w: profile_id and audience must be present together", ErrInvalidAction)
+	}
+	if err := validateOptionalMetadata("profile_id", a.ProfileID, 256); err != nil {
+		return err
+	}
+	if err := validateOptionalMetadata("audience", a.Audience, 1024); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateOptionalMetadata(name, value string, limit int) error {
+	if value == "" {
+		return nil
+	}
+	if !utf8.ValidString(value) || len(value) > limit || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return fmt.Errorf("%w: %s is invalid or too long", ErrInvalidAction, name)
 	}
 	return nil
 }
@@ -121,9 +142,11 @@ func (a Action) CanonicalJSON() ([]byte, error) {
 		"capability":                      a.Capability,
 		"delegated_authority_fingerprint": a.DelegatedAuthorityFingerprint,
 		"operation":                       a.Operation,
+		"profile_id":                      a.ProfileID,
 		"principal_id":                    a.PrincipalID,
 		"resource":                        a.Resource,
 		"tool":                            a.Tool,
+		"audience":                        a.Audience,
 		"workload_id":                     a.WorkloadID,
 	}
 

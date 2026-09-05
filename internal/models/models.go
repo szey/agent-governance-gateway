@@ -65,6 +65,8 @@ type ActionRequest struct {
 	Capability     string `json:"capability"`
 	Operation      string `json:"operation"`
 	TargetResource string `json:"target_resource"`
+	ProfileID      string `json:"profile_id,omitempty"`
+	Audience       string `json:"audience,omitempty"`
 	// Arguments contains the complete tool argument object used to derive the
 	// canonical action digest. It is evaluated in memory and removed before the
 	// request is written to the normal audit log.
@@ -113,6 +115,25 @@ type PermitPolicy struct {
 	Issuer     string `json:"issuer,omitempty"`
 }
 
+// PaymentSendV1Config is the only server-owned business-semantic profile in
+// the focused MVP. Amount limits are integer minor currency units.
+type PaymentSendV1Config struct {
+	ProfileID                string           `json:"profile_id"`
+	MCPTool                  string           `json:"mcp_tool"`
+	Capability               string           `json:"capability"`
+	Resource                 string           `json:"resource"`
+	Operation                string           `json:"operation"`
+	Audience                 string           `json:"audience"`
+	UpstreamURL              string           `json:"upstream_url"`
+	AllowedCurrencies        []string         `json:"allowed_currencies"`
+	MaxAmountMinorByCurrency map[string]int64 `json:"max_amount_minor_by_currency"`
+	AllowedRecipients        []string         `json:"allowed_recipients"`
+}
+
+type SemanticActionsConfig struct {
+	PaymentSendV1 PaymentSendV1Config `json:"payment_send_v1"`
+}
+
 type PolicyConfig struct {
 	Version           string                    `json:"version"`
 	Agents            map[string]AgentPolicy    `json:"agents"`
@@ -124,6 +145,7 @@ type PolicyConfig struct {
 	SessionControls   SessionControls           `json:"session_controls"`
 	Compatibility     CompatibilityPolicy       `json:"compatibility,omitempty"`
 	Permits           PermitPolicy              `json:"permits,omitempty"`
+	SemanticActions   SemanticActionsConfig     `json:"semantic_actions,omitempty"`
 }
 
 type SessionControls struct {
@@ -311,6 +333,8 @@ type AuthorizationEnvelope struct {
 	PermitID                       string                   `json:"permit_id"`
 	SigningKeyID                   string                   `json:"signing_key_id"`
 	PermitClass                    string                   `json:"permit_class"`
+	ProfileID                      string                   `json:"profile_id,omitempty"`
+	Audience                       string                   `json:"audience,omitempty"`
 	RequestID                      string                   `json:"request_id"`
 	SessionID                      string                   `json:"session_id,omitempty"`
 	PrincipalID                    string                   `json:"principal_id"`
@@ -340,6 +364,8 @@ type PermitCredential struct {
 	PermitID     string    `json:"permit_id"`
 	SigningKeyID string    `json:"signing_key_id"`
 	PermitClass  string    `json:"permit_class"`
+	ProfileID    string    `json:"profile_id,omitempty"`
+	Audience     string    `json:"audience,omitempty"`
 	PermitToken  string    `json:"permit_token"`
 	IssuedAt     time.Time `json:"issued_at"`
 	ExpiresAt    time.Time `json:"expires_at"`
@@ -355,6 +381,8 @@ type PermitVerification struct {
 	PermitID       string               `json:"permit_id,omitempty"`
 	RequestID      string               `json:"request_id,omitempty"`
 	PermitClass    string               `json:"permit_class,omitempty"`
+	ProfileID      string               `json:"profile_id,omitempty"`
+	Audience       string               `json:"audience,omitempty"`
 	Outcome        string               `json:"verification_result"`
 	Verified       bool                 `json:"verified"`
 	State          string               `json:"permit_state,omitempty"`
@@ -368,6 +396,8 @@ type ExecutionReceipt struct {
 	DecisionID            string              `json:"decision_id"`
 	PermitID              string              `json:"permit_id,omitempty"`
 	PermitClass           string              `json:"permit_class,omitempty"`
+	ProfileID             string              `json:"profile_id,omitempty"`
+	Audience              string              `json:"audience,omitempty"`
 	PrincipalID           string              `json:"principal_id"`
 	AgentID               string              `json:"agent_id"`
 	WorkloadID            string              `json:"workload_id"`

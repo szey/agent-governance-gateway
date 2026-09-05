@@ -16,6 +16,7 @@ import (
 
 	"agent-governance-gateway/internal/canonicalaction"
 	"agent-governance-gateway/internal/models"
+	"agent-governance-gateway/internal/semanticaction"
 )
 
 const (
@@ -26,6 +27,8 @@ const (
 	HeaderCapability            = "X-Aegis-Capability"
 	HeaderResource              = "X-Aegis-Resource"
 	HeaderOperation             = "X-Aegis-Operation"
+	HeaderProfileID             = "X-Aegis-Profile-Id"
+	HeaderAudience              = "X-Aegis-Audience"
 	HeaderProtocolVersion       = "MCP-Protocol-Version"
 	HeaderMethod                = "Mcp-Method"
 	HeaderName                  = "Mcp-Name"
@@ -46,13 +49,17 @@ type Proxy struct {
 	gate     Gate
 	upstream *url.URL
 	client   *http.Client
+	profile  *semanticaction.PaymentSendV1
 }
 
-func New(gate Gate, upstream string, client *http.Client) (*Proxy, error) {
+func New(gate Gate, profile *semanticaction.PaymentSendV1, client *http.Client) (*Proxy, error) {
 	if gate == nil {
 		return nil, fmt.Errorf("MCP proxy requires an execution-permit gate")
 	}
-	target, err := url.Parse(strings.TrimSpace(upstream))
+	if profile == nil {
+		return nil, fmt.Errorf("MCP proxy requires the server-owned payment.send/v1 profile")
+	}
+	target, err := url.Parse(profile.UpstreamURL())
 	if err != nil || target.Scheme == "" || target.Host == "" {
 		return nil, fmt.Errorf("MCP upstream must be an absolute HTTP(S) URL")
 	}
@@ -62,7 +69,7 @@ func New(gate Gate, upstream string, client *http.Client) (*Proxy, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Proxy{gate: gate, upstream: target, client: client}, nil
+	return &Proxy{gate: gate, upstream: target, client: client, profile: profile}, nil
 }
 
 type rpcRequest struct {
@@ -161,11 +168,24 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if bound, bindErr := canonicalaction.BindDelegatedAuthorityFingerprint(delegationBinding); bindErr == nil {
 		delegationBinding = bound
 	}
-	action := canonicalaction.Action{
+	resolved, resolveErr := p.profile.Resolve(semanticaction.Input{
 		PrincipalID: req.Header.Get(HeaderPrincipalID), AgentID: req.Header.Get(HeaderAgentID),
 		WorkloadID: req.Header.Get(HeaderWorkloadID), DelegatedAuthorityFingerprint: delegationBinding,
 		Tool: params.Name, Capability: req.Header.Get(HeaderCapability), Resource: req.Header.Get(HeaderResource),
-		Operation: req.Header.Get(HeaderOperation), Arguments: arguments,
+		Operation: req.Header.Get(HeaderOperation), ProfileID: req.Header.Get(HeaderProfileID),
+		Audience: req.Header.Get(HeaderAudience), Arguments: arguments,
+	})
+	if resolveErr != nil {
+		writeRPCError(w, http.StatusForbidden, rpc.ID, -32005, "MCP action rejected by the server-owned semantic profile", map[string]string{
+			"semantic_result": string(semanticaction.Code(resolveErr)),
+		})
+		return
+	}
+	action := resolved.Action
+	normalizedBody, err := normalizedToolCallBody(rpc, params, resolved.NormalizedArguments)
+	if err != nil {
+		writeRPCError(w, http.StatusInternalServerError, rpc.ID, -32603, "Aegis could not construct the normalized upstream request", nil)
+		return
 	}
 	// Consumption is the commit point and happens before the upstream side
 	// effect. Upstream failure or timeout never restores this permit; a retry
@@ -197,7 +217,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		})
 		return
 	}
-	p.forward(w, req, body, routing, verification, &action)
+	p.forward(w, req, normalizedBody, routing, verification, &action)
+}
+
+func normalizedToolCallBody(rpc rpcRequest, params toolCallParams, normalizedArguments json.RawMessage) ([]byte, error) {
+	params.Arguments = normalizedArguments
+	normalizedParams, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	rpc.Params = normalizedParams
+	return json.Marshal(rpc)
 }
 
 func (p *Proxy) forward(w http.ResponseWriter, inbound *http.Request, body []byte, routing routingMetadata, verification models.PermitVerification, action *canonicalaction.Action) {

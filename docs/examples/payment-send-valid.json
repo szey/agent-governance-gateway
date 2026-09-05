@@ -1,0 +1,29 @@
+{
+  "principal": {
+    "principal_id": "user-01",
+    "principal_type": "human"
+  },
+  "agent": {
+    "agent_id": "finance-agent",
+    "workload_id": "finance-workload-v1"
+  },
+  "delegated_authority": {
+    "credential_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "scopes": ["payment.transfer"],
+    "subject": "user-01"
+  },
+  "tool": {
+    "name": "payment.send"
+  },
+  "action": {
+    "capability": "payment_transfer",
+    "operation": "transfer",
+    "target_resource": "account-123",
+    "arguments": {
+      "amount_minor": 100,
+      "currency": "USD",
+      "recipient": "merchant-456"
+    },
+    "side_effect": "financial_transaction"
+  }
+}

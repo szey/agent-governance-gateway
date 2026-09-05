@@ -16,6 +16,7 @@ import (
 	"agent-governance-gateway/internal/intake"
 	"agent-governance-gateway/internal/router"
 	"agent-governance-gateway/internal/scenario"
+	"agent-governance-gateway/internal/semanticaction"
 	"agent-governance-gateway/web"
 )
 
@@ -28,7 +29,7 @@ func main() {
 	discoveryConfig := flag.String("discovery-config", "configs/discovery.json", "discovery signature and registry path")
 	approvalRegistry := flag.String("approval-registry", "data/approved-agents.json", "local approved-Agent registry managed by the control desk")
 	enableExperimentalInventory := flag.Bool("enable-experimental-inventory", false, "enable frozen experimental inventory APIs and UI")
-	mcpUpstream := flag.String("mcp-upstream", "", "optional upstream MCP Streamable HTTP URL; enables permit-gated POST /mcp")
+	mcpUpstream := flag.String("mcp-upstream", "", "enable permit-gated POST /mcp only when this exactly matches the server-owned payment.send/v1 upstream_url")
 	allowDevelopmentIntake := flag.Bool("allow-development-intake", false, "accept caller-supplied authorization identity from loopback requests only (development only)")
 	var discoveryRoots stringList
 	flag.Var(&discoveryRoots, "discovery-root", "optional approved inventory root; repeat for multiple roots")
@@ -71,7 +72,16 @@ func main() {
 	}
 	var mcpHandler http.Handler
 	if strings.TrimSpace(*mcpUpstream) != "" {
-		proxy, proxyErr := mcp.New(r, *mcpUpstream, nil)
+		profile, profileErr := semanticaction.NewPaymentSendV1(cfg.SemanticActions.PaymentSendV1)
+		if profileErr != nil {
+			logger.Error("configure payment.send/v1 semantic profile", "error", profileErr)
+			os.Exit(1)
+		}
+		if strings.TrimSpace(*mcpUpstream) != profile.UpstreamURL() {
+			logger.Error("configure MCP enforcement adapter", "error", "--mcp-upstream must exactly match semantic_actions.payment_send_v1.upstream_url")
+			os.Exit(1)
+		}
+		proxy, proxyErr := mcp.New(r, profile, nil)
 		if proxyErr != nil {
 			logger.Error("configure MCP enforcement adapter", "error", proxyErr)
 			os.Exit(1)

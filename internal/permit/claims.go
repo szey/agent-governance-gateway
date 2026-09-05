@@ -65,6 +65,8 @@ type Claims struct {
 	Capability                    string      `json:"capability"`
 	Resource                      string      `json:"resource"`
 	Operation                     string      `json:"operation"`
+	ProfileID                     string      `json:"profile_id,omitempty"`
+	Audience                      string      `json:"audience,omitempty"`
 	ActionDigest                  string      `json:"action_digest"`
 	PolicyVersion                 string      `json:"policy_version"`
 	Obligations                   Obligations `json:"obligations,omitempty"`
@@ -99,6 +101,15 @@ func (c Claims) Validate() error {
 		{"operation", c.Operation, 512},
 		{"policy_version", c.PolicyVersion, 512},
 		{"iss", c.Issuer, 512},
+	}
+	if (c.ProfileID == "") != (c.Audience == "") {
+		return fmt.Errorf("%w: profile_id and audience must be present together", ErrInvalidClaims)
+	}
+	if err := validateMetadata("profile_id", c.ProfileID, 256, false); err != nil {
+		return err
+	}
+	if err := validateMetadata("audience", c.Audience, 1024, false); err != nil {
+		return err
 	}
 	for _, field := range fields {
 		if err := validateMetadata(field.name, field.value, field.limit, true); err != nil {

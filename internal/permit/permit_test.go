@@ -224,6 +224,7 @@ func issueRequest(permitID string, ttl time.Duration) permit.IssueRequest {
 		AgentID: "finance-agent", WorkloadID: "finance-agent-v3",
 		DelegatedAuthorityFingerprint: "sha256:" + strings.Repeat("a", 64),
 		Tool:                          "payment.send", Capability: "payment.transfer", Resource: "account-123", Operation: "transfer",
+		ProfileID: "payment.send/v1", Audience: "mcp://test-payment-upstream",
 		ActionDigest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		PolicyVersion: "policy-v7", TTL: ttl,
 		Obligations: permit.Obligations{IsolationRequired: true, EnhancedAuditRequired: true},
@@ -238,6 +239,7 @@ func claimsForStore(permitID string) permit.Claims {
 		PrincipalID: request.PrincipalID, AgentID: request.AgentID, WorkloadID: request.WorkloadID,
 		DelegatedAuthorityFingerprint: request.DelegatedAuthorityFingerprint,
 		Tool:                          request.Tool, Capability: request.Capability, Resource: request.Resource, Operation: request.Operation,
+		ProfileID: request.ProfileID, Audience: request.Audience,
 		ActionDigest: request.ActionDigest, PolicyVersion: request.PolicyVersion, Obligations: request.Obligations,
 		Issuer: "aegis-router", IssuedAt: issuedAt.Unix(), ExpiresAt: issuedAt.Add(time.Hour).Unix(), SingleUse: true,
 	}

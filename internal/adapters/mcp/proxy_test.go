@@ -21,6 +21,7 @@ import (
 	"agent-governance-gateway/internal/intake"
 	"agent-governance-gateway/internal/models"
 	"agent-governance-gateway/internal/router"
+	"agent-governance-gateway/internal/semanticaction"
 )
 
 func TestValidPermitInvokesMCPUpstreamExactlyOnceAndAuditsReceipt(t *testing.T) {
@@ -30,8 +31,18 @@ func TestValidPermitInvokesMCPUpstreamExactlyOnceAndAuditsReceipt(t *testing.T) 
 		if req.Header.Get("Authorization") != "" || req.Header.Get(mcp.HeaderAgentID) != "" || req.Header.Get("Cookie") != "" || req.Header.Get("X-Upstream-Action") != "" || req.Header.Get("Content-Encoding") != "" {
 			t.Error("credential, binding, or unbound transport headers leaked to upstream")
 		}
-		if req.Header.Get(mcp.HeaderProtocolVersion) != mcp.ProtocolVersion20260728 || req.Header.Get(mcp.HeaderMethod) != "tools/call" || req.Header.Get(mcp.HeaderName) != "coder" {
+		if req.Header.Get(mcp.HeaderProtocolVersion) != mcp.ProtocolVersion20260728 || req.Header.Get(mcp.HeaderMethod) != "tools/call" || req.Header.Get(mcp.HeaderName) != "payment.send" {
 			t.Errorf("normalized MCP routing headers were not forwarded: %#v", req.Header)
+		}
+		var forwarded struct {
+			Params struct {
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&forwarded); err != nil {
+			t.Errorf("decode normalized upstream body: %v", err)
+		} else if string(forwarded.Params.Arguments) != `{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}` {
+			t.Errorf("upstream arguments were not the authorized normalized value: %s", forwarded.Params.Arguments)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`)
@@ -39,17 +50,15 @@ func TestValidPermitInvokesMCPUpstreamExactlyOnceAndAuditsReceipt(t *testing.T) 
 	defer upstream.Close()
 
 	r, store, auditPath := testRouter(t)
-	action := coderRequest(`{"task":"read-only-preview","language":"go"}`)
+	action := paymentRequest(`{"currency":"USD","recipient":"merchant-456","amount_minor":100}`)
 	authorized, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy, err := mcp.New(r, upstream.URL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	proxy := newProxy(t, r, upstream.URL, nil)
 
-	response := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	reordered := json.RawMessage(`{"recipient":"merchant-456","amount_minor":100,"currency":"USD"}`)
+	response := invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, reordered)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -73,37 +82,44 @@ func TestValidPermitInvokesMCPUpstreamExactlyOnceAndAuditsReceipt(t *testing.T) 
 	if bytes.Contains(persisted, []byte(authorized.Permit.PermitToken)) {
 		t.Fatal("permit token leaked into audit")
 	}
-	if bytes.Contains(persisted, []byte("read-only-preview")) {
+	if bytes.Contains(persisted, []byte("merchant-456")) {
 		t.Fatal("raw action arguments leaked into audit")
 	}
 }
 
 func TestActionMutationNeverInvokesMCPUpstream(t *testing.T) {
-	var calls atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls.Add(1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	r, store, _ := testRouter(t)
-	action := paymentRequest(`{"amount":100,"currency":"USD","recipient":"merchant-456"}`)
-	authorized, err := authorizeAction(t, r, action)
-	if err != nil {
-		t.Fatal(err)
+	mutations := []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{"amount", json.RawMessage(`{"amount_minor":10000,"currency":"USD","recipient":"merchant-456"}`)},
+		{"currency", json.RawMessage(`{"amount_minor":100,"currency":"CNY","recipient":"merchant-456"}`)},
+		{"recipient", json.RawMessage(`{"amount_minor":100,"currency":"USD","recipient":"merchant-demo"}`)},
 	}
-	proxy, _ := mcp.New(r, upstream.URL, nil)
-	mutated := json.RawMessage(`{"recipient":"merchant-456","currency":"USD","amount":10000}`)
-	response := invoke(t, proxy, authorized.Permit.PermitToken, action, "payment.send", mutated)
-	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "ACTION_MISMATCH") {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-	if calls.Load() != 0 {
-		t.Fatalf("failed verification invoked upstream %d times", calls.Load())
-	}
-	record, _ := store.Get(authorized.Decision.RequestID)
-	if record.FinalVerdict != "PERMIT_ACTION_MISMATCH" || record.ExecutionReceipt == nil || record.ExecutionReceipt.UpstreamAttempted {
-		t.Fatalf("failed verification audit = %#v", record)
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+			r, store, _ := testRouter(t)
+			action := paymentRequest(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`)
+			authorized, err := authorizeAction(t, r, action)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proxy := newProxy(t, r, upstream.URL, nil)
+			response := invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, mutation.raw)
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "ACTION_MISMATCH") || calls.Load() != 0 {
+				t.Fatalf("status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
+			}
+			record, _ := store.Get(authorized.Decision.RequestID)
+			if record.FinalVerdict != "PERMIT_ACTION_MISMATCH" || record.ExecutionReceipt == nil || record.ExecutionReceipt.UpstreamAttempted {
+				t.Fatalf("failed verification audit = %#v", record)
+			}
+		})
 	}
 }
 
@@ -115,7 +131,7 @@ func TestInvalidSignatureNeverInvokesMCPUpstream(t *testing.T) {
 	}))
 	defer upstream.Close()
 	r, store, auditPath := testRouter(t)
-	action := coderRequest(`{"task":"preview"}`)
+	action := validPaymentRequest()
 	authorized, _ := authorizeAction(t, r, action)
 	token := authorized.Permit.PermitToken
 	last := "A"
@@ -123,8 +139,8 @@ func TestInvalidSignatureNeverInvokesMCPUpstream(t *testing.T) {
 		last = "B"
 	}
 	token = token[:len(token)-1] + last
-	proxy, _ := mcp.New(r, upstream.URL, nil)
-	response := invoke(t, proxy, token, action, "coder", action.Action.Arguments)
+	proxy := newProxy(t, r, upstream.URL, nil)
+	response := invoke(t, proxy, token, action, action.Tool.Name, action.Action.Arguments)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "INVALID_SIGNATURE") {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -152,13 +168,13 @@ func TestSimulationPermitNeverInvokesMCPUpstream(t *testing.T) {
 	}))
 	defer upstream.Close()
 	r, store, _ := testRouter(t)
-	action := coderRequest(`{"task":"simulation-only"}`)
+	action := validPaymentRequest()
 	authorized, err := r.AuthorizeSyntheticDemoAction(action, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy, _ := mcp.New(r, upstream.URL, nil)
-	response := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	proxy := newProxy(t, r, upstream.URL, nil)
+	response := invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "WRONG_PERMIT_CLASS") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -187,10 +203,12 @@ func TestAllBoundPermitFailuresNeverInvokeMCPUpstream(t *testing.T) {
 		{"wrong delegation", "WRONG_DELEGATION", func(action *models.Request, _ *string) {
 			action.Authority.CredentialFingerprint = strings.Repeat("c", 64)
 		}},
-		{"wrong tool", "WRONG_TOOL", func(_ *models.Request, tool *string) { *tool = "admin-tool" }},
-		{"wrong capability", "WRONG_CAPABILITY", func(action *models.Request, _ *string) { action.Action.Capability = "admin" }},
-		{"wrong resource", "WRONG_RESOURCE", func(action *models.Request, _ *string) { action.Action.TargetResource = "account-999" }},
-		{"wrong operation", "WRONG_OPERATION", func(action *models.Request, _ *string) { action.Action.Operation = "delete" }},
+		{"wrong tool", "PAYMENT_TOOL_UNMAPPED", func(_ *models.Request, tool *string) { *tool = "admin-tool" }},
+		{"wrong capability", "PAYMENT_BINDING_CONFLICT", func(action *models.Request, _ *string) { action.Action.Capability = "admin" }},
+		{"wrong resource", "PAYMENT_BINDING_CONFLICT", func(action *models.Request, _ *string) { action.Action.TargetResource = "account-999" }},
+		{"wrong operation", "PAYMENT_BINDING_CONFLICT", func(action *models.Request, _ *string) { action.Action.Operation = "delete" }},
+		{"wrong profile", "PAYMENT_PROFILE_MISMATCH", func(action *models.Request, _ *string) { action.Action.ProfileID = "payment.send/v2" }},
+		{"wrong audience", "PAYMENT_AUDIENCE_MISMATCH", func(action *models.Request, _ *string) { action.Action.Audience = "mcp://attacker" }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -201,7 +219,7 @@ func TestAllBoundPermitFailuresNeverInvokeMCPUpstream(t *testing.T) {
 			}))
 			defer upstream.Close()
 			r, _, _ := testRouter(t)
-			authorizedAction := paymentRequest(`{"amount":100,"currency":"USD","recipient":"merchant-456"}`)
+			authorizedAction := paymentRequest(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`)
 			authorized, err := authorizeAction(t, r, authorizedAction)
 			if err != nil {
 				t.Fatal(err)
@@ -209,7 +227,7 @@ func TestAllBoundPermitFailuresNeverInvokeMCPUpstream(t *testing.T) {
 			actual := authorizedAction
 			tool := actual.Tool.Name
 			test.mutate(&actual, &tool)
-			proxy, _ := mcp.New(r, upstream.URL, nil)
+			proxy := newProxy(t, r, upstream.URL, nil)
 			response := invoke(t, proxy, authorized.Permit.PermitToken, actual, tool, actual.Action.Arguments)
 			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), test.outcome) {
 				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
@@ -230,13 +248,13 @@ func TestReplayExpiredAndRevokedPermitsNeverAddAnUpstreamCall(t *testing.T) {
 		}))
 		defer upstream.Close()
 		r, store, _ := testRouter(t)
-		action := coderRequest(`{"task":"preview"}`)
+		action := validPaymentRequest()
 		authorized, _ := authorizeAction(t, r, action)
-		proxy, _ := mcp.New(r, upstream.URL, nil)
-		if first := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments); first.Code != http.StatusOK {
+		proxy := newProxy(t, r, upstream.URL, nil)
+		if first := invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments); first.Code != http.StatusOK {
 			t.Fatalf("first status = %d, body = %s", first.Code, first.Body.String())
 		}
-		second := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
+		second := invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
 		if second.Code != http.StatusForbidden || !strings.Contains(second.Body.String(), "REPLAYED") {
 			t.Fatalf("second status = %d, body = %s", second.Code, second.Body.String())
 		}
@@ -263,11 +281,11 @@ func TestReplayExpiredAndRevokedPermitsNeverAddAnUpstreamCall(t *testing.T) {
 		current := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
 		store, _ := audit.NewStore("")
 		r := router.NewWithClock(cfg, store, func() time.Time { return current })
-		action := coderRequest(`{"task":"preview"}`)
+		action := validPaymentRequest()
 		authorized, _ := authorizeAction(t, r, action)
 		current = authorized.Permit.ExpiresAt
-		proxy, _ := mcp.New(r, upstream.URL, nil)
-		response := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
+		proxy := newProxy(t, r, upstream.URL, nil)
+		response := invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
 		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "EXPIRED") || calls.Load() != 0 {
 			t.Fatalf("status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
 		}
@@ -281,13 +299,13 @@ func TestReplayExpiredAndRevokedPermitsNeverAddAnUpstreamCall(t *testing.T) {
 		}))
 		defer upstream.Close()
 		r, _, _ := testRouter(t)
-		action := coderRequest(`{"task":"preview"}`)
+		action := validPaymentRequest()
 		authorized, _ := authorizeAction(t, r, action)
 		if _, err := r.RevokePermit(authorized.Permit.PermitID); err != nil {
 			t.Fatal(err)
 		}
-		proxy, _ := mcp.New(r, upstream.URL, nil)
-		response := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
+		proxy := newProxy(t, r, upstream.URL, nil)
+		response := invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
 		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "REVOKED") || calls.Load() != 0 {
 			t.Fatalf("status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
 		}
@@ -306,13 +324,13 @@ func TestFailedUpstreamDoesNotRestorePermitAndRetryRequiresNewAuthorization(t *t
 	defer upstream.Close()
 
 	r, store, _ := testRouter(t)
-	action := coderRequest(`{"task":"retry-explicitly"}`)
+	action := validPaymentRequest()
 	firstAuthorization, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy, _ := mcp.New(r, upstream.URL, nil)
-	failed := invoke(t, proxy, firstAuthorization.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	proxy := newProxy(t, r, upstream.URL, nil)
+	failed := invoke(t, proxy, firstAuthorization.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
 	if failed.Code != http.StatusServiceUnavailable || calls.Load() != 1 {
 		t.Fatalf("failed attempt status=%d calls=%d body=%s", failed.Code, calls.Load(), failed.Body.String())
 	}
@@ -325,7 +343,7 @@ func TestFailedUpstreamDoesNotRestorePermitAndRetryRequiresNewAuthorization(t *t
 		t.Fatalf("failed execution receipt = %#v", auditRecord)
 	}
 
-	replayed := invoke(t, proxy, firstAuthorization.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	replayed := invoke(t, proxy, firstAuthorization.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
 	if replayed.Code != http.StatusForbidden || !strings.Contains(replayed.Body.String(), "REPLAYED") || calls.Load() != 1 {
 		t.Fatalf("reused failed-attempt permit status=%d calls=%d body=%s", replayed.Code, calls.Load(), replayed.Body.String())
 	}
@@ -337,7 +355,7 @@ func TestFailedUpstreamDoesNotRestorePermitAndRetryRequiresNewAuthorization(t *t
 	if secondAuthorization.Permit.PermitID == firstAuthorization.Permit.PermitID {
 		t.Fatal("retry authorization reused the prior permit id")
 	}
-	succeeded := invoke(t, proxy, secondAuthorization.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	succeeded := invoke(t, proxy, secondAuthorization.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
 	if succeeded.Code != http.StatusOK || calls.Load() != 2 {
 		t.Fatalf("newly authorized retry status=%d calls=%d body=%s", succeeded.Code, calls.Load(), succeeded.Body.String())
 	}
@@ -355,16 +373,13 @@ func TestTimedOutUpstreamDoesNotRestoreConsumedPermit(t *testing.T) {
 	defer upstream.Close()
 
 	r, store, _ := testRouter(t)
-	action := coderRequest(`{"task":"timeout"}`)
+	action := validPaymentRequest()
 	authorized, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy, err := mcp.New(r, upstream.URL, &http.Client{Timeout: 20 * time.Millisecond})
-	if err != nil {
-		t.Fatal(err)
-	}
-	failed := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	proxy := newProxy(t, r, upstream.URL, &http.Client{Timeout: 20 * time.Millisecond})
+	failed := invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
 	if failed.Code != http.StatusBadGateway || calls.Load() != 1 {
 		t.Fatalf("timeout status=%d calls=%d body=%s", failed.Code, calls.Load(), failed.Body.String())
 	}
@@ -376,7 +391,7 @@ func TestTimedOutUpstreamDoesNotRestoreConsumedPermit(t *testing.T) {
 	if auditRecord.ExecutionReceipt == nil || !auditRecord.ExecutionReceipt.UpstreamAttempted || auditRecord.ExecutionReceipt.ExecutionOutcome != "failed" {
 		t.Fatalf("timeout execution receipt = %#v", auditRecord.ExecutionReceipt)
 	}
-	replayed := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	replayed := invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
 	if replayed.Code != http.StatusForbidden || !strings.Contains(replayed.Body.String(), "REPLAYED") || calls.Load() != 1 {
 		t.Fatalf("timeout replay status=%d calls=%d body=%s", replayed.Code, calls.Load(), replayed.Body.String())
 	}
@@ -390,12 +405,12 @@ func TestConcurrentMCPReplayInvokesUpstreamExactlyOnce(t *testing.T) {
 	}))
 	defer upstream.Close()
 	r, store, _ := testRouter(t)
-	action := coderRequest(`{"task":"concurrent-preview"}`)
+	action := validPaymentRequest()
 	authorized, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy, _ := mcp.New(r, upstream.URL, nil)
+	proxy := newProxy(t, r, upstream.URL, nil)
 
 	start := make(chan struct{})
 	responses := make(chan *httptest.ResponseRecorder, 2)
@@ -405,7 +420,7 @@ func TestConcurrentMCPReplayInvokesUpstreamExactlyOnce(t *testing.T) {
 		go func() {
 			ready.Done()
 			<-start
-			responses <- invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
+			responses <- invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
 		}()
 	}
 	ready.Wait()
@@ -432,30 +447,28 @@ func TestConcurrentMCPReplayInvokesUpstreamExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestUnsupportedIsolationObligationFailsClosedBeforeMCPUpstream(t *testing.T) {
+func TestUnmappedMCPToolFailsClosedBeforePermitConsumption(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
-	r, store, _ := testRouter(t)
-	action := configReadRequest()
-	authorized, err := authorizeAction(t, r, action)
+	r, _, _ := testRouter(t)
+	authorizedAction := paymentRequest(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`)
+	authorized, err := authorizeAction(t, r, authorizedAction)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if authorized.Decision.AuthorizationEnvelope == nil || !authorized.Decision.AuthorizationEnvelope.Obligations.IsolationRequired {
-		t.Fatalf("expected signed isolation obligation: %#v", authorized.Decision.AuthorizationEnvelope)
-	}
-	proxy, _ := mcp.New(r, upstream.URL, nil)
+	action := configReadRequest()
+	proxy := newProxy(t, r, upstream.URL, nil)
 	response := invoke(t, proxy, authorized.Permit.PermitToken, action, action.Tool.Name, action.Action.Arguments)
-	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "UNSATISFIED_OBLIGATION") || calls.Load() != 0 {
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "PAYMENT_TOOL_UNMAPPED") || calls.Load() != 0 {
 		t.Fatalf("status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
 	}
-	record, _ := store.Get(authorized.Decision.RequestID)
-	if record.FinalVerdict != "EXECUTION_OBLIGATION_UNSATISFIED" || record.ExecutionReceipt.ExecutionOutcome != "UNSATISFIED_OBLIGATION" || record.ExecutionReceipt.UpstreamAttempted {
-		t.Fatalf("audit receipt = %#v", record)
+	permitRecord, _ := r.GetPermit(authorized.Permit.PermitID)
+	if permitRecord.State != "ISSUED" {
+		t.Fatalf("unmapped tool consumed the permit: %#v", permitRecord)
 	}
 }
 
@@ -467,15 +480,12 @@ func TestModernMCPHeaderOrBodyAmbiguityNeverInvokesUpstream(t *testing.T) {
 	}))
 	defer upstream.Close()
 	r, _, _ := testRouter(t)
-	action := coderRequest(`{"task":"preview"}`)
+	action := validPaymentRequest()
 	authorized, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy, err := mcp.New(r, upstream.URL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	proxy := newProxy(t, r, upstream.URL, nil)
 
 	validBody := modernToolCallBody(t, "coder", action.Action.Arguments)
 	tests := []struct {
@@ -525,7 +535,7 @@ func TestModernServerDiscoverPassesThroughWithoutPermit(t *testing.T) {
 	}))
 	defer upstream.Close()
 	r, _, _ := testRouter(t)
-	proxy, _ := mcp.New(r, upstream.URL, nil)
+	proxy := newProxy(t, r, upstream.URL, nil)
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`)
 	request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
 	setModernHeaders(request.Header, "server/discover", "")
@@ -553,6 +563,12 @@ func invoke(t *testing.T, handler http.Handler, token string, action models.Requ
 	req.Header.Set(mcp.HeaderCapability, action.Action.Capability)
 	req.Header.Set(mcp.HeaderResource, action.Action.TargetResource)
 	req.Header.Set(mcp.HeaderOperation, action.Action.Operation)
+	if action.Action.ProfileID != "" {
+		req.Header.Set(mcp.HeaderProfileID, action.Action.ProfileID)
+	}
+	if action.Action.Audience != "" {
+		req.Header.Set(mcp.HeaderAudience, action.Action.Audience)
+	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, req)
 	return response
@@ -607,19 +623,27 @@ func testRouter(t *testing.T) (*router.Router, *audit.Store, string) {
 	return router.New(cfg, store), store, path
 }
 
-func coderRequest(arguments string) models.Request {
-	return models.Request{
-		Principal: models.PrincipalContext{PrincipalID: "user-01", PrincipalType: "human"},
-		Agent:     models.AgentIdentity{AgentID: "coder-agent", WorkloadID: "coder-workload-v1"},
-		Authority: models.DelegatedAuthority{
-			CredentialFingerprint: strings.Repeat("a", 64), Scopes: []string{"code.read"}, Subject: "user-01",
-		},
-		Tool: models.ToolContext{Name: "coder"},
-		Action: models.ActionRequest{
-			Capability: "generate_code", Operation: "generate", TargetResource: "public_workspace",
-			Arguments: json.RawMessage(arguments), SideEffect: "none",
-		},
+func newProxy(t *testing.T, r *router.Router, upstreamURL string, client *http.Client) *mcp.Proxy {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "..", "..", "configs", "policy.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	profileConfig := cfg.SemanticActions.PaymentSendV1
+	profileConfig.UpstreamURL = upstreamURL
+	profile, err := semanticaction.NewPaymentSendV1(profileConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := mcp.New(r, profile, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return proxy
+}
+
+func validPaymentRequest() models.Request {
+	return paymentRequest(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`)
 }
 
 func paymentRequest(arguments string) models.Request {

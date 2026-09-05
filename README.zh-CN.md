@@ -26,6 +26,12 @@ Agent 提议动作
 
 安全边界位于**真实工具副作用之前**。`POST /api/runtime-events` 仍可记录执行中或执行后的证据，但事后事件不是主要阻断机制。
 
+## 能力状态
+
+- **已实现：**可信授权入口、签名绑定的 `execution`/`simulation` 用途隔离、短时单次 Permit、replay protection、CanonicalAction 绑定、唯一的 `payment.send/v1` 语义配置，以及对应的聚焦 MCP HTTP `POST` 执行路径。
+- **演示或实验能力：**Server-owned simulation 场景与 telemetry；冻结的 Inventory 只有显式开启才显示。
+- **未实现：**审批完成流程、sandbox/EDR/IAM、业务副作用 exactly-once、更多语义配置或执行 Adapter，以及完整 MCP 协议兼容。`REQUIRES_APPROVAL` 目前只是模型/配置结果，没有受支持的审批流程可以把它转换成可执行 Permit。
+
 ## 核心对象
 
 ### CanonicalAction
@@ -51,6 +57,7 @@ request_id           principal_id
 agent_id / workload_id
 delegation_digest    tool / capability
 resource / operation action_digest
+profile_id / audience
 policy_version       issued_at / expires_at
 single_use=true
 ```
@@ -65,7 +72,7 @@ TTL 必须是整秒，默认 30 秒，当前最大 15 分钟。
 
 ### Verification 与 replay defense
 
-执行边界验证签名、签发方、有效期、`permit_class`、主体/Agent/workload、工具、资源、操作和动作摘要，并原子消费许可。正常 `VerifyAndConsume` 与 MCP 只接受 `execution`；Server-owned Demo verifier 只接受 `simulation`，而且没有转发上游的能力。缺失、未知或不匹配的用途都会在消费前 fail closed。只有返回 `VERIFIED` 的 `execution` Permit 可以继续调用上游工具。失败结果包括无效签名、无效或错误用途、过期、撤销、错绑、动作不匹配和重放；同一许可的两个并发消费尝试最多只能有一个成功。
+执行边界验证签名、签发方、有效期、`permit_class`、主体/Agent/workload、工具、资源、操作、profile 版本、audience 和动作摘要，并原子消费许可。正常 `VerifyAndConsume` 与 MCP 只接受 `execution`；Server-owned Demo verifier 只接受 `simulation`，而且没有转发上游的能力。缺失、未知或不匹配的用途都会在消费前 fail closed。只有返回 `VERIFIED` 的 `execution` Permit 可以继续调用上游工具。失败结果包括无效签名、无效或错误用途、过期、撤销、错绑、动作不匹配和重放；同一许可的两个并发消费尝试最多只能有一个成功。
 
 `permit_class` 由服务端入口决定并受签名保护，请求调用方不能指定或覆盖。引入该 claim 之前签发的旧 Token 会被视为无效，必须重新授权、重新签发；系统不会通过兼容分支把缺失用途默认解释为 `execution`。
 
@@ -104,15 +111,39 @@ go run ./cmd/server --allow-development-intake --mcp-upstream http://127.0.0.1:3
 
 对 MCP `2026-07-28` 请求，Proxy 还要求 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与 `params._meta`/JSON-RPC 正文精确一致，并根据已验证正文重建转发 Header；重复 JSON key 会在 Permit 验证前拒绝。`tools/call` 的 `_meta` 只接受已校验的协议版本，未绑定的扩展元数据会被拒绝。当前是刻意收窄的 HTTP `POST` 子集：支持 `server/discover`、`tools/list` 和 permit-gated `tools/call`，不声称完整 MCP conformance。MRTR 的 `inputResponses`/`requestState` 与需要 Schema 感知验证的 `Mcp-Param-*` 暂未纳入 CanonicalAction，因此会 fail closed；未声明现代版本的旧 `initialize` 路径只作为兼容能力保留。
 
+### 唯一的语义动作：`payment.send/v1`
+
+`configs/policy.json` 是服务端拥有的映射：把 MCP Tool `payment.send` 和已配置上游 URL 绑定到 capability `payment_transfer`、resource `account-123`、operation `transfer`、profile `payment.send/v1` 与 audience `mcp://local-payment-sandbox`。客户端不能选择上游 URL；如果 `--mcp-upstream` 与配置中的 `upstream_url` 不完全一致，Server 会拒绝启动。未知 MCP Tool，以及冲突的 capability/resource/operation/profile/audience 声明，都会在消费 Permit 和调用上游之前拒绝。
+
+支付参数只能是：
+
+```json
+{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}
+```
+
+`amount_minor` 是正 JSON 整数，表示该币种的最小货币单位；示例配置中 USD 使用美分、CNY 使用分。系统不使用浮点、不做字符串转数字，也不做隐式汇率换算。零、负数、`int64` 溢出、字段缺失/类型错误、重复 key 和未知业务字段都会拒绝。配置把每个允许币种与该币种的单笔最小单位上限明确关联，并另行维护收款人 allowlist。Authorizer 与 MCP Proxy 共同使用同一个 `payment.send/v1` 解析器；Proxy 转发规范化后的三个字段，而不是调用方原始 JSON 序列化。
+
+在仓库根目录运行授权示例：在终端 1 保持服务运行，再从终端 2 发送两个请求。
+
+```bash
+# 终端 1
+go run ./cmd/server --allow-development-intake
+
+# 终端 2
+curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/payment-send-valid.json http://127.0.0.1:8080/api/actions/authorize
+curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/payment-send-over-limit.json http://127.0.0.1:8080/api/actions/authorize
+```
+
+第一个响应是 `AUTHORIZED`，并包含绑定 `payment.send/v1` 和配置 audience 的 `execution` Permit；第二个响应是 `DENIED`，没有 Permit，并包含稳定原因 `PAYMENT_AMOUNT_EXCEEDS_LIMIT`。这些命令只使用本地开发 intake，不会连接真实支付服务商。
+
 ## Policy、Risk 与 obligations
 
-授权保持确定性，概念结果收敛为：
+授权保持确定性。当前可执行流程只有两个结果：
 
 - `AUTHORIZED`；
-- `DENIED`；
-- `REQUIRES_APPROVAL`。
+- `DENIED`。
 
-确定性 Policy 是唯一授权权威，也是 Permit 是否存在的唯一决定者。Risk score 和 detection findings 只写入 `advisory_signals`，不能改变 `AUTHORIZED / DENIED / REQUIRES_APPROVAL`、不能签发 Permit，也不能选择 executor。隔离、只读、禁止网络出口、人工批准和增强审计只能由确定性 Policy/配置映射为 decision/permit obligations，例如：
+模型可以表达 `REQUIRES_APPROVAL`，但当前版本没有受支持的审批完成流程，因此不把它宣称为已实现能力。确定性 Policy 与 `payment.send/v1` 语义配置是仅有的授权权威，也是 Permit 是否存在的唯一决定者。Risk score 和 detection findings 只写入 `advisory_signals`，不能改变确定性结果、不能签发 Permit，也不能选择 executor。隔离、只读、禁止网络出口、人工批准和增强审计只能由确定性 Policy/配置映射为 decision/permit obligations，例如：
 
 ```json
 {

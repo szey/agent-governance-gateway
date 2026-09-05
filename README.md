@@ -26,6 +26,12 @@ Agent proposes action
 
 The security boundary is **before the real tool side effect**. `POST /api/runtime-events` may still record during- or post-execution evidence, but an after-the-fact event is not the primary blocking mechanism.
 
+## Capability status
+
+- **Implemented:** trusted authorization intake, signed `execution`/`simulation` class separation, short-lived single-use permits, replay protection, canonical action binding, one `payment.send/v1` semantic profile, and its focused MCP HTTP `POST` enforcement path.
+- **Demo or experimental:** server-owned simulation scenarios and telemetry; frozen Inventory is hidden unless explicitly enabled.
+- **Not implemented:** an approval completion workflow, sandbox/EDR/IAM, business exactly-once delivery, additional semantic profiles or execution adapters, and full MCP protocol conformance. `REQUIRES_APPROVAL` remains a model/config result only; no supported approval flow can turn it into an executable Permit.
+
 ## Core objects
 
 ### CanonicalAction
@@ -51,6 +57,7 @@ request_id           principal_id
 agent_id / workload_id
 delegation_digest    tool / capability
 resource / operation action_digest
+profile_id / audience
 policy_version       issued_at / expires_at
 single_use=true
 ```
@@ -65,7 +72,7 @@ Issuance and verification use a `KeyProvider` abstraction to obtain the current 
 
 ### Verification and replay defense
 
-The execution boundary validates signature, issuer, expiry, `permit_class`, principal/Agent/workload, tool, resource, operation, and action digest, then atomically consumes the permit. Normal `VerifyAndConsume` and MCP accept only `execution`; the server-owned Demo verifier accepts only `simulation` and has no upstream-forwarding capability. Missing, unknown, or mismatched classes fail closed before consumption. Only an `execution` permit that returns `VERIFIED` may call the upstream tool. Failure outcomes cover invalid signature, invalid or wrong class, expiry, revocation, wrong binding, action mismatch, and replay. At most one of two concurrent consumption attempts for the same permit may succeed.
+The execution boundary validates signature, issuer, expiry, `permit_class`, principal/Agent/workload, tool, resource, operation, profile version, audience, and action digest, then atomically consumes the permit. Normal `VerifyAndConsume` and MCP accept only `execution`; the server-owned Demo verifier accepts only `simulation` and has no upstream-forwarding capability. Missing, unknown, or mismatched classes fail closed before consumption. Only an `execution` permit that returns `VERIFIED` may call the upstream tool. Failure outcomes cover invalid signature, invalid or wrong class, expiry, revocation, wrong binding, action mismatch, and replay. At most one of two concurrent consumption attempts for the same permit may succeed.
 
 `permit_class` is selected by the server entry point and covered by the signature; request callers cannot set or override it. Tokens issued before this claim was introduced are rejected as invalid and must be re-authorized and reissued. There is no compatibility branch that treats a missing class as `execution`.
 
@@ -104,15 +111,39 @@ go run ./cmd/server --allow-development-intake --mcp-upstream http://127.0.0.1:3
 
 For MCP `2026-07-28`, the Proxy also requires `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` to agree exactly with `params._meta` and the JSON-RPC body, then rebuilds forwarded routing headers from the validated body. Duplicate JSON keys are rejected before Permit verification. On `tools/call`, the only accepted `_meta` entry is the validated protocol version; unbound extension metadata is rejected. This is an intentionally narrow HTTP `POST` subset: `server/discover`, `tools/list`, and permit-gated `tools/call` are supported; full MCP conformance is not claimed. MRTR `inputResponses`/`requestState` and schema-aware `Mcp-Param-*` validation are not yet part of `CanonicalAction`, so they fail closed. The old `initialize` path remains compatibility-only when a modern version is not declared.
 
+### The only semantic action: `payment.send/v1`
+
+`configs/policy.json` is the server-owned mapping from MCP tool `payment.send` and its configured upstream URL to capability `payment_transfer`, resource `account-123`, operation `transfer`, profile `payment.send/v1`, and audience `mcp://local-payment-sandbox`. The client cannot select an upstream URL. If `--mcp-upstream` does not exactly match the configured `upstream_url`, server startup fails. Unknown MCP tools and conflicting capability/resource/operation/profile/audience assertions fail before Permit consumption and before upstream.
+
+Payment arguments are exactly:
+
+```json
+{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}
+```
+
+`amount_minor` is a positive JSON integer in the currency's smallest unit—USD cents and CNY fen in the sample configuration. No floating point, string conversion, or exchange-rate conversion occurs. Zero, negatives, `int64` overflow, missing/wrongly typed fields, duplicate keys, and unknown business fields are rejected. The configuration explicitly pairs each allowed currency with its per-transaction minor-unit maximum and separately allowlists recipients. Authorizer and MCP proxy use the same `payment.send/v1` parser; the proxy forwards its normalized three-field object, not the caller's original serialization.
+
+Run the authorization examples from the repository root. Keep the server in terminal 1, then send both requests from terminal 2:
+
+```bash
+# Terminal 1
+go run ./cmd/server --allow-development-intake
+
+# Terminal 2
+curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/payment-send-valid.json http://127.0.0.1:8080/api/actions/authorize
+curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/payment-send-over-limit.json http://127.0.0.1:8080/api/actions/authorize
+```
+
+The first response is `AUTHORIZED` and contains an `execution` Permit bound to `payment.send/v1` and the configured audience. The second is `DENIED`, has no Permit, and includes stable reason `PAYMENT_AMOUNT_EXCEEDS_LIMIT`. These commands exercise local development intake; they do not contact a payment provider.
+
 ## Policy, Risk, and obligations
 
-Authorization stays deterministic, with the conceptual outcomes:
+Authorization stays deterministic. The currently executable flow has two outcomes:
 
 - `AUTHORIZED`;
-- `DENIED`;
-- `REQUIRES_APPROVAL`.
+- `DENIED`.
 
-Deterministic Policy is the sole authorization authority and the only component that decides whether a Permit exists. Risk scores and detection findings are written only under `advisory_signals`; they cannot change `AUTHORIZED / DENIED / REQUIRES_APPROVAL`, issue a Permit, or select an executor. Isolation, read-only behavior, denied network egress, human approval, and enhanced audit become decision/Permit obligations only through deterministic Policy/configuration mappings, for example:
+The model can represent `REQUIRES_APPROVAL`, but this release has no supported approval-completion workflow and therefore does not claim it as an implemented capability. Deterministic Policy and the `payment.send/v1` semantic profile are the only authorization authorities and the only components that decide whether a Permit exists. Risk scores and detection findings are written only under `advisory_signals`; they cannot change a deterministic result, issue a Permit, or select an executor. Isolation, read-only behavior, denied network egress, human approval, and enhanced audit become decision/Permit obligations only through deterministic Policy/configuration mappings, for example:
 
 ```json
 {

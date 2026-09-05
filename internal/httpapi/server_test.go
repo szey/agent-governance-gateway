@@ -24,7 +24,7 @@ import (
 	"agent-governance-gateway/internal/sessionaudit"
 )
 
-func TestRouteEndpoint(t *testing.T) {
+func TestLegacyRouteCannotBypassSemanticToolMapping(t *testing.T) {
 	handler := testHandler(t)
 	input := models.Request{
 		UserID: "user-01", AgentID: "coder-agent", TokenScopes: []string{"code.read"},
@@ -45,8 +45,8 @@ func TestRouteEndpoint(t *testing.T) {
 	if err := json.NewDecoder(recorder.Body).Decode(&record); err != nil {
 		t.Fatal(err)
 	}
-	if record.PolicyDecision.Route != models.RouteAllow {
-		t.Fatalf("route = %q, want allow", record.PolicyDecision.Route)
+	if record.PolicyDecision.Route != models.RouteDeny || record.AuthorizationEnvelope != nil || !contains(record.PolicyDecision.Reasons, "PAYMENT_TOOL_UNMAPPED") {
+		t.Fatalf("legacy route bypassed semantic mapping: %#v", record)
 	}
 	if got := recorder.Header().Get("Content-Security-Policy"); got == "" {
 		t.Fatal("content security policy header is missing")
@@ -69,9 +69,9 @@ func TestAuthorizationHTTPFailsClosedWithoutTrustedIntake(t *testing.T) {
 func TestTrustedIntakeOverridesForgedHTTPIdentityAndIsAudited(t *testing.T) {
 	identity := intake.IdentityContext{
 		Principal: models.PrincipalContext{PrincipalID: "user-01", PrincipalType: "human", Environment: "test"},
-		Agent:     models.AgentIdentity{AgentID: "coder-agent", WorkloadID: "coder-workload-v1", Environment: "test"},
+		Agent:     models.AgentIdentity{AgentID: "finance-agent", WorkloadID: "finance-workload-v1", Environment: "test"},
 		DelegatedAuthority: models.DelegatedAuthority{
-			CredentialFingerprint: strings.Repeat("a", 64), Scopes: []string{"code.read"}, Subject: "user-01",
+			CredentialFingerprint: strings.Repeat("b", 64), Scopes: []string{"payment.transfer"}, Subject: "user-01",
 		},
 	}
 	trustedIntake, err := intake.NewStatic(identity, "authenticated-test-middleware")
@@ -97,7 +97,7 @@ func TestTrustedIntakeOverridesForgedHTTPIdentityAndIsAudited(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Permit == nil || result.Decision.Request.Principal.PrincipalID != "user-01" || result.Decision.Request.Agent.AgentID != "coder-agent" {
+	if result.Permit == nil || result.Decision.Request.Principal.PrincipalID != "user-01" || result.Decision.Request.Agent.AgentID != "finance-agent" {
 		t.Fatalf("trusted identity did not replace caller metadata: %#v", result.Decision.Request)
 	}
 	provenance := result.Decision.AuthorizationContext
@@ -145,7 +145,7 @@ func TestAuthorizeIssuesPermitWithoutInventingRuntimeEvents(t *testing.T) {
 func TestActionPermitAPIReturnsCredentialOnceAndNeverListsIt(t *testing.T) {
 	handler := testHandler(t)
 	input := structuredSafeRequest()
-	input.Action.Arguments = json.RawMessage(`{"task":"api-secret-marker","language":"go"}`)
+	input.Action.Arguments = json.RawMessage(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`)
 	body, _ := json.Marshal(input)
 	request := httptest.NewRequest(http.MethodPost, "/api/actions/authorize", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -172,7 +172,7 @@ func TestActionPermitAPIReturnsCredentialOnceAndNeverListsIt(t *testing.T) {
 		t.Fatalf("permit list status = %d", response.Code)
 	}
 	listed := response.Body.String()
-	if strings.Contains(listed, authorized.Permit.PermitToken) || strings.Contains(listed, "api-secret-marker") || strings.Contains(listed, "permit_token") {
+	if strings.Contains(listed, authorized.Permit.PermitToken) || strings.Contains(listed, "merchant-456") || strings.Contains(listed, "permit_token") {
 		t.Fatalf("permit list leaked credential or raw arguments: %s", listed)
 	}
 
@@ -505,21 +505,13 @@ func TestApprovedAgentRegistryCanBeManagedFromLocalUI(t *testing.T) {
 
 func TestAllowAndDenyDecisionsAreBothAudited(t *testing.T) {
 	handler := testHandler(t)
-	requests := []models.Request{
-		{
-			UserID: "user-01", AgentID: "coder-agent", TokenScopes: []string{"code.read"},
-			RequestedAction: "Generate code", ClaimedIntent: "code_generation", RequestedCapability: "generate_code",
-			TargetResource: "public_workspace", PlannedActions: []string{"generate_code"},
-		},
-		{
-			UserID: "user-01", AgentID: "coder-agent", TokenScopes: []string{"code.read"},
-			RequestedAction: "Read finance", ClaimedIntent: "report_summary", RequestedCapability: "read_finance_data",
-			TargetResource: "finance_data", PlannedActions: []string{"read_finance_data"},
-		},
-	}
+	allowed := structuredSafeRequest()
+	denied := structuredSafeRequest()
+	denied.Action.Arguments = json.RawMessage(`{"amount_minor":10001,"currency":"USD","recipient":"merchant-456"}`)
+	requests := []models.Request{allowed, denied}
 	for _, input := range requests {
 		body, _ := json.Marshal(input)
-		req := httptest.NewRequest(http.MethodPost, "/api/route", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/actions/authorize", bytes.NewReader(body))
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, req)
 		if response.Code != http.StatusOK {
@@ -646,11 +638,24 @@ func testHandlerWithServerOptions(t *testing.T, sessionAuditPath string, scenari
 func structuredSafeRequest() models.Request {
 	return models.Request{
 		Principal: models.PrincipalContext{PrincipalID: "user-01", PrincipalType: "human", Environment: "test"},
-		Agent:     models.AgentIdentity{AgentID: "coder-agent", WorkloadID: "coder-workload-v1", Environment: "test"},
+		Agent:     models.AgentIdentity{AgentID: "finance-agent", WorkloadID: "finance-workload-v1", Environment: "test"},
 		Authority: models.DelegatedAuthority{
-			CredentialFingerprint: strings.Repeat("a", 64), Scopes: []string{"code.read"}, Subject: "user-01",
+			CredentialFingerprint: strings.Repeat("b", 64), Scopes: []string{"payment.transfer"}, Subject: "user-01",
 		},
-		Tool:   models.ToolContext{Name: "coder", Provider: "demo-adapter"},
-		Action: models.ActionRequest{Capability: "generate_code", Operation: "generate", TargetResource: "public_workspace", SideEffect: "none"},
+		Tool: models.ToolContext{Name: "payment.send", Provider: "mcp"},
+		Action: models.ActionRequest{
+			Capability: "payment_transfer", Operation: "transfer", TargetResource: "account-123",
+			Arguments:  json.RawMessage(`{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}`),
+			SideEffect: "financial_transaction",
+		},
 	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

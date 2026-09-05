@@ -95,7 +95,7 @@ This guarantees only that one Permit is successfully consumed at most once; it d
 
 ## MCP adapter
 
-MCP is the focused MVP's only production-shaped adapter. It normalizes `tools/call` with trusted principal/workload/resource metadata, obtains or receives a Permit, calls the same verifier before forwarding upstream, and records only necessary result metadata such as status and duration.
+MCP is the focused MVP's only production-shaped adapter. For the only supported semantic action, `payment.send/v1`, it resolves `tools/call` through the same server-owned parser used at authorization, verifies the signed profile/audience/action binding, consumes the Permit, forwards normalized arguments to the configured upstream, and records only necessary result metadata such as status and duration.
 
 The adapter cannot “call first and alert later” after a failed verification, and cannot forward on `permit_id` alone. Upstream MCP TLS, authentication, tool side effects, and deployment bypass remain separate deployment responsibilities.
 
@@ -103,7 +103,7 @@ For MCP `2026-07-28`, the current adapter validates `MCP-Protocol-Version`, `Mcp
 
 ## Policy, Risk, and obligations
 
-Policy continues to use the structured request context for deterministic authorization. Conceptual outcomes are `AUTHORIZED / DENIED / REQUIRES_APPROVAL`, and only Policy decides status, Permit issuance, and signed obligations.
+Policy and `payment.send/v1` semantic validation use the structured request context for deterministic authorization. The executable outcomes are `AUTHORIZED / DENIED`. `REQUIRES_APPROVAL` remains representable but has no supported approval-completion workflow and is not an implemented execution capability.
 
 Risk/detection remain optional advisory metadata under `advisory_signals`; they cannot change authorization status, create a grant, issue a Permit, or select an executor. Obligations such as `human_approval_required`, `isolation_required`, or `enhanced_audit_required` require an explicit deterministic Policy/configuration mapping.
 
@@ -113,7 +113,7 @@ An external executor fulfills `isolation_required: true`. Aegis implements no sa
 
 Each action produces an explainable receipt in `TRUST CONTEXT → ACTION → POLICY → OBLIGATIONS → PERMIT → VERIFICATION → EXECUTION` order, including upstream attempted and execution outcome. Risk/detection appear only under `ADVISORY SIGNALS`.
 
-Authorization status uses `AUTHORIZED / DENIED / REQUIRES_APPROVAL`. Current execution final verdicts include `EXECUTED_WITH_VALID_PERMIT`, `PERMIT_ACTION_MISMATCH`, `PERMIT_EXPIRED`, `PERMIT_REPLAY`, `PERMIT_INVALID_SIGNATURE`, `PERMIT_REVOKED`, and `EXECUTION_OBLIGATION_UNSATISFIED`, while the receipt also retains the verifier's precise outcome and execution outcome.
+The supported executable authorization status uses `AUTHORIZED / DENIED`. Current execution final verdicts include `EXECUTED_WITH_VALID_PERMIT`, `PERMIT_ACTION_MISMATCH`, `PERMIT_EXPIRED`, `PERMIT_REPLAY`, `PERMIT_INVALID_SIGNATURE`, `PERMIT_REVOKED`, and `EXECUTION_OBLIGATION_UNSATISFIED`, while the receipt also retains the verifier's precise outcome and execution outcome.
 
 RuntimeEvent and its source/trust model remain, but only as during- or post-execution evidence. `agent_self_reported`, `instrumented_adapter`, and `simulated_demo` cannot masquerade as independent sensors; uninstrumented coverage stays `UNKNOWN`.
 

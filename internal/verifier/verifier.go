@@ -29,6 +29,8 @@ const (
 	OutcomeWrongCapability  Outcome = "WRONG_CAPABILITY"
 	OutcomeWrongResource    Outcome = "WRONG_RESOURCE"
 	OutcomeWrongOperation   Outcome = "WRONG_OPERATION"
+	OutcomeWrongProfile     Outcome = "WRONG_PROFILE"
+	OutcomeWrongAudience    Outcome = "WRONG_AUDIENCE"
 	OutcomeReplayed         Outcome = "REPLAYED"
 	OutcomeRevoked          Outcome = "REVOKED"
 	OutcomeInvalidIssuer    Outcome = "INVALID_ISSUER"
@@ -202,6 +204,14 @@ func (v *Verifier) verifyAndConsume(permitToken string, action canonicalaction.A
 	}
 	if action.Operation != claims.Operation {
 		result.Outcome = OutcomeWrongOperation
+		return result
+	}
+	if action.ProfileID != claims.ProfileID {
+		result.Outcome = OutcomeWrongProfile
+		return result
+	}
+	if action.Audience != claims.Audience {
+		result.Outcome = OutcomeWrongAudience
 		return result
 	}
 	digest, err := action.Digest()

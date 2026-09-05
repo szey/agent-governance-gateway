@@ -27,6 +27,8 @@ type IssueRequest struct {
 	Capability                    string
 	Resource                      string
 	Operation                     string
+	ProfileID                     string
+	Audience                      string
 	ActionDigest                  string
 	PolicyVersion                 string
 	Obligations                   Obligations
@@ -116,6 +118,7 @@ func (i *Issuer) Issue(request IssueRequest) (IssuedPermit, error) {
 		PrincipalID: request.PrincipalID, AgentID: request.AgentID, WorkloadID: request.WorkloadID,
 		DelegatedAuthorityFingerprint: request.DelegatedAuthorityFingerprint,
 		Tool:                          request.Tool, Capability: request.Capability, Resource: request.Resource, Operation: request.Operation,
+		ProfileID: request.ProfileID, Audience: request.Audience,
 		ActionDigest: request.ActionDigest, PolicyVersion: request.PolicyVersion, Obligations: request.Obligations,
 		Issuer: i.name, IssuedAt: now.Unix(), ExpiresAt: now.Add(ttl).Unix(), SingleUse: true,
 	}

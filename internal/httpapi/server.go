@@ -167,6 +167,9 @@ func (s *Server) authorizeAction(w http.ResponseWriter, req *http.Request) {
 type permitView struct {
 	PermitID           string             `json:"permit_id"`
 	SigningKeyID       string             `json:"signing_key_id"`
+	PermitClass        permit.Class       `json:"permit_class"`
+	ProfileID          string             `json:"profile_id,omitempty"`
+	Audience           string             `json:"audience,omitempty"`
 	State              permit.State       `json:"state"`
 	RequestID          string             `json:"request_id"`
 	PrincipalID        string             `json:"principal_id"`
@@ -192,7 +195,8 @@ type permitView struct {
 func viewPermit(record permit.Record) permitView {
 	claims := record.Claims
 	return permitView{
-		PermitID: claims.PermitID, SigningKeyID: claims.SigningKeyID, State: record.State, RequestID: claims.RequestID,
+		PermitID: claims.PermitID, SigningKeyID: claims.SigningKeyID, PermitClass: claims.PermitClass,
+		ProfileID: claims.ProfileID, Audience: claims.Audience, State: record.State, RequestID: claims.RequestID,
 		PrincipalID: claims.PrincipalID, AgentID: claims.AgentID, WorkloadID: claims.WorkloadID,
 		Tool: claims.Tool, Capability: claims.Capability, Resource: claims.Resource, Operation: claims.Operation,
 		ActionDigest: claims.ActionDigest, PolicyVersion: claims.PolicyVersion, Issuer: claims.Issuer,

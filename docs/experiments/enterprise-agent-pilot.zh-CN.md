@@ -99,9 +99,9 @@ Discovery 不属于这个 Gate 的验收内容。
 
 ## Gate 3：真实 MCP 边界的受控接入
 
-仅当公司 Agent/工具系统支持批准的 MCP client 或 Proxy 配置时进行：
+仅当公司 Agent/工具系统支持批准的 MCP client 或 Proxy 配置时进行。当前可执行子集只支持 `payment.send/v1`；必须使用 synthetic 金额和本地 mock upstream，绝不能连接真实支付服务商或凭据：
 
-1. 使用一个无害、可计数调用次数的 upstream MCP test server；
+1. 把 `semantic_actions.payment_send_v1.upstream_url` 设为一个无害、可计数调用次数的本地 MCP mock，并使用完全相同的 `--mcp-upstream` 值启动 Aegis；
 2. 由获准的认证中间件通过 Trusted Intake 建立 principal、Agent/workload 与 delegated authority；不要使用 `development_only` body intake 作为公司身份保证；
 3. 对一次 `tools/call` 生成规范动作并调用授权 API，保存脱敏的 `authorization_context_provenance` 与 `signing_key_id`；
 4. 将 `permit_token` 仅放在受控 client→Proxy 执行通道，不写入命令历史或截图；
@@ -116,7 +116,7 @@ Discovery 不属于这个 Gate 的验收内容。
 
 ## Gate 4：证据复核与退出
 
-审计必须按 trust context、action、deterministic policy、obligations、Permit、verification、execution 的顺序回答 request/decision/permit ID、`signing_key_id`、principal、Agent/workload、authorization-context provenance、tool、resource、operation、action digest、policy version、authorization decision、Permit state、verification outcome、upstream attempted、execution outcome、timestamp、evidence source 与 upstream call count；risk/detection 只能位于 advisory signals，且审计不得含 token 或原始敏感参数。
+审计必须按 trust context、action、deterministic policy、obligations、Permit、verification、execution 的顺序回答 request/decision/permit ID、`signing_key_id`、`permit_class`、profile ID、audience、principal、Agent/workload、authorization-context provenance、tool、resource、operation、action digest、policy version、authorization decision、Permit state、verification outcome、upstream attempted、execution outcome、timestamp、evidence source 与 upstream call count；risk/detection 只能位于 advisory signals，且审计不得含 token 或原始敏感参数。
 
 结束后停止 Aegis、Proxy 和测试 upstream，撤销所有未消费 Permit，删除临时私钥与 synthetic payload，并由公司负责人决定本地审计保留/删除。只有脱敏结论与 synthetic 最小复现可以返回公开仓库。
 
