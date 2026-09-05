@@ -18,7 +18,11 @@ Aegis 是参考实现，不是经独立评审的生产安全边界。它只保�
 
 `AuthorizationEnvelope` 继续承载结构化 principal、Agent/workload、delegation、tool、capability、resource、operation 和 policy context，但执行凭据还必须包含可验证签名与相同动作摘要。
 
-HTTP 授权请求还必须经过 `TrustedAuthorizationIntake`。未配置 intake 时默认拒绝；可信集成负责覆盖调用方声明的 principal、Agent/workload 与 delegated authority，并在审计中记录 `authorization_context_provenance`。`Router` 不再提供接受裸 `models.Request` 的普通 Permit 签发入口；进程内调用方也必须通过 `intake.NewTrustedAuthorization(...)` 或 intake 实现建立 sealed context。同一进程并不自动等于已认证身份。`--allow-development-intake` 仅接受 loopback peer、仍将身份标记为 `development_only`，不构成生产身份认证。
+HTTP 授权请求还必须经过 `TrustedAuthorizationIntake`。独立 Server 有三种模式：默认 fail closed 的 `RejectAll`；显式开启的 `LoopbackDevelopment`，只对 loopback direct peer 信任 body 身份并标记 `development_only`；以及 `TrustedProxy`，只从直接 TCP 对端属于已配置 IPv4/IPv6 CIDR 的另一个已认证代理接收严格身份 Header。TrustedProxy 与开发模式不能共存，不完整的 trusted-proxy 配置会阻止启动。
+
+TrustedProxy 只根据 `request.RemoteAddr` 建立发送方信任，永远不使用 `X-Forwarded-For`、`Forwarded` 或 `X-Real-IP`。必需身份 Header 必须单一、长度受限、无控制字符并符合严格语法。Delegated scopes 只有一种逗号分隔表示，空项/重复项会拒绝，接受后排序。Delegation fingerprint 必须恰好是 64 个十六进制 SHA-256 字符；不接受 bearer/OAuth Token、API key、密码、Cookie 或其他原始凭据。校验通过后，这些 Header 中的 principal、Agent/workload 与 delegated authority 会完整替换 request body 的对应字段。
+
+成功的 Proxy intake 会在 `authorization_context_provenance` 中记录 `source=trusted_integration`、配置的 `provider_id`、`assurance=authenticated_context` 和服务端 `established_at`；失败时永不降级使用 body 身份。`Router` 仍然没有接受裸 `models.Request` 的普通 Permit 签发入口，只消费 sealed `intake.Authorization`。Aegis 自身既不认证用户，也不验证 OAuth Token；它只消费另一个可信认证边界已经建立的身份。这不是完整 IAM、SSO、OAuth 或 RBAC 系统。同一进程或网络本身不等于身份认证；认证代理的安全运行、传输保护与网络拓扑约束仍由部署方负责。
 
 ## Token、密钥与 replay
 

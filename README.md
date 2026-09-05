@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 **Execution Permits for AI Agent Actions**
 
-Aegis Router is a framework-agnostic authorization layer for tool-using AI agents. Before a privileged tool action executes, Aegis makes a deterministic decision over the normalized action and issues a signed, short-lived, action-bound, single-use-by-default execution permit. The executor verifies and consumes that permit immediately before the real side effect.
+Aegis Router implements a framework-agnostic execution-permit model with a focused MCP enforcement path. Before a privileged tool action executes, Aegis makes a deterministic decision over authenticated identity and exact semantic intent, then issues a signed, short-lived, action-bound, single-use-by-default execution permit. The executor verifies and consumes that permit immediately before the real side effect.
 
 If the Agent changes the tool, operation, resource, or security-relevant arguments after authorization, the permit no longer matches and the tool must not execute.
 
@@ -15,7 +15,7 @@ Aegis is not a sandbox, EDR, IAM system, Agent management platform, or enterpris
 ## Core execution path
 
 ```text
-Agent proposes action
+Authenticated identity + Agent proposes action
   → normalize CanonicalAction
   → deterministic Policy authorization
   → issue Execution Permit
@@ -24,11 +24,13 @@ Agent proposes action
   → write a redacted Audit Receipt
 ```
 
+`Authenticated identity + exact semantic intent + signed single-use Permit = cryptographically bound execution.`
+
 The security boundary is **before the real tool side effect**. `POST /api/runtime-events` may still record during- or post-execution evidence, but an after-the-fact event is not the primary blocking mechanism.
 
 ## Capability status
 
-- **Implemented:** trusted authorization intake, signed `execution`/`simulation` class separation, short-lived single-use permits, replay protection, canonical action binding, one `payment.send/v1` semantic profile, and its focused MCP HTTP `POST` enforcement path.
+- **Implemented:** fail-closed, loopback-development, and trusted reverse-proxy authorization intake modes; signed `execution`/`simulation` class separation; short-lived single-use permits; replay protection; canonical action binding; one `payment.send/v1` semantic profile; and its focused MCP HTTP `POST` enforcement path.
 - **Demo or experimental:** server-owned simulation scenarios and telemetry; frozen Inventory is hidden unless explicitly enabled.
 - **Not implemented:** an approval completion workflow, sandbox/EDR/IAM, business exactly-once delivery, additional semantic profiles or execution adapters, and full MCP protocol conformance. `REQUIRES_APPROVAL` remains a model/config result only; no supported approval flow can turn it into an executable Permit.
 
@@ -157,6 +159,28 @@ The model can represent `REQUIRES_APPROVAL`, but this release has no supported a
 
 `isolation_required: true` requires an external execution environment to supply isolation; Aegis does not implement or claim a sandbox. The focused MCP proxy therefore consumes and rejects a valid Permit when `isolation_required` or `human_approval_required` is still unsatisfied, records `EXECUTION_OBLIGATION_UNSATISFIED`, and never calls upstream. `read_only` and `network_egress_denied` remain signed requirements: the reference proxy binds the requested operation but cannot prove the internal behavior of an arbitrary upstream tool, so deployment needs a separately trusted executor/control for those semantics. `ALLOW / RESTRICT / SANDBOX / DENY / ESCALATE` in compatibility responses are legacy routing or obligation/profile hints.
 
+## Trusted authorization intake modes
+
+The standalone server selects exactly one identity-provenance mode:
+
+1. **RejectAll** — secure default. Without an explicit intake configuration, HTTP authorization fails closed.
+2. **LoopbackDevelopment** — enabled only by `--allow-development-intake`. It accepts body identity only from a loopback direct peer and records assurance `development_only`.
+3. **TrustedProxy** — accepts identity headers from a separately authenticated reverse proxy only when the direct TCP peer in `request.RemoteAddr` belongs to one of the explicitly configured trusted CIDRs. It records `source=trusted_integration`, the configured provider ID, `assurance=authenticated_context`, and the server establishment time.
+
+TrustedProxy uses only this explicit header contract: `X-Aegis-Authenticated-Principal`, `X-Aegis-Agent-Id`, `X-Aegis-Workload-Id`, `X-Aegis-Delegated-Scopes`, and `X-Aegis-Delegation-Fingerprint`. The current focused contract represents the authenticated principal as type `human`. Identity labels must be exact 1–128 byte metadata identifiers. Scopes use one comma-separated header; optional SP/HTAB around commas is removed, empty or duplicate scopes are rejected, and accepted scopes are sorted. The delegation fingerprint must be exactly 64 hexadecimal SHA-256 characters—not a bearer token, API key, cookie, password, or `sha256:`-prefixed value.
+
+Trust is based exclusively on the direct peer. `X-Forwarded-For`, `Forwarded`, and `X-Real-IP` are never used to decide whether the sender is trusted. TrustedProxy then overwrites principal, Agent, workload, and delegated authority from the JSON proposal before Policy, Permit issuance, or audit. It never falls back to body identity after a trust error.
+
+```bash
+go run ./cmd/server \
+  --trusted-proxy-cidr 127.0.0.1/32 \
+  --trusted-proxy-provider-id local-auth-gateway
+```
+
+Repeat `--trusted-proxy-cidr` to allow additional IPv4 or IPv6 direct peers. CIDR and provider ID must be configured together. TrustedProxy configuration cannot coexist with `--allow-development-intake`; ambiguous or partial configuration stops server startup.
+
+**Aegis authenticates neither users nor OAuth tokens itself.** It consumes identity established by a separately trusted authentication boundary. TrustedProxy is a narrow provenance adapter, not an IAM, SSO, OAuth, or RBAC platform; transport protection and authenticated-proxy operation remain deployment responsibilities.
+
 ## API direction
 
 Focused APIs:
@@ -167,7 +191,7 @@ Focused APIs:
 - `GET /api/permits` and `GET /api/permits/{id}` — return safe metadata only;
 - `GET /api/decisions` and `GET /api/audits` — read authorization decisions and audit receipts.
 
-The MCP adapter directly reuses the same verifier. Every HTTP authorization endpoint first crosses `TrustedAuthorizationIntake`: with no configured intake, it fails closed with `trusted_authorization_context_required` instead of trusting body/header principal, Agent, workload, or delegated-authority metadata. `Router` no longer exposes a normal authorization/Permit-issuance method that accepts a naked `models.Request`; in-process integrations must also explicitly create a sealed `intake.Authorization` through `intake.NewTrustedAuthorization(...)` or an intake implementation. Trusted middleware can use the static intake to overwrite identity fields and record `authorization_context_provenance`. Local development requires explicit `--allow-development-intake`, accepts loopback peers only, and labels assurance `development_only`. Process locality alone is not identity provenance. This is an identity-provenance boundary, not full IAM/SSO/RBAC. `POST /api/permits/verify` is for trusted, controlled integrations and is not network identity authentication. `/api/authorize`, `/api/runtime-events`, and `/api/route` remain temporarily as compatibility endpoints; compatibility authorization also crosses the intake.
+The MCP adapter directly reuses the same verifier. Every HTTP authorization endpoint first crosses `TrustedAuthorizationIntake` and the Router still accepts execution authorization only through sealed `intake.Authorization`; it has no normal Permit-issuance method that accepts a naked `models.Request`. Process locality alone is not identity provenance. `POST /api/permits/verify` is for trusted, controlled integrations and is not network identity authentication. `/api/authorize`, `/api/runtime-events`, and `/api/route` remain temporarily as compatibility endpoints; compatibility authorization also crosses the selected intake.
 
 ## UI
 
@@ -209,7 +233,7 @@ Go 1.26 is required. Node.js is needed only when changing the TypeScript fronten
 go run ./cmd/server
 ```
 
-Open [http://localhost:8080](http://localhost:8080). This runs server-owned Demos, while HTTP authorization fails closed by default. Add `--allow-development-intake` only for local API/MCP development. You may also run `docker compose up --build`. For MCP enforcement, also add `--mcp-upstream <absolute-http(s)-url>` and follow the [pilot protocol](docs/experiments/enterprise-agent-pilot.md) with a harmless controlled upstream first. Do not connect production tools or credentials directly.
+Open [http://localhost:8080](http://localhost:8080). This runs server-owned Demos, while HTTP authorization fails closed in RejectAll mode. Add `--allow-development-intake` only for local API/MCP development, or configure both trusted-proxy flags behind a separately authenticated proxy. The two modes cannot coexist. You may also run `docker compose up --build`. For MCP enforcement, also add `--mcp-upstream <absolute-http(s)-url>` and follow the [pilot protocol](docs/experiments/enterprise-agent-pilot.md) with a harmless controlled upstream first. Do not connect production tools or credentials directly.
 
 ## Audit and evidence truth
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -32,7 +33,10 @@ func main() {
 	mcpUpstream := flag.String("mcp-upstream", "", "enable permit-gated POST /mcp only when this exactly matches the server-owned payment.send/v1 upstream_url")
 	allowDevelopmentIntake := flag.Bool("allow-development-intake", false, "accept caller-supplied authorization identity from loopback requests only (development only)")
 	var discoveryRoots stringList
+	var trustedProxyCIDRs strictStringList
 	flag.Var(&discoveryRoots, "discovery-root", "optional approved inventory root; repeat for multiple roots")
+	flag.Var(&trustedProxyCIDRs, "trusted-proxy-cidr", "direct TCP peer CIDR trusted to assert authorization identity; repeat for multiple IPv4/IPv6 CIDRs")
+	trustedProxyProviderID := flag.String("trusted-proxy-provider-id", "", "identity provider ID recorded for trusted-proxy authorization provenance")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -61,14 +65,10 @@ func main() {
 	}
 
 	r := router.New(cfg, store)
-	var authorizationIntake intake.TrustedAuthorizationIntake = intake.RejectAll{}
-	if *allowDevelopmentIntake {
-		developmentIntake, intakeErr := intake.NewLoopbackDevelopment("server-loopback-development")
-		if intakeErr != nil {
-			logger.Error("configure development authorization intake", "error", intakeErr)
-			os.Exit(1)
-		}
-		authorizationIntake = developmentIntake
+	authorizationIntake, authorizationIntakeMode, intakeErr := configureAuthorizationIntake(*allowDevelopmentIntake, trustedProxyCIDRs, *trustedProxyProviderID)
+	if intakeErr != nil {
+		logger.Error("configure authorization intake", "error", intakeErr)
+		os.Exit(1)
 	}
 	var mcpHandler http.Handler
 	if strings.TrimSpace(*mcpUpstream) != "" {
@@ -102,11 +102,27 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	logger.Info("Aegis Router listening", "address", *addr, "mcp_enforcement", mcpHandler != nil, "experimental_inventory", *enableExperimentalInventory, "development_intake", *allowDevelopmentIntake)
+	logger.Info("Aegis Router listening", "address", *addr, "mcp_enforcement", mcpHandler != nil, "experimental_inventory", *enableExperimentalInventory, "authorization_intake", authorizationIntakeMode)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func configureAuthorizationIntake(allowDevelopment bool, trustedProxyCIDRs []string, trustedProxyProviderID string) (intake.TrustedAuthorizationIntake, string, error) {
+	trustedProxyConfigured := len(trustedProxyCIDRs) > 0 || trustedProxyProviderID != ""
+	if allowDevelopment && trustedProxyConfigured {
+		return nil, "", fmt.Errorf("--allow-development-intake cannot be combined with trusted-proxy configuration")
+	}
+	if allowDevelopment {
+		provider, err := intake.NewLoopbackDevelopment("server-loopback-development")
+		return provider, "loopback_development", err
+	}
+	if trustedProxyConfigured {
+		provider, err := intake.NewTrustedProxy(trustedProxyCIDRs, trustedProxyProviderID)
+		return provider, "trusted_proxy", err
+	}
+	return intake.RejectAll{}, "reject_all", nil
 }
 
 type stringList []string
@@ -120,5 +136,19 @@ func (values *stringList) Set(value string) error {
 	if value != "" {
 		*values = append(*values, value)
 	}
+	return nil
+}
+
+type strictStringList []string
+
+func (values *strictStringList) String() string {
+	return strings.Join(*values, ",")
+}
+
+func (values *strictStringList) Set(value string) error {
+	if value == "" || value != strings.TrimSpace(value) {
+		return fmt.Errorf("value must be non-empty and contain no surrounding whitespace")
+	}
+	*values = append(*values, value)
 	return nil
 }

@@ -29,7 +29,7 @@ Aegis does not provide generic permission management, endpoint sandboxing, works
 ## Security property and execution order
 
 ```text
-Agent proposes action
+Authenticated identity + Agent proposes action
     ↓
 Normalize CanonicalAction
     ↓
@@ -44,13 +44,17 @@ Execute exactly the authorized action
 Write redacted Audit Receipt
 ```
 
+`Authenticated identity + exact semantic intent + signed single-use Permit = cryptographically bound execution.`
+
 Authorization and verification reuse the same canonicalizer. Receiving a RuntimeEvent after execution cannot replace this pre-execution check. If permit verification fails, the upstream tool-call count must remain zero.
 
 ## Trusted Authorization Intake
 
 Principal, Agent, workload, and delegated authority from an HTTP body/header cannot become authorization facts directly. `TrustedAuthorizationIntake` first resolves and overwrites those fields from a configured trust boundary, then records source, provider, assurance, and establishment time in `authorization_context_provenance`. HTTP authorization fails closed when no intake is configured.
 
-Two narrow implementations exist: a static intake for authenticated middleware/an embedding process to inject trusted context, and an explicitly enabled local-development intake that accepts loopback peers only and is labeled `development_only`. This is not IAM, SSO, RBAC, or bearer-token verification.
+The standalone Server selects exactly one of three modes: secure-default `RejectAll`; explicit `LoopbackDevelopment`, which accepts body identity from a loopback direct peer and labels it `development_only`; or `TrustedProxy`, which accepts a strict five-header identity contract only from a direct TCP peer inside configured IPv4/IPv6 CIDRs. TrustedProxy derives trust only from `request.RemoteAddr`, never `X-Forwarded-For`, `Forwarded`, or `X-Real-IP`; it rejects missing, duplicate, malformed, whitespace-padded, oversized, or control-bearing identity values, invalid 64-hex fingerprints, and empty/duplicate/malformed comma-separated scopes. It sorts accepted scopes and overwrites every body identity field. Development and proxy modes cannot coexist. A static intake remains available to authenticated middleware in an embedding process.
+
+TrustedProxy provenance records `source=trusted_integration`, configured provider ID, `assurance=authenticated_context`, and server establishment time. Aegis authenticates neither users nor OAuth tokens itself; it consumes identity established by a separately trusted authentication boundary. This is not IAM, SSO, OAuth, RBAC, or bearer-token verification.
 
 `Router.AuthorizeTrustedAction(intake.Authorization)` is the only normal Permit-issuance entry point. `Router` no longer exposes `AuthorizeAction/Authorize/Process` methods that accept a naked `models.Request`; in-process integrations must also call `intake.NewTrustedAuthorization(...)` or cross an intake implementation to create a sealed context. Process locality is not identity provenance. Server-owned fixtures may use only the synthetic entry point whose name and provenance explicitly say `simulated_demo`.
 

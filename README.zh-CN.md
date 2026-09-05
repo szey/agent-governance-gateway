@@ -4,7 +4,7 @@
 
 **AI Agent 动作的执行许可**
 
-Aegis Router 是面向工具型 AI Agent、且不绑定具体框架的授权层。特权工具动作执行前，Aegis 对规范化动作作出确定性授权，并签发短时、动作绑定、默认单次使用的签名执行许可。执行器在真实副作用发生前验证并消费该许可。
+Aegis Router 实现一套不绑定 Agent 框架的执行许可模型，并提供一个聚焦的 MCP 执行路径。特权工具动作执行前，Aegis 根据已认证身份和精确业务语义作出确定性授权，再签发短时、动作绑定、默认单次使用的签名执行许可。执行器在真实副作用发生前验证并消费该许可。
 
 如果 Agent 在授权后改变工具、操作、资源或安全相关参数，许可不再匹配，工具不得执行。
 
@@ -15,7 +15,7 @@ Aegis 不是沙箱、EDR、IAM、Agent 管理平台或企业 Inventory 产品。
 ## 核心执行链
 
 ```text
-Agent 提议动作
+已认证身份 + Agent 提议动作
   → 规范化 CanonicalAction
   → 确定性 Policy 授权
   → 签发 Execution Permit
@@ -24,11 +24,13 @@ Agent 提议动作
   → 写入脱敏 Audit Receipt
 ```
 
+`已认证身份 + 精确语义意图 + 签名单次 Permit = 密码学绑定的执行。`
+
 安全边界位于**真实工具副作用之前**。`POST /api/runtime-events` 仍可记录执行中或执行后的证据，但事后事件不是主要阻断机制。
 
 ## 能力状态
 
-- **已实现：**可信授权入口、签名绑定的 `execution`/`simulation` 用途隔离、短时单次 Permit、replay protection、CanonicalAction 绑定、唯一的 `payment.send/v1` 语义配置，以及对应的聚焦 MCP HTTP `POST` 执行路径。
+- **已实现：**默认拒绝、本地 loopback 开发和可信反向代理三种授权入口模式；签名绑定的 `execution`/`simulation` 用途隔离；短时单次 Permit；replay protection；CanonicalAction 绑定；唯一的 `payment.send/v1` 语义配置；以及对应的聚焦 MCP HTTP `POST` 执行路径。
 - **演示或实验能力：**Server-owned simulation 场景与 telemetry；冻结的 Inventory 只有显式开启才显示。
 - **未实现：**审批完成流程、sandbox/EDR/IAM、业务副作用 exactly-once、更多语义配置或执行 Adapter，以及完整 MCP 协议兼容。`REQUIRES_APPROVAL` 目前只是模型/配置结果，没有受支持的审批流程可以把它转换成可执行 Permit。
 
@@ -157,6 +159,28 @@ curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/paymen
 
 `isolation_required: true` 只要求外部执行环境提供隔离；Aegis 本身不实现或声称提供沙箱。因此，当 `isolation_required` 或 `human_approval_required` 仍未满足时，focused MCP Proxy 会消费并拒绝这个有效 Permit，记录 `EXECUTION_OBLIGATION_UNSATISFIED`，而且绝不调用上游。`read_only` 与 `network_egress_denied` 仍是已签名要求：参考 Proxy 会绑定被请求的 operation，但无法证明任意上游 Tool 的内部行为，部署方仍需另行提供可信 executor/control 来落实这些语义。兼容响应中的 `ALLOW / RESTRICT / SANDBOX / DENY / ESCALATE` 只代表旧版分流或 obligation/profile hint。
 
+## 可信授权入口模式
+
+独立 Server 只能选择一种身份来源模式：
+
+1. **RejectAll** — 安全默认值。没有显式配置 intake 时，HTTP 授权 fail closed。
+2. **LoopbackDevelopment** — 只能通过 `--allow-development-intake` 开启。它只接受 direct peer 为 loopback 的 body 身份，并记录 assurance `development_only`。
+3. **TrustedProxy** — 假定 Aegis 位于另一个已完成身份认证的反向代理之后；只有 `request.RemoteAddr` 中的直接 TCP 对端属于显式配置的信任 CIDR，才接受该代理注入的身份 Header。Provenance 记录 `source=trusted_integration`、配置的 provider ID、`assurance=authenticated_context` 和服务端建立时间。
+
+TrustedProxy 只使用以下明确 Header：`X-Aegis-Authenticated-Principal`、`X-Aegis-Agent-Id`、`X-Aegis-Workload-Id`、`X-Aegis-Delegated-Scopes`、`X-Aegis-Delegation-Fingerprint`。当前聚焦契约把认证主体表示为 `human` 类型。身份标识必须是精确的 1–128 字节 metadata identifier。Scopes 只接受一个逗号分隔 Header：逗号两侧可选 SP/HTAB 会被移除，空 scope 和重复 scope 会拒绝，接受后排序存储。Delegation fingerprint 必须恰好是 64 个十六进制 SHA-256 字符，不能是 bearer token、API key、Cookie、密码或带 `sha256:` 前缀的值。
+
+是否信任发送方只取决于 direct peer。`X-Forwarded-For`、`Forwarded` 和 `X-Real-IP` 永远不参与信任判断。建立信任后，TrustedProxy 在 Policy、Permit 签发和审计之前，用可信 Header 身份覆盖 JSON proposal 中的 principal、Agent、workload 与 delegated authority；任何信任错误都不会降级使用 body 身份。
+
+```bash
+go run ./cmd/server \
+  --trusted-proxy-cidr 127.0.0.1/32 \
+  --trusted-proxy-provider-id local-auth-gateway
+```
+
+可重复传入 `--trusted-proxy-cidr`，同时允许更多 IPv4/IPv6 direct peer。CIDR 与 provider ID 必须成对配置；TrustedProxy 不能与 `--allow-development-intake` 同时启用，歧义或不完整配置会阻止 Server 启动。
+
+**Aegis 自身不认证用户，也不验证 OAuth Token。** 它消费由另一个可信认证边界已经建立的身份。TrustedProxy 只是窄范围 provenance Adapter，不是 IAM、SSO、OAuth 或 RBAC 平台；传输保护和认证代理的安全运行仍由部署方负责。
+
 ## API 方向
 
 聚焦 API：
@@ -167,7 +191,7 @@ curl -sS -H "Content-Type: application/json" --data-binary @docs/examples/paymen
 - `GET /api/permits`、`GET /api/permits/{id}` — 只返回安全元数据；
 - `GET /api/decisions`、`GET /api/audits` — 查看授权决定和审计回执。
 
-MCP Adapter 直接复用同一 verifier。所有 HTTP 授权入口先经过 `TrustedAuthorizationIntake`：未配置 intake 时默认返回 `trusted_authorization_context_required`，不再直接信任 body/header 的 principal、Agent、workload 或 delegated authority。`Router` 不再暴露接受裸 `models.Request` 的普通授权/Permit 签发方法；进程内集成也必须通过 `intake.NewTrustedAuthorization(...)` 或一个 intake 实现显式创建 sealed `intake.Authorization`。可信中间件可用 static intake 覆盖身份字段并把来源写入 `authorization_context_provenance`；本地开发必须显式启用 `--allow-development-intake`，且只接受 loopback peer，同时把 assurance 标为 `development_only`。同进程本身不构成身份来源。这只是身份来源边界，不是完整 IAM/SSO/RBAC。`POST /api/permits/verify` 适合可信的受控集成，不等同于跨网络身份认证。`/api/authorize`、`/api/runtime-events` 和 `/api/route` 作为兼容入口暂时保留；授权兼容入口同样经过 intake。
+MCP Adapter 直接复用同一 verifier。所有 HTTP 授权入口先经过 `TrustedAuthorizationIntake`；Router 仍然只接受 sealed `intake.Authorization`，没有接受裸 `models.Request` 的普通 Permit 签发方法。同进程本身不构成身份来源。`POST /api/permits/verify` 适合可信的受控集成，不等同于跨网络身份认证。`/api/authorize`、`/api/runtime-events` 和 `/api/route` 作为兼容入口暂时保留；授权兼容入口同样经过所选 intake。
 
 ## UI
 
@@ -209,7 +233,7 @@ go run ./cmd/server --enable-experimental-inventory
 go run ./cmd/server
 ```
 
-打开 [http://localhost:8080](http://localhost:8080)。这会运行 Server-owned Demo，但 HTTP 授权入口默认 fail closed。仅做本地 API/MCP 开发时增加 `--allow-development-intake`。也可使用 `docker compose up --build`。需要 MCP enforcement 时，再增加 `--mcp-upstream <absolute-http(s)-url>`，并按[试点协议](docs/experiments/enterprise-agent-pilot.zh-CN.md)先连接无害的受控上游；不要直接连接生产工具或凭据。
+打开 [http://localhost:8080](http://localhost:8080)。这会运行 Server-owned Demo，但 HTTP 授权入口默认处于 RejectAll、会 fail closed。仅做本地 API/MCP 开发时增加 `--allow-development-intake`；生产形态集成则放在已认证代理之后，同时配置两个 trusted-proxy 参数，两种模式不能共存。也可使用 `docker compose up --build`。需要 MCP enforcement 时，再增加 `--mcp-upstream <absolute-http(s)-url>`，并按[试点协议](docs/experiments/enterprise-agent-pilot.zh-CN.md)先连接无害的受控上游；不要直接连接生产工具或凭据。
 
 ## 审计与证据真相
 

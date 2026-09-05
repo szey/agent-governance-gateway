@@ -29,7 +29,7 @@ Aegis 不做通用权限管理、endpoint sandbox、workspace isolation、企业
 ## 安全属性与执行顺序
 
 ```text
-Agent proposes action
+已认证身份 + Agent proposes action
     ↓
 Normalize CanonicalAction
     ↓
@@ -44,13 +44,17 @@ Execute exactly the authorized action
 Write redacted Audit Receipt
 ```
 
+`已认证身份 + 精确语义意图 + 签名单次 Permit = 密码学绑定的执行。`
+
 授权和验证必须使用相同的 canonicalizer。事后收到 RuntimeEvent 不能替代执行前检查；如果 Permit 验证失败，上游工具调用次数必须为零。
 
 ## Trusted Authorization Intake
 
 HTTP body/header 中的 principal、Agent、workload 与 delegated authority 不能直接成为授权事实。`TrustedAuthorizationIntake` 必须先从已配置的信任边界解析并覆盖这些字段，再把来源、provider、assurance 与建立时间记录到 `authorization_context_provenance`。未配置 intake 时 HTTP 授权默认拒绝。
 
-当前提供两种窄实现：供已认证中间件/嵌入进程注入固定可信上下文的 static intake，以及必须显式启用、仅接受 loopback peer、标记为 `development_only` 的本地开发 intake。这不是 IAM、SSO、RBAC 或 bearer-token 验证。
+独立 Server 只能选择三种模式之一：安全默认的 `RejectAll`；显式启用、只接受 loopback direct peer 的 body 身份并标记 `development_only` 的 `LoopbackDevelopment`；或者 `TrustedProxy`，只对位于已配置 IPv4/IPv6 CIDR 内的直接 TCP 对端接受严格的五个 Header 身份契约。TrustedProxy 只根据 `request.RemoteAddr` 建立信任，永远不用 `X-Forwarded-For`、`Forwarded` 或 `X-Real-IP`；缺失、重复、格式错误、首尾空白、超长或含控制字符的身份值，无效的 64 位十六进制 fingerprint，以及含空项/重复项/错误语法的逗号分隔 scopes 全部拒绝。接受的 scopes 会排序，并覆盖全部 body 身份字段。开发与 Proxy 模式不能共存。已认证中间件的嵌入进程仍可使用 static intake。
+
+TrustedProxy provenance 记录 `source=trusted_integration`、配置的 provider ID、`assurance=authenticated_context` 和服务端建立时间。Aegis 自身不认证用户，也不验证 OAuth Token；它只消费另一个可信认证边界建立的身份。这不是 IAM、SSO、OAuth、RBAC 或 bearer-token 验证。
 
 `Router.AuthorizeTrustedAction(intake.Authorization)` 是唯一普通 Permit 签发入口。`Router` 不再暴露接受裸 `models.Request` 的 `AuthorizeAction/Authorize/Process`；进程内集成也必须调用 `intake.NewTrustedAuthorization(...)` 或经过 intake 实现来创建 sealed context。同一进程本身不是身份来源。Server-owned fixtures 只能使用名称和 provenance 都明确为 `simulated_demo` 的 synthetic 入口。
 

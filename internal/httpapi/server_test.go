@@ -10,9 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 
+	"agent-governance-gateway/internal/adapters/mcp"
 	"agent-governance-gateway/internal/audit"
 	"agent-governance-gateway/internal/config"
 	"agent-governance-gateway/internal/discovery"
@@ -21,6 +23,7 @@ import (
 	"agent-governance-gateway/internal/models"
 	"agent-governance-gateway/internal/router"
 	"agent-governance-gateway/internal/scenario"
+	"agent-governance-gateway/internal/semanticaction"
 	"agent-governance-gateway/internal/sessionaudit"
 )
 
@@ -103,6 +106,172 @@ func TestTrustedIntakeOverridesForgedHTTPIdentityAndIsAudited(t *testing.T) {
 	provenance := result.Decision.AuthorizationContext
 	if provenance == nil || provenance.ProviderID != "authenticated-test-middleware" || provenance.Assurance != intake.AssuranceAuthenticated {
 		t.Fatalf("authorization provenance = %#v", provenance)
+	}
+}
+
+func TestTrustedProxyAuthorizationExecutesOneNormalizedPaymentThroughMCP(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		upstreamCalls.Add(1)
+		var rpc struct {
+			Params struct {
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&rpc); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		} else if string(rpc.Params.Arguments) != `{"amount_minor":100,"currency":"USD","recipient":"merchant-456"}` {
+			t.Errorf("upstream arguments = %s", rpc.Params.Arguments)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`))
+	}))
+	defer upstream.Close()
+
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SemanticActions.PaymentSendV1.UpstreamURL = upstream.URL
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	store, err := audit.NewStore(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.New(cfg, store)
+	profile, err := semanticaction.NewPaymentSendV1(cfg.SemanticActions.PaymentSendV1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpProxy, err := mcp.New(r, profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustedProxy, err := intake.NewTrustedProxy([]string{"127.0.0.1/32"}, "local-auth-gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	static, err := fs.Sub(fstest.MapFS{"static/index.html": {Data: []byte("ok")}}, "static")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	api := httpapi.NewWithOptions(r, store, cfg, nil, nil, filepath.Join(t.TempDir(), "session-audit.jsonl"), static, logger, httpapi.Options{
+		MCPHandler: mcpProxy, AuthorizationIntake: trustedProxy,
+	})
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+
+	proposal := structuredSafeRequest()
+	proposal.Principal = models.PrincipalContext{PrincipalID: "forged-admin", PrincipalType: "service"}
+	proposal.Agent = models.AgentIdentity{AgentID: "attacker-agent", WorkloadID: "attacker-workload"}
+	proposal.Authority = models.DelegatedAuthority{CredentialFingerprint: strings.Repeat("a", 64), Scopes: []string{"payment.unlimited"}, Subject: "forged-admin"}
+	proposal.Action.Arguments = json.RawMessage(`{"recipient":"merchant-456","amount_minor":100,"currency":"USD"}`)
+	proposalBody, _ := json.Marshal(proposal)
+	authorizeRequest, err := http.NewRequest(http.MethodPost, server.URL+"/api/actions/authorize", bytes.NewReader(proposalBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizeRequest.Header.Set("Content-Type", "application/json")
+	setTrustedProxyAuthorizationHeaders(authorizeRequest.Header)
+	authorizeResponse, err := server.Client().Do(authorizeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authorizeResponse.Body.Close()
+	if authorizeResponse.StatusCode != http.StatusOK {
+		t.Fatalf("authorization status = %d", authorizeResponse.StatusCode)
+	}
+	var authorized models.ActionAuthorizationResponse
+	if err := json.NewDecoder(authorizeResponse.Body).Decode(&authorized); err != nil {
+		t.Fatal(err)
+	}
+	if authorized.Permit == nil || authorized.Decision.Request.Principal.PrincipalID != "user-01" || authorized.Decision.Request.Agent.AgentID != "finance-agent" || authorized.Decision.Request.Agent.WorkloadID != "finance-workload-v1" {
+		t.Fatalf("trusted proxy identity was not authoritative: %#v", authorized.Decision.Request)
+	}
+	envelope := authorized.Decision.AuthorizationEnvelope
+	if envelope == nil || envelope.PrincipalID != "user-01" || envelope.AgentID != "finance-agent" || envelope.WorkloadID != "finance-workload-v1" {
+		t.Fatalf("signed Permit binding did not use trusted identity: %#v", envelope)
+	}
+	provenance := authorized.Decision.AuthorizationContext
+	if provenance == nil || provenance.Source != intake.SourceTrustedIntegration || provenance.ProviderID != "local-auth-gateway" || provenance.Assurance != intake.AssuranceAuthenticated || provenance.EstablishedAt.IsZero() {
+		t.Fatalf("trusted proxy provenance = %#v", provenance)
+	}
+
+	mcpBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"payment.send","arguments":{"currency":"USD","recipient":"merchant-456","amount_minor":100},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`)
+	executeRequest, err := http.NewRequest(http.MethodPost, server.URL+"/mcp", bytes.NewReader(mcpBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executeRequest.Header.Set("Authorization", "AegisPermit "+authorized.Permit.PermitToken)
+	executeRequest.Header.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion20260728)
+	executeRequest.Header.Set(mcp.HeaderMethod, "tools/call")
+	executeRequest.Header.Set(mcp.HeaderName, "payment.send")
+	executeRequest.Header.Set(mcp.HeaderPrincipalID, "user-01")
+	executeRequest.Header.Set(mcp.HeaderAgentID, "finance-agent")
+	executeRequest.Header.Set(mcp.HeaderWorkloadID, "finance-workload-v1")
+	executeRequest.Header.Set(mcp.HeaderDelegationFingerprint, strings.Repeat("b", 64))
+	executeRequest.Header.Set(mcp.HeaderCapability, "payment_transfer")
+	executeRequest.Header.Set(mcp.HeaderResource, "account-123")
+	executeRequest.Header.Set(mcp.HeaderOperation, "transfer")
+	executeResponse, err := server.Client().Do(executeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer executeResponse.Body.Close()
+	if executeResponse.StatusCode != http.StatusOK || upstreamCalls.Load() != 1 {
+		t.Fatalf("execution status=%d upstream calls=%d", executeResponse.StatusCode, upstreamCalls.Load())
+	}
+
+	record, ok := store.Get(authorized.Decision.RequestID)
+	if !ok || record.AuthorizationContext == nil || record.AuthorizationContext.ProviderID != "local-auth-gateway" || record.ExecutionReceipt == nil ||
+		record.ExecutionReceipt.PrincipalID != "user-01" || record.ExecutionReceipt.AgentID != "finance-agent" || record.ExecutionReceipt.WorkloadID != "finance-workload-v1" ||
+		record.ExecutionReceipt.Tool != "payment.send" || record.ExecutionReceipt.Capability != "payment_transfer" || record.ExecutionReceipt.Resource != "account-123" || record.ExecutionReceipt.Operation != "transfer" ||
+		record.ExecutionReceipt.ProfileID != "payment.send/v1" || record.ExecutionReceipt.Audience != "mcp://local-payment-sandbox" || record.ExecutionReceipt.ActionDigest == "" ||
+		record.ExecutionReceipt.VerificationOutcome != "VERIFIED" || record.ExecutionReceipt.PermitID == "" {
+		t.Fatalf("trusted execution audit record = %#v", record)
+	}
+	persisted, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{authorized.Permit.PermitToken, "forged-admin", "attacker-agent", "attacker-workload", "merchant-456"} {
+		if bytes.Contains(persisted, []byte(forbidden)) {
+			t.Fatalf("audit leaked caller-controlled or secret value %q", forbidden)
+		}
+	}
+}
+
+func TestTrustedProxyHTTPFailuresIssueNoPermit(t *testing.T) {
+	provider, err := intake.NewTrustedProxy([]string{"127.0.0.1/32"}, "local-auth-gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		remoteAddr string
+		mutate     func(http.Header)
+	}{
+		{"untrusted direct peer", "192.0.2.10:43210", func(http.Header) {}},
+		{"missing workload header", "127.0.0.1:43210", func(header http.Header) { header.Del(intake.HeaderWorkloadID) }},
+		{"invalid delegation fingerprint", "127.0.0.1:43210", func(header http.Header) { header.Set(intake.HeaderDelegationFingerprint, "not-a-fingerprint") }},
+		{"malformed scopes", "127.0.0.1:43210", func(header http.Header) { header.Set(intake.HeaderDelegatedScopes, "payment.transfer,,finance.read") }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler, store := trustedProxyTestHandler(t, provider)
+			body, _ := json.Marshal(structuredSafeRequest())
+			request := httptest.NewRequest(http.MethodPost, "/api/actions/authorize", bytes.NewReader(body))
+			request.RemoteAddr = test.remoteAddr
+			request.Header.Set("Content-Type", "application/json")
+			setTrustedProxyAuthorizationHeaders(request.Header)
+			test.mutate(request.Header)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized || strings.Contains(response.Body.String(), "permit_token") || len(store.Recent(10)) != 0 {
+				t.Fatalf("status=%d body=%s audit records=%d", response.Code, response.Body.String(), len(store.Recent(10)))
+			}
+		})
 	}
 }
 
@@ -658,4 +827,33 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func trustedProxyTestHandler(t *testing.T, provider *intake.TrustedProxy) (http.Handler, *audit.Store) {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := audit.NewStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	static, err := fs.Sub(fstest.MapFS{"static/index.html": {Data: []byte("ok")}}, "static")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	server := httpapi.NewWithOptions(router.New(cfg, store), store, cfg, nil, nil, filepath.Join(t.TempDir(), "session-audit.jsonl"), static, logger, httpapi.Options{
+		AuthorizationIntake: provider,
+	})
+	return server.Handler(), store
+}
+
+func setTrustedProxyAuthorizationHeaders(header http.Header) {
+	header.Set(intake.HeaderAuthenticatedPrincipal, "user-01")
+	header.Set(intake.HeaderAgentID, "finance-agent")
+	header.Set(intake.HeaderWorkloadID, "finance-workload-v1")
+	header.Set(intake.HeaderDelegatedScopes, "payment.transfer")
+	header.Set(intake.HeaderDelegationFingerprint, strings.Repeat("b", 64))
 }
