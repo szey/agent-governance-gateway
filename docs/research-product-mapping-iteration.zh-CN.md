@@ -2,7 +2,7 @@
 
 [English](research-product-mapping-iteration.md) | 简体中文
 
-最近产品复核：2026-09-04
+最近产品复核：2026-09-05
 
 本文是 Aegis Router 的统一调研登记：标准、事故、媒体/安全公司建议、社区痛点、开源借鉴、处置决定与产品映射均在这里维护。中文是语义工作源，英文必须在同一次变更中同步。
 
@@ -40,7 +40,7 @@ Aegis Router 被收窄为一个不绑定 Agent 框架的 execution-permit/refere
 
 每项建议只能选择 `reject / defer / docs_only / fixture / experiment / implement` 之一，并记录原因。`S4` 产品决定可以改变范围；“已实现”仍必须达到 `V2`。公司端点探索性输出不是 `V3`。
 
-## 3. 2026-09-04 聚焦产品决定
+## 3. 2026-09-05 聚焦产品决定
 
 | `research_id` | 可证伪问题 | 处置 | 本轮落地与边界 |
 |---|---|---|---|
@@ -51,9 +51,11 @@ Aegis Router 被收窄为一个不绑定 Agent 框架的 execution-permit/refere
 | `FOCUS-005` | 多 Adapter 是否会在 MVP 中产生多套错误安全语义？ | `implement` | 只实现 MCP；其他 Adapter 本里程碑 `reject` |
 | `FOCUS-006` | Aegis 是否应自己提供隔离？ | `reject` | 不实现 sandbox backend；仅表达 `isolation_required` obligation |
 | `FOCUS-007` | Discovery/Shadow Agent 是否仍应扩展？ | `reject`（扩展）/ `docs_only`（兼容） | 代码冻结、默认关闭、普通 UI 隐藏；仅 `--enable-experimental-inventory` 与 `cmd/discover` 保留 |
-| `FOCUS-008` | 数值 Risk 是否应定义产品或改变授权？ | `docs_only` | Risk 只作可选咨询元数据/obligation 输入，不覆盖确定性拒绝 |
+| `FOCUS-008` | 数值 Risk 是否应定义产品或改变授权？ | `implement` | Risk/detection 只进入 `advisory_signals`；不再决定状态、Permit、obligations 或 executor |
+| `FOCUS-009` | 同进程裸 `models.Request` 是否可能绕过身份来源边界？ | `implement` | 删除普通 `AuthorizeAction/Authorize/Process` 入口；Permit 签发必须接收 sealed `intake.Authorization`，Demo 仅用明确 synthetic 入口 |
+| `FOCUS-010` | 单次 Permit 是否会被误写为业务副作用 exactly once？ | `docs_only` | 明确只保证 Permit 至多成功消费一次；失败/timeout 不恢复，业务重试依赖 upstream 幂等机制 |
 
-这批产品负责人决定属于 `S4`。只有 canonicalization、签名、过期/撤销/replay、隐私和 MCP upstream-not-called 测试通过后，相应实现才记为 `V2 reproduced`。
+这批产品负责人决定属于 `S4`。没有新增外部来源；本轮以架构负向测试验证 trusted-intake、deterministic-policy、单次消费与 upstream-not-called 边界。只有 canonicalization、签名、过期/撤销/replay、隐私和 MCP upstream-not-called 测试通过后，相应实现才记为 `V2 reproduced`。
 
 ## 4. 先前公司端点反馈的保留方式
 

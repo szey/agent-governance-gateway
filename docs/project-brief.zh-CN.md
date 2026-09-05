@@ -52,6 +52,8 @@ HTTP body/header 中的 principal、Agent、workload 与 delegated authority 不
 
 当前提供两种窄实现：供已认证中间件/嵌入进程注入固定可信上下文的 static intake，以及必须显式启用、仅接受 loopback peer、标记为 `development_only` 的本地开发 intake。这不是 IAM、SSO、RBAC 或 bearer-token 验证。
 
+`Router.AuthorizeTrustedAction(intake.Authorization)` 是唯一普通 Permit 签发入口。`Router` 不再暴露接受裸 `models.Request` 的 `AuthorizeAction/Authorize/Process`；进程内集成也必须调用 `intake.NewTrustedAuthorization(...)` 或经过 intake 实现来创建 sealed context。同一进程本身不是身份来源。Server-owned fixtures 只能使用名称和 provenance 都明确为 `simulated_demo` 的 synthetic 入口。
+
 ## CanonicalAction
 
 规范动作绑定：principal ID、Agent ID、workload ID、delegated-authority fingerprint、tool、capability、resource、operation 与安全相关 arguments。
@@ -89,6 +91,8 @@ Verifier 在副作用前检查签名、issuer、时间、Permit ID、主体、Ag
 
 消费发生在上游副作用前，并且是不可逆 commit point。上游失败或 timeout 后 Permit 仍为 `CONSUMED`；重试必须取得一次新授权和新 Permit。不存在 `unconsume`。
 
+这只保证一个 Permit 至多成功消费一次，不保证付款、订单、账户变更、消息发送等上游业务副作用 exactly once。若副作用成功而响应丢失，重试仍需新 Permit，并必须依赖 upstream 自己的业务幂等键/去重机制；Aegis 不实现业务幂等引擎。
+
 ## MCP Adapter
 
 MCP 是 focused MVP 唯一的生产形态 Adapter。它把 `tools/call` 与受信任的主体/工作负载/资源元数据规范化，获取或接收 Permit，在转发上游前调用同一 verifier，并只记录响应状态、耗时等必要结果元数据。
@@ -99,15 +103,15 @@ Adapter 不能在验证失败时“先调用、后告警”，也不能仅凭 `p
 
 ## Policy、Risk 与 obligations
 
-Policy 仍使用结构化 Request context 进行确定性授权。概念结果为 `AUTHORIZED / DENIED / REQUIRES_APPROVAL`。
+Policy 仍使用结构化 Request context 进行确定性授权。概念结果为 `AUTHORIZED / DENIED / REQUIRES_APPROVAL`，且只有 Policy 可以决定状态、Permit 是否签发与 signed obligations。
 
-Risk 保留为可选咨询元数据，只能辅助产生 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等 obligations。它不能将未授权动作变成授权动作，也不需要扩展成大型评分系统。
+Risk/detection 保留为可选咨询元数据并单独进入 `advisory_signals`；它们不能改变授权状态、产生 grant、签发 Permit 或选择 executor。只有显式确定性 Policy/配置映射可以产生 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等 obligations。
 
 `isolation_required: true` 由外部 executor 履行。Aegis 不实现 sandbox backend，focused MCP Proxy 在仍需要隔离或人工批准时不会转发。Read-only 与 network-egress obligations 仍需要可信外部 executor/control 落实上游 Tool 的真实行为；兼容字段中的 `RESTRICT/SANDBOX` 只是 execution profile hint。
 
 ## Audit Receipt 与 Runtime Evidence
 
-每次动作生成可解释 receipt：request/decision/permit ID、principal、Agent、tool、resource、operation、action digest、policy version、authorization decision、Permit state、verification outcome、timestamp 和 evidence source。
+每次动作按 `TRUST CONTEXT → ACTION → POLICY → OBLIGATIONS → PERMIT → VERIFICATION → EXECUTION` 生成可解释 receipt，并记录 upstream attempted 与 execution outcome。Risk/detection 只出现在 `ADVISORY SIGNALS`。
 
 Authorization status 使用 `AUTHORIZED / DENIED / REQUIRES_APPROVAL`；当前执行 final verdict 包括 `EXECUTED_WITH_VALID_PERMIT`、`PERMIT_ACTION_MISMATCH`、`PERMIT_EXPIRED`、`PERMIT_REPLAY`、`PERMIT_INVALID_SIGNATURE`、`PERMIT_REVOKED` 与 `EXECUTION_OBLIGATION_UNSATISFIED`，receipt 内同时保留 verifier 的精确 outcome 和 execution outcome。
 

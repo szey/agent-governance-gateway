@@ -34,6 +34,11 @@
 8. UI、audit、errors 和 upstream metadata 是否都不泄漏 `permit_token`、raw delegated token 或原始敏感参数？
 9. Demo 是否始终标记 `simulated_demo`，RuntimeEvent 是否明确只是辅助证据？
 10. CPU、内存、延迟和审计增长是否在预先批准范围？
+11. Side-effecting upstream 是否提供独立业务幂等机制，并且试点报告是否没有把单次 Permit 误写成 exactly-once 业务执行？
+
+## 单次 Permit 与业务幂等
+
+本试点只能证明同一个 Execution Permit 至多成功消费一次，不能证明任意上游业务副作用恰好发生一次。若 upstream 已完成动作但响应丢失，Aegis 仍保持原 Permit 为 `CONSUMED`；任何重试都需要新授权和新 Permit。付款、订单、账户变更、消息发送等有副作用工具必须使用 upstream 自己的业务幂等键或去重机制。试点不实现也不模拟 Aegis 业务幂等引擎。
 
 ## 授权与禁止范围
 
@@ -105,12 +110,13 @@ Discovery 不属于这个 Gate 的验收内容。
 7. 保存脱敏 receipt 和 upstream call counter；
 8. 对每种负向结果重复验证 counter 为零；
 9. 让一次已验证调用在 upstream 返回失败或 timeout，确认 Permit 仍为 `CONSUMED`；随后只有重新授权取得新 Permit 才允许重试。
+10. 对有副作用的测试 Tool 使用 upstream 自己的幂等键；模拟“副作用成功但响应丢失”，确认记录明确区分 Permit 单次消费与业务 exactly-once，且不复用原 Permit。
 
 若 WorkBuddy 或其他 Agent 无法配置获准 MCP 边界，本 Gate 不通过。不能通过修改公司 Agent、绕过策略或采集全机行为“补齐”测试。
 
 ## Gate 4：证据复核与退出
 
-审计必须回答 request/decision/permit ID、`signing_key_id`、principal、Agent/workload、authorization-context provenance、tool、resource、operation、action digest、policy version、authorization decision、Permit state、verification outcome、timestamp、evidence source 与 upstream call count；不得含 token 或原始敏感参数。
+审计必须按 trust context、action、deterministic policy、obligations、Permit、verification、execution 的顺序回答 request/decision/permit ID、`signing_key_id`、principal、Agent/workload、authorization-context provenance、tool、resource、operation、action digest、policy version、authorization decision、Permit state、verification outcome、upstream attempted、execution outcome、timestamp、evidence source 与 upstream call count；risk/detection 只能位于 advisory signals，且审计不得含 token 或原始敏感参数。
 
 结束后停止 Aegis、Proxy 和测试 upstream，撤销所有未消费 Permit，删除临时私钥与 synthetic payload，并由公司负责人决定本地审计保留/删除。只有脱敏结论与 synthetic 最小复现可以返回公开仓库。
 

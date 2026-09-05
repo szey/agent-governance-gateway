@@ -34,6 +34,11 @@ This pilot does not evaluate generic Agent management, Shadow discovery, sandbox
 8. Do UI, audit, errors, and upstream metadata all exclude `permit_token`, raw delegated tokens, and raw sensitive arguments?
 9. Does Demo remain `simulated_demo`, with RuntimeEvent clearly secondary evidence?
 10. Are CPU, memory, latency, and audit growth within the pre-approved envelope?
+11. Does every side-effecting upstream provide independent business idempotency, with no pilot claim that a single-use Permit means exactly-once business execution?
+
+## Single-use Permit and business idempotency
+
+This pilot can prove only that one Execution Permit is successfully consumed at most once; it cannot prove that an arbitrary upstream business side effect occurs exactly once. If the upstream completes an action but its response is lost, Aegis still leaves the original Permit `CONSUMED`, and every retry needs a new authorization and new Permit. Side-effecting tools for payments, orders, account changes, message sending, and similar operations must use the upstream system's own business idempotency key or deduplication mechanism. The pilot neither implements nor simulates an Aegis business idempotency engine.
 
 ## Authorization and prohibited scope
 
@@ -105,12 +110,13 @@ Proceed only if the company Agent/tool system supports an approved MCP client or
 7. Retain a redacted receipt and upstream call counter.
 8. Repeat each negative outcome and confirm the counter remains zero.
 9. Make one verified call fail or time out upstream, confirm its Permit remains `CONSUMED`, and allow retry only after a fresh authorization produces a new Permit.
+10. For any side-effecting test tool, use the upstream's own idempotency key. Simulate “side effect succeeded but response was lost,” confirm the record distinguishes single-use Permit consumption from business exactly-once semantics, and never reuse the original Permit.
 
 If WorkBuddy or another Agent cannot configure an approved MCP boundary, this Gate does not pass. Do not modify the company Agent, bypass policy, or collect whole-machine behavior to “complete” the test.
 
 ## Gate 4: evidence review and exit
 
-Audit must answer request/decision/permit ID, `signing_key_id`, principal, Agent/workload, authorization-context provenance, tool, resource, operation, action digest, policy version, authorization decision, Permit state, verification outcome, timestamp, evidence source, and upstream call count. It contains no token or raw sensitive arguments.
+Audit must explain trust context, action, deterministic policy, obligations, Permit, verification, and execution in that order. It must answer request/decision/permit ID, `signing_key_id`, principal, Agent/workload, authorization-context provenance, tool, resource, operation, action digest, policy version, authorization decision, Permit state, verification outcome, upstream attempted, execution outcome, timestamp, evidence source, and upstream call count. Risk/detection may appear only under advisory signals. It contains no token or raw sensitive arguments.
 
 At exit, stop Aegis, the Proxy, and test upstream; revoke every unconsumed Permit; remove temporary private keys and synthetic payloads; and let the company owner decide local audit retention/deletion. Only redacted conclusions and a synthetic minimal reproduction may return to the public repository.
 

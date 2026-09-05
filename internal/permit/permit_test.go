@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -188,6 +189,15 @@ func TestMemoryStoreLifecycleAndSafeListing(t *testing.T) {
 			t.Fatalf("safe list exposed a credential or arguments: %s", encoded)
 		}
 	})
+}
+
+func TestStoreExposesNoConsumedPermitRestoreOperation(t *testing.T) {
+	storeType := reflect.TypeOf((*permit.Store)(nil)).Elem()
+	for _, forbidden := range []string{"Unconsume", "Restore", "Reset", "Reissue"} {
+		if _, exists := storeType.MethodByName(forbidden); exists {
+			t.Fatalf("Permit Store exposes forbidden consumed-to-issued operation %s", forbidden)
+		}
+	}
 }
 
 func keyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {

@@ -203,6 +203,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 func (p *Proxy) forward(w http.ResponseWriter, inbound *http.Request, body []byte, routing routingMetadata, verification models.PermitVerification, action *canonicalaction.Action) {
 	outbound, err := http.NewRequestWithContext(inbound.Context(), http.MethodPost, p.upstream.String(), bytes.NewReader(body))
 	if err != nil {
+		if verification.Verified {
+			_, _ = p.gate.CompleteVerifiedExecution(models.ExecutionCompletion{
+				RequestID: verification.RequestID, PermitID: verification.PermitID, Status: "failed",
+				UpstreamAttempted: false,
+			})
+		}
 		writeRPCError(w, http.StatusBadGateway, nil, -32603, "MCP upstream request could not be created", nil)
 		return
 	}
@@ -220,7 +226,7 @@ func (p *Proxy) forward(w http.ResponseWriter, inbound *http.Request, body []byt
 	if err != nil {
 		if verification.Verified {
 			_, _ = p.gate.CompleteVerifiedExecution(models.ExecutionCompletion{
-				RequestID: verification.RequestID, PermitID: verification.PermitID, Status: "failed",
+				RequestID: verification.RequestID, PermitID: verification.PermitID, Status: "failed", UpstreamAttempted: true,
 			})
 		}
 		writeRPCError(w, http.StatusBadGateway, nil, -32002, "MCP upstream is unavailable", nil)
@@ -248,7 +254,8 @@ func (p *Proxy) forward(w http.ResponseWriter, inbound *http.Request, body []byt
 			status = "failed"
 		}
 		if _, err := p.gate.CompleteVerifiedExecution(models.ExecutionCompletion{
-			RequestID: verification.RequestID, PermitID: verification.PermitID, Status: status, CompletedAt: now,
+			RequestID: verification.RequestID, PermitID: verification.PermitID, Status: status,
+			UpstreamAttempted: true, CompletedAt: now,
 		}); err != nil {
 			w.Header().Set("X-Aegis-Audit-Status", "completion-record-failed")
 		}

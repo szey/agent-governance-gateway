@@ -96,49 +96,29 @@ func NewWithClockAndKeyProvider(cfg models.PolicyConfig, store *audit.Store, clo
 	}
 }
 
-// Process remains the compatibility entry point for /api/route. It performs
-// pre-execution authorization only and never invents runtime events from the
-// request body.
-func (r *Router) Process(req models.Request) (models.AuditRecord, error) {
-	return r.Authorize(req)
-}
-
-// Authorize is the compatibility authorization entry point. It deliberately
-// omits the execution credential; new executors must call AuthorizeAction and
-// verify the returned permit token immediately before the side effect.
-func (r *Router) Authorize(req models.Request) (models.AuditRecord, error) {
-	result, err := r.AuthorizeAction(req)
-	return result.Decision, err
-}
-
-// AuthorizeAction deterministically evaluates the structured request and, for
-// an authorized action, returns a signed short-lived single-use credential.
-// The token exists only in the response and is never placed in AuditRecord.
-func (r *Router) AuthorizeAction(req models.Request) (models.ActionAuthorizationResponse, error) {
-	return r.authorizeAction(req, 0, inProcessProvenance())
-}
-
-// AuthorizeTrustedAction is the HTTP-facing authorization entry point. The
-// sealed intake value proves that a configured boundary resolved the security
-// identity instead of the Router trusting caller metadata directly.
+// AuthorizeTrustedAction is the only normal execution-permit issuance entry
+// point. The sealed intake value proves that a configured trust boundary
+// resolved the security identity instead of the Router trusting a naked
+// models.Request. In-process integrations must explicitly construct this
+// value through intake.NewTrustedAuthorization or an intake implementation.
 func (r *Router) AuthorizeTrustedAction(authorization intake.Authorization) (models.ActionAuthorizationResponse, error) {
 	if !authorization.Valid() {
 		return models.ActionAuthorizationResponse{}, intake.ErrTrustedContextRequired
 	}
-	return r.authorizeAction(authorization.Request(), 0, authorization.Provenance())
+	return r.authorizeResolvedAction(authorization.Request(), authorization.Provenance(), 0)
 }
 
 // AuthorizeSyntheticDemoAction is restricted to server-owned fixtures. It
 // permits a shorter TTL so expiration can be demonstrated without changing
 // the production policy or accepting a client-controlled lifetime.
 func (r *Router) AuthorizeSyntheticDemoAction(req models.Request, ttl time.Duration) (models.ActionAuthorizationResponse, error) {
-	return r.authorizeAction(req, ttl, models.AuthorizationContextProvenance{
+	return r.authorizeResolvedAction(req, models.AuthorizationContextProvenance{
 		Source: "server_owned_fixture", ProviderID: "aegis-demo-lab",
 		Assurance: "simulated_demo",
-	})
+	}, ttl)
 }
 
-func (r *Router) authorizeAction(req models.Request, ttlOverride time.Duration, provenance models.AuthorizationContextProvenance) (models.ActionAuthorizationResponse, error) {
+func (r *Router) authorizeResolvedAction(req models.Request, provenance models.AuthorizationContextProvenance, ttlOverride time.Duration) (models.ActionAuthorizationResponse, error) {
 	if err := Validate(req); err != nil {
 		return models.ActionAuthorizationResponse{}, err
 	}
@@ -150,14 +130,14 @@ func (r *Router) authorizeAction(req models.Request, ttlOverride time.Duration, 
 		req.RequestID = newIdentifier("req")
 	}
 
+	// Only deterministic policy output controls status, obligations, and Permit
+	// issuance. Risk and request/session detection run later solely to enrich
+	// advisory audit metadata.
 	policyDecision := r.policy.Evaluate(req)
-	assessment := r.risk.Assess(req)
-	detected := r.detection.Evaluate(req, assessment.Score)
-	assessment = applyDetectionRisk(assessment, detected)
-	dispatch := dispatchFor(policyDecision, assessment, detected)
-	status := authorizationStatus(policyDecision, dispatch)
+	status := policyDecision.Status
+	obligations := policyObligations(policyDecision)
 	decisionID := newIdentifier("decision")
-	obligations := obligationsFor(policyDecision, assessment, detected, dispatch)
+	dispatch := compatibilityDispatchFor(policyDecision)
 
 	observation := models.RuntimeObservation{
 		Events: []models.RuntimeEvent{}, EventEvaluations: []models.RuntimeEventEvaluation{},
@@ -178,7 +158,7 @@ func (r *Router) authorizeAction(req models.Request, ttlOverride time.Duration, 
 			return models.ActionAuthorizationResponse{}, fmt.Errorf("canonicalize authorized action: %w", err)
 		}
 	}
-	if status == models.AuthorizationStatusAuthorized && executionPermitted(dispatch.Route) && policyDecision.Grant != nil {
+	if status == models.AuthorizationStatusAuthorized && policyDecision.Authorized && policyDecision.Grant != nil {
 		issued, issueErr := r.issuePermit(req, *policyDecision.Grant, obligations, actionDigest, started, ttlOverride)
 		if issueErr != nil {
 			return models.ActionAuthorizationResponse{}, issueErr
@@ -193,16 +173,24 @@ func (r *Router) authorizeAction(req models.Request, ttlOverride time.Duration, 
 		r.mu.Unlock()
 	}
 
+	// Advisory evaluation deliberately occurs only after the deterministic
+	// Permit decision has been completed. Its scores, findings, and recommended
+	// routes cannot change status, obligations, or whether a Permit exists.
+	advisory := r.evaluateAdvisorySignals(req)
+	assessment := advisory.RiskAssessment
+	detectedContext := advisory.CausalContext
+
 	auditRequest := privacySafeRequest(req)
 	receipt := authorizationReceipt(decisionID, req, status, envelope, actionDigest, r.policyVersion, started)
 	record := models.AuditRecord{
 		RequestID: req.RequestID, DecisionID: decisionID, AuthorizationStatus: status,
 		CreatedAt: started, Request: auditRequest, AuthorizationContext: &provenance,
-		PolicyDecision: policyDecision, RiskAssessment: assessment, DispatchDecision: dispatch,
+		PolicyDecision: policyDecision, Obligations: obligations,
 		AuthorizationEnvelope: envelope, ExecutionReceipt: receipt, SelectedExecutor: dispatch.ExecutorProfile,
-		RuntimeObservation: observation, SecurityFindings: nonNilFindings(detected.Findings),
-		CausalContext: detected.Context, FinalVerdict: authorizationVerdict(status),
-		DurationMS: elapsedMilliseconds(started, r.clock().UTC()),
+		RuntimeObservation: observation, SecurityFindings: []models.SecurityFinding{}, AdvisorySignals: advisory,
+		RiskAssessment: assessment, DispatchDecision: dispatch, CausalContext: detectedContext,
+		FinalVerdict: authorizationVerdict(status),
+		DurationMS:   elapsedMilliseconds(started, r.clock().UTC()),
 	}
 	if err := r.audit.Append(record); err != nil {
 		if envelope != nil {
@@ -216,10 +204,23 @@ func (r *Router) authorizeAction(req models.Request, ttlOverride time.Duration, 
 	return models.ActionAuthorizationResponse{Decision: record, Permit: credential}, nil
 }
 
-func inProcessProvenance() models.AuthorizationContextProvenance {
-	return models.AuthorizationContextProvenance{
-		Source: "trusted_in_process", ProviderID: "router-api",
-		Assurance: "process_boundary",
+func (r *Router) evaluateAdvisorySignals(req models.Request) models.AdvisorySignals {
+	assessment := models.RiskAssessment{
+		Level: "not_evaluated", Signals: []string{"advisory risk analysis is disabled"}, AdvisoryOnly: true,
+	}
+	if r.risk == nil {
+		return models.AdvisorySignals{RiskAssessment: assessment, DetectionFindings: []models.SecurityFinding{}}
+	}
+	assessment = r.risk.Assess(req)
+	assessment.AdvisoryOnly = true
+	if r.detection == nil {
+		return models.AdvisorySignals{RiskAssessment: assessment, DetectionFindings: []models.SecurityFinding{}}
+	}
+	detected := r.detection.Evaluate(req, assessment.Score)
+	assessment = mergeAdvisoryRisk(assessment, detected)
+	return models.AdvisorySignals{
+		RiskAssessment: assessment, DetectionFindings: nonNilFindings(detected.Findings),
+		CausalContext: detected.Context,
 	}
 }
 
@@ -292,7 +293,7 @@ func (r *Router) auditUnboundVerificationFailure(result verifier.Result, source 
 			Reasons: []string{"the execution credential could not be authenticated; token claims were not trusted"},
 			Rules:   []string{"permit.untrusted_credential"},
 		},
-		RiskAssessment:   models.RiskAssessment{Level: "not_evaluated", Signals: []string{"verification failed before trusted claims were available"}},
+		RiskAssessment:   models.RiskAssessment{Level: "not_evaluated", Signals: []string{"verification failed before trusted claims were available"}, AdvisoryOnly: true},
 		DispatchDecision: dispatch(models.RouteDeny, "none", "not_applicable", []string{"execution blocked at the permit boundary"}, []string{"permit.untrusted_credential"}),
 		ExecutionReceipt: &models.ExecutionReceipt{
 			RequestID: attemptID, DecisionID: decisionID, AuthorizationDecision: models.AuthorizationStatusDenied,
@@ -303,7 +304,10 @@ func (r *Router) auditUnboundVerificationFailure(result verifier.Result, source 
 			AuthorizationViolations: []models.AuthorizationViolation{}, PlannedActions: []string{}, ActualActions: []string{},
 			UnexpectedActions: []string{}, SuspiciousActions: []string{}, Coverage: r.RuntimeCoverage(),
 		},
-		SecurityFindings: []models.SecurityFinding{}, FinalVerdict: verdict,
+		SecurityFindings: []models.SecurityFinding{}, AdvisorySignals: models.AdvisorySignals{
+			RiskAssessment:    models.RiskAssessment{Level: "not_evaluated", Signals: []string{"verification failed before trusted claims were available"}, AdvisoryOnly: true},
+			DetectionFindings: []models.SecurityFinding{},
+		}, FinalVerdict: verdict,
 	}
 	if err := r.audit.Append(record); err != nil {
 		return attemptID, err
@@ -527,6 +531,9 @@ func (r *Router) completeExecution(completion models.ExecutionCompletion, source
 			return models.AuditRecord{}, fmt.Errorf("unsupported boundary_outcome")
 		}
 	}
+	if completion.UpstreamAttempted && source != models.RuntimeSourceGatewayEnforced && source != models.RuntimeSourceSimulatedDemo {
+		return models.AuditRecord{}, fmt.Errorf("upstream_attempted is reserved for a trusted execution adapter")
+	}
 	receivedAt := r.clock().UTC()
 	if source == models.RuntimeSourceGatewayEnforced || source == models.RuntimeSourceSimulatedDemo {
 		permitRecord, exists := r.permitStore.Get(completion.PermitID, receivedAt)
@@ -580,6 +587,7 @@ func (r *Router) completeExecution(completion models.ExecutionCompletion, source
 			record.ExecutionReceipt.PermitState = string(permitRecord.State)
 			record.ExecutionReceipt.Timestamp = receivedAt
 			record.ExecutionReceipt.EvidenceSource = source
+			record.ExecutionReceipt.UpstreamAttempted = completion.UpstreamAttempted
 			record.ExecutionReceipt.ExecutionOutcome = completion.Status
 			if completion.BoundaryOutcome != "" {
 				record.ExecutionReceipt.ExecutionOutcome = completion.BoundaryOutcome
@@ -801,7 +809,8 @@ func validateRuntimeMetadata(event models.RuntimeEvent) *models.AuthorizationVio
 	return nil
 }
 
-func applyDetectionRisk(assessment models.RiskAssessment, detected detection.Result) models.RiskAssessment {
+func mergeAdvisoryRisk(assessment models.RiskAssessment, detected detection.Result) models.RiskAssessment {
+	assessment.AdvisoryOnly = true
 	if detected.RiskDelta > 0 {
 		if len(assessment.Signals) == 1 && assessment.Signals[0] == "no elevated risk signals" {
 			assessment.Signals = []string{}
@@ -818,53 +827,43 @@ func applyDetectionRisk(assessment models.RiskAssessment, detected detection.Res
 	return assessment
 }
 
-func dispatchFor(policyDecision models.PolicyDecision, assessment models.RiskAssessment, detected detection.Result) models.DispatchDecision {
+// compatibilityDispatchFor projects deterministic policy into the deprecated
+// routing shape consumed by older API clients. It is not consulted by Permit
+// issuance, verification, or MCP enforcement.
+func compatibilityDispatchFor(policyDecision models.PolicyDecision) models.DispatchDecision {
 	if !policyDecision.Authorized || policyDecision.Route == models.RouteDeny {
 		return dispatch(models.RouteDeny, "none", "not_applicable", policyDecision.Reasons, policyDecision.Rules)
 	}
 	route := policyDecision.Route
-	reasons := append([]string(nil), policyDecision.Reasons...)
-	rules := append([]string(nil), policyDecision.Rules...)
-	if detected.RecommendedRoute != "" {
-		reasons = append(reasons, "advisory security signals produced execution obligations; deterministic policy authorization was not replaced")
-		rules = append(rules, detectionRules(detected.Findings)...)
-	}
-	if assessment.Level == "high" {
-		reasons = append(reasons, "high advisory risk requires enhanced audit metadata")
-		rules = append(rules, "risk.high_enhanced_audit_obligation")
+	if route == "" {
+		route = models.RouteAllow
 	}
 	profile, isolation := routeProfile(route)
-	return dispatch(route, profile, isolation, reasons, uniqueStrings(rules))
+	reasons := append([]string(nil), policyDecision.Reasons...)
+	reasons = append(reasons, "legacy dispatch projection only; deterministic policy status controls Permit issuance")
+	return dispatch(route, profile, isolation, reasons, policyDecision.Rules)
 }
 
-func authorizationStatus(policyDecision models.PolicyDecision, dispatch models.DispatchDecision) models.AuthorizationStatus {
-	if !policyDecision.Authorized || dispatch.Route == models.RouteDeny {
-		return models.AuthorizationStatusDenied
-	}
-	if dispatch.Route == models.RouteEscalate {
-		return models.AuthorizationStatusRequiresApproval
-	}
-	return models.AuthorizationStatusAuthorized
-}
-
-func obligationsFor(policyDecision models.PolicyDecision, assessment models.RiskAssessment, detected detection.Result, dispatch models.DispatchDecision) models.ExecutionObligations {
+// policyObligations derives signed execution requirements solely from the
+// matched deterministic grant. Advisory risk/detection output is not an input.
+func policyObligations(policyDecision models.PolicyDecision) models.ExecutionObligations {
 	constraints := models.AuthorizationConstraints{}
 	if policyDecision.Grant != nil {
 		constraints = policyDecision.Grant.Constraints
 	}
 	return models.ExecutionObligations{
-		IsolationRequired:     dispatch.Route == models.RouteSandbox || detected.RecommendedRoute == models.RouteSandbox,
+		IsolationRequired:     policyDecision.Route == models.RouteSandbox,
 		NetworkEgressDenied:   constraints.NetworkEgress != "allow",
 		ReadOnly:              constraints.WriteAccess != "allow",
-		HumanApprovalRequired: dispatch.Route == models.RouteEscalate,
-		EnhancedAuditRequired: assessment.Level == "high" || len(detected.Findings) > 0 || dispatch.Route == models.RouteRestrict || dispatch.Route == models.RouteSandbox,
+		HumanApprovalRequired: policyDecision.Status == models.AuthorizationStatusRequiresApproval,
+		EnhancedAuditRequired: policyDecision.Route == models.RouteRestrict || policyDecision.Route == models.RouteSandbox,
 	}
 }
 
 func dispatch(route models.Route, profile, isolation string, reasons, rules []string) models.DispatchDecision {
 	return models.DispatchDecision{
 		Route: route, Reasons: nonNil(reasons), Rules: nonNil(rules), ExecutorProfile: profile,
-		IsolationBackend: isolation, ExecutorInvoked: false,
+		IsolationBackend: isolation, ExecutorInvoked: false, LegacyCompatibilityOnly: true,
 	}
 }
 
@@ -1003,10 +1002,6 @@ func authorizationVerdict(status models.AuthorizationStatus) string {
 	}
 }
 
-func executionPermitted(route models.Route) bool {
-	return route == models.RouteAllow || route == models.RouteRestrict || route == models.RouteSandbox
-}
-
 func rejectedEvaluation(event models.RuntimeEvent, item models.AuthorizationViolation) models.RuntimeEventEvaluation {
 	return models.RuntimeEventEvaluation{
 		EventID: event.EventID, PermitID: event.PermitID, Accepted: false, WithinEnvelope: false,
@@ -1031,14 +1026,6 @@ func coverageFor(event models.RuntimeEvent) string {
 	default:
 		return "unknown"
 	}
-}
-
-func detectionRules(findings []models.SecurityFinding) []string {
-	rules := []string{}
-	for _, finding := range findings {
-		rules = append(rules, finding.Rule)
-	}
-	return rules
 }
 
 func riskLevel(score int) string {
@@ -1071,18 +1058,6 @@ func nonNilFindings(items []models.SecurityFinding) []models.SecurityFinding {
 		return []models.SecurityFinding{}
 	}
 	return items
-}
-
-func uniqueStrings(items []string) []string {
-	result := []string{}
-	seen := map[string]bool{}
-	for _, item := range items {
-		if item != "" && !seen[item] {
-			seen[item] = true
-			result = append(result, item)
-		}
-	}
-	return result
 }
 
 func elapsedMilliseconds(start, end time.Time) int64 {

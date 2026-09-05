@@ -514,11 +514,12 @@ func (s *Server) runDemoScenario(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "demo_scenario_not_found", "demo scenario was not found")
 		return
 	}
-	record, err := s.router.Authorize(scenario.Request)
+	authorized, err := s.router.AuthorizeSyntheticDemoAction(scenario.Request, 0)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "demo_authorization_failed", err.Error())
 		return
 	}
+	record := authorized.Decision
 	if record.AuthorizationEnvelope == nil {
 		writeJSON(w, http.StatusOK, record)
 		return
@@ -612,7 +613,7 @@ func (s *Server) runPermitDemo(id string) (map[string]any, error) {
 		if first.Verified {
 			upstreamInvoked = true
 			_, _ = s.router.CompleteSyntheticDemoExecution(models.ExecutionCompletion{
-				RequestID: first.RequestID, PermitID: first.PermitID, Status: "completed",
+				RequestID: first.RequestID, PermitID: first.PermitID, Status: "completed", UpstreamAttempted: true,
 			})
 		}
 		if _, err = verify(); err != nil {
@@ -635,7 +636,7 @@ func (s *Server) runPermitDemo(id string) (map[string]any, error) {
 		if result.Verified {
 			upstreamInvoked = true
 			_, _ = s.router.CompleteSyntheticDemoExecution(models.ExecutionCompletion{
-				RequestID: result.RequestID, PermitID: result.PermitID, Status: "completed",
+				RequestID: result.RequestID, PermitID: result.PermitID, Status: "completed", UpstreamAttempted: true,
 			})
 		}
 	}

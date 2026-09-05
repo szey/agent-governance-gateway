@@ -34,7 +34,7 @@ CanonicalAction → deterministic authorization → signed Permit
 - 已撤销或已过期 Permit 不得执行；
 - Permit 在上游前消费；上游失败/timeout 不得恢复，重试必须重新授权，禁止增加 `unconsume`；
 - `permit_token`、签名私钥、raw bearer/delegated token、秘密值和原始敏感参数不得进入日志、UI 或错误消息；
-- authorization 保持确定性；risk 只提供咨询元数据或 obligations，不能覆盖明确拒绝；
+- authorization 保持确定性；risk/detection 只进入 `advisory_signals`，不能改变状态、签发 Permit 或生成 obligations；
 - `isolation_required` 是外部执行义务，不是 Aegis 已实现沙箱；隔离或人工批准尚未满足时，focused MCP Proxy 不得转发；
 - 运行时证据保留 source/trust；`agent_self_reported` 或 `simulated_demo` 不得冒充独立观察；
 - 未接入覆盖保持 `UNKNOWN / not instrumented`。

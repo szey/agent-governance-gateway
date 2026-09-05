@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"agent-governance-gateway/internal/audit"
 	"agent-governance-gateway/internal/canonicalaction"
 	"agent-governance-gateway/internal/config"
+	"agent-governance-gateway/internal/intake"
 	"agent-governance-gateway/internal/models"
 	"agent-governance-gateway/internal/router"
 	"agent-governance-gateway/internal/scenario"
@@ -29,7 +31,7 @@ func TestDemoScenariosHaveExpectedDispatch(t *testing.T) {
 	for _, item := range scenarios {
 		item := item
 		t.Run(item.ID, func(t *testing.T) {
-			record, err := r.Process(item.Request)
+			record, err := authorizeSyntheticRecord(t, r, item.Request)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -38,6 +40,9 @@ func TestDemoScenariosHaveExpectedDispatch(t *testing.T) {
 			}
 			if record.RequestID == "" {
 				t.Fatal("request ID was not generated")
+			}
+			if record.AuthorizationContext == nil || record.AuthorizationContext.Source != "server_owned_fixture" || record.AuthorizationContext.Assurance != "simulated_demo" {
+				t.Fatalf("synthetic demo provenance = %#v", record.AuthorizationContext)
 			}
 		})
 	}
@@ -51,7 +56,7 @@ func TestSafeRequestAllowsAndIssuesLeastPrivilegePermit(t *testing.T) {
 	r, store, now := testRouter(t)
 	req := safeRequest()
 	req.RequestedAction = "do not persist this prompt-like text"
-	record, err := r.Authorize(req)
+	record, err := authorizeRecord(t, r, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +88,7 @@ func TestSignedPermitCredentialStaysOutsideAuditAndIsSingleUse(t *testing.T) {
 	r, store, _ := testRouter(t)
 	req := safeRequest()
 	req.Action.Arguments = json.RawMessage(`{"language":"go","marker":"sensitive-argument-marker"}`)
-	result, err := r.AuthorizeAction(req)
+	result, err := authorizeAction(t, r, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +122,7 @@ func TestSignedPermitCredentialStaysOutsideAuditAndIsSingleUse(t *testing.T) {
 func TestRevokedSignedPermitIsRejected(t *testing.T) {
 	r, _, _ := testRouter(t)
 	req := safeRequest()
-	result, err := r.AuthorizeAction(req)
+	result, err := authorizeAction(t, r, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +156,8 @@ func TestRejectedRawDelegatedCredentialNeverReachesAudit(t *testing.T) {
 	r := router.New(loadConfig(t), store)
 	request := safeRequest()
 	request.Authority.CredentialFingerprint = marker
-	if _, err := r.AuthorizeAction(request); err == nil {
+	authorization := trustedAuthorization(t, request)
+	if _, err := r.AuthorizeTrustedAction(authorization); err == nil {
 		t.Fatal("raw delegated credential was accepted")
 	}
 	encoded, err := json.Marshal(store.Recent(100))
@@ -178,7 +184,7 @@ func TestDigestShapedDelegatedInputIsReboundBeforeAudit(t *testing.T) {
 	r := router.New(loadConfig(t), store)
 	request := safeRequest()
 	request.Authority.CredentialFingerprint = marker
-	result, err := r.AuthorizeAction(request)
+	result, err := authorizeAction(t, r, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,42 +211,68 @@ func TestDigestShapedDelegatedInputIsReboundBeforeAudit(t *testing.T) {
 	}
 }
 
-func TestUnauthorizedActionIsDeniedRegardlessOfHighRiskScore(t *testing.T) {
-	r, _, _ := testRouter(t)
-	req := safeRequest()
-	req.Action = models.ActionRequest{Capability: "read_finance_data", Operation: "read", TargetResource: "finance_data", SideEffect: "read_only"}
-	req.Tool.Name = "finance_reader"
-	record, err := r.Authorize(req)
-	if err != nil {
-		t.Fatal(err)
+func TestPolicyDenialIsIndependentOfAdvisoryRiskLevel(t *testing.T) {
+	tests := []struct {
+		name      string
+		request   models.Request
+		riskLevel string
+	}{
+		{
+			name: "low risk",
+			request: func() models.Request {
+				req := safeRequest()
+				req.Action.Capability = "not_granted"
+				return req
+			}(),
+			riskLevel: "low",
+		},
+		{
+			name: "high risk",
+			request: func() models.Request {
+				req := safeRequest()
+				req.Action = models.ActionRequest{Capability: "read_finance_data", Operation: "read", TargetResource: "finance_data", SideEffect: "read_only"}
+				req.Tool.Name = "finance_reader"
+				return req
+			}(),
+			riskLevel: "high",
+		},
 	}
-	if record.PolicyDecision.Authorized || record.PolicyDecision.Route != models.RouteDeny || record.DispatchDecision.Route != models.RouteDeny {
-		t.Fatalf("authorization failure was overridden: %#v", record)
-	}
-	if record.AuthorizationEnvelope != nil {
-		t.Fatal("denied request received a permit")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r, _, _ := testRouter(t)
+			record, err := authorizeRecord(t, r, test.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if record.PolicyDecision.Authorized || record.PolicyDecision.Route != models.RouteDeny || record.AuthorizationStatus != models.AuthorizationStatusDenied {
+				t.Fatalf("authorization failure was overridden: %#v", record)
+			}
+			if record.AuthorizationEnvelope != nil || record.AdvisorySignals.RiskAssessment.Level != test.riskLevel {
+				t.Fatalf("denial/diagnostic mismatch: %#v", record)
+			}
+		})
 	}
 }
 
-func TestHighRiskRemainsAdvisoryAndAddsEnhancedAuditObligation(t *testing.T) {
+func TestHighRiskRemainsAdvisoryAndCannotAddPermitObligations(t *testing.T) {
 	r, _, _ := testRouter(t)
 	req := safeRequest()
 	req.Agent = models.AgentIdentity{AgentID: "finance-agent", WorkloadID: "finance-workload-v1"}
 	req.Authority.Scopes = []string{"finance.read"}
 	req.Tool.Name = "finance_reader"
 	req.Action = models.ActionRequest{Capability: "read_finance_data", Operation: "read", TargetResource: "finance_data", SideEffect: "read_only"}
-	record, err := r.Authorize(req)
+	record, err := authorizeRecord(t, r, req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !record.PolicyDecision.Authorized || record.PolicyDecision.Route != models.RouteAllow {
 		t.Fatalf("policy decision = %#v, want explicit authorization", record.PolicyDecision)
 	}
-	if record.RiskAssessment.Level != "high" || record.DispatchDecision.Route != models.RouteAllow || record.AuthorizationEnvelope == nil {
-		t.Fatalf("risk/dispatch/permit = %#v / %#v / %#v", record.RiskAssessment, record.DispatchDecision, record.AuthorizationEnvelope)
+	if record.AdvisorySignals.RiskAssessment.Level != "high" || !record.AdvisorySignals.RiskAssessment.AdvisoryOnly || record.AuthorizationEnvelope == nil {
+		t.Fatalf("advisory/permit = %#v / %#v", record.AdvisorySignals, record.AuthorizationEnvelope)
 	}
-	if !record.AuthorizationEnvelope.Obligations.EnhancedAuditRequired || record.AuthorizationEnvelope.Obligations.IsolationRequired {
-		t.Fatalf("advisory obligations = %#v", record.AuthorizationEnvelope.Obligations)
+	if record.AuthorizationEnvelope.Obligations.EnhancedAuditRequired || record.AuthorizationEnvelope.Obligations.IsolationRequired {
+		t.Fatalf("advisory risk changed signed obligations: %#v", record.AuthorizationEnvelope.Obligations)
 	}
 	if record.DispatchDecision.ExecutorInvoked {
 		t.Fatalf("authorization claimed execution: %#v", record.DispatchDecision)
@@ -249,7 +281,7 @@ func TestHighRiskRemainsAdvisoryAndAddsEnhancedAuditObligation(t *testing.T) {
 
 func TestRuntimeEventInsidePermitUpdatesAudit(t *testing.T) {
 	r, store, _ := testRouter(t)
-	record, err := r.Authorize(safeRequest())
+	record, err := authorizeRecord(t, r, safeRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +301,7 @@ func TestRuntimeEventInsidePermitUpdatesAudit(t *testing.T) {
 
 func TestTerminatingBoundaryViolationRevokesPermit(t *testing.T) {
 	r, store, _ := testRouter(t)
-	record, _ := r.Authorize(safeRequest())
+	record, _ := authorizeRecord(t, r, safeRequest())
 	event := eventFor(record)
 	event.EventID = "event-secret"
 	event.SecretAccess = true
@@ -296,7 +328,7 @@ func TestTerminatingBoundaryViolationRevokesPermit(t *testing.T) {
 
 func TestRejectedBoundEventRevokesPermit(t *testing.T) {
 	r, _, _ := testRouter(t)
-	record, _ := r.Authorize(safeRequest())
+	record, _ := authorizeRecord(t, r, safeRequest())
 	event := eventFor(record)
 	event.AgentID = "other-agent"
 	first, _ := r.IngestRuntimeEvent(event)
@@ -313,7 +345,7 @@ func TestRejectedBoundEventRevokesPermit(t *testing.T) {
 
 func TestCompletionRevokesPermit(t *testing.T) {
 	r, _, now := testRouter(t)
-	record, _ := r.Authorize(safeRequest())
+	record, _ := authorizeRecord(t, r, safeRequest())
 	completed, err := r.CompleteExecution(models.ExecutionCompletion{
 		RequestID: record.RequestID, PermitID: record.AuthorizationEnvelope.PermitID, Status: "completed", CompletedAt: now.Add(time.Second),
 	})
@@ -338,7 +370,7 @@ func TestCompletionAfterPermitExpiryIsAudited(t *testing.T) {
 	}
 	current := time.Date(2026, 9, 3, 2, 0, 0, 0, time.UTC)
 	r := router.NewWithClock(loadConfig(t), store, func() time.Time { return current })
-	record, err := r.Authorize(safeRequest())
+	record, err := authorizeRecord(t, r, safeRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,6 +422,158 @@ func TestPublicRequestShapeRejectsSimulatedActions(t *testing.T) {
 	if err := decoder.Decode(&req); err == nil {
 		t.Fatal("simulated_actions unexpectedly remained in the public request model")
 	}
+}
+
+func TestRouterExposesNoRawRequestAuthorizationShortcut(t *testing.T) {
+	routerType := reflect.TypeOf((*router.Router)(nil))
+	for _, method := range []string{"AuthorizeAction", "Authorize", "Process"} {
+		if _, exists := routerType.MethodByName(method); exists {
+			t.Fatalf("Router still exposes raw models.Request authorization method %s", method)
+		}
+	}
+}
+
+func TestRouterRequiresSealedTrustedAuthorization(t *testing.T) {
+	r, _, _ := testRouter(t)
+	if _, err := r.AuthorizeTrustedAction(intake.Authorization{}); err == nil {
+		t.Fatal("zero-value unsealed authorization was accepted")
+	}
+	result, err := r.AuthorizeTrustedAction(trustedAuthorization(t, safeRequest()))
+	if err != nil || result.Permit == nil {
+		t.Fatalf("explicitly sealed in-process authorization failed: result=%#v err=%v", result, err)
+	}
+}
+
+func TestRiskAndDetectionConfigurationCannotChangeAuthorization(t *testing.T) {
+	baseline := loadConfig(t)
+	adversarial := loadConfig(t)
+	resource := adversarial.Resources["public_workspace"]
+	resource.Sensitivity = "critical"
+	adversarial.Resources["public_workspace"] = resource
+	adversarial.SensitiveActions = append(adversarial.SensitiveActions, "generate_code")
+	adversarial.SuspiciousActions = append(adversarial.SuspiciousActions, "generate_code")
+	adversarial.SessionControls.CumulativeRiskLimit = 1
+
+	newRouter := func(cfg models.PolicyConfig) *router.Router {
+		store, err := audit.NewStore("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return router.NewWithClock(cfg, store, func() time.Time {
+			return time.Date(2026, 9, 3, 2, 0, 0, 0, time.UTC)
+		})
+	}
+	first, err := newRouter(baseline).AuthorizeTrustedAction(trustedAuthorization(t, safeRequest()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newRouter(adversarial).AuthorizeTrustedAction(trustedAuthorization(t, safeRequest()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Decision.AuthorizationStatus != second.Decision.AuthorizationStatus ||
+		(first.Permit == nil) != (second.Permit == nil) ||
+		!reflect.DeepEqual(first.Decision.Obligations, second.Decision.Obligations) {
+		t.Fatalf("advisory configuration changed authorization: first=%#v second=%#v", first.Decision, second.Decision)
+	}
+	if first.Decision.AdvisorySignals.RiskAssessment.Score == second.Decision.AdvisorySignals.RiskAssessment.Score {
+		t.Fatal("test setup did not actually change advisory risk output")
+	}
+}
+
+func TestDetectionFindingsCannotCreateAuthorizationGrant(t *testing.T) {
+	r, _, _ := testRouter(t)
+	request := safeRequest()
+	request.Agent.AgentID = "unknown-agent"
+	request.Agent.WorkloadID = "unknown-workload"
+	request.InputSources = []models.InputSource{{
+		EventID: "retrieval-1", Kind: "retrieval", Trust: "untrusted",
+		RiskSignals: []string{"policy_override"},
+	}}
+	result, err := authorizeAction(t, r, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision.AuthorizationStatus != models.AuthorizationStatusDenied || result.Permit != nil {
+		t.Fatalf("detection finding created a grant: %#v", result)
+	}
+	if len(result.Decision.AdvisorySignals.DetectionFindings) == 0 {
+		t.Fatal("test setup did not produce advisory detection findings")
+	}
+}
+
+func TestLegacyRouteProjectionDoesNotGatePermitIssuance(t *testing.T) {
+	tests := []struct {
+		name       string
+		request    models.Request
+		obligation func(models.ExecutionObligations) bool
+	}{
+		{
+			name: "restrict",
+			request: func() models.Request {
+				req := safeRequest()
+				req.Tool.Name = "shell.exec"
+				req.Action = models.ActionRequest{Capability: "run_limited_commands", Operation: "execute", TargetResource: "public_workspace", SideEffect: "process_execution"}
+				return req
+			}(),
+			obligation: func(value models.ExecutionObligations) bool { return value.EnhancedAuditRequired },
+		},
+		{
+			name: "sandbox",
+			request: func() models.Request {
+				req := safeRequest()
+				req.Authority.Scopes = []string{"config.read"}
+				req.Tool.Name = "config_reader"
+				req.Action = models.ActionRequest{Capability: "read_config", Operation: "read", TargetResource: "protected_config", SideEffect: "read_only"}
+				return req
+			}(),
+			obligation: func(value models.ExecutionObligations) bool { return value.IsolationRequired },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r, _, _ := testRouter(t)
+			result, err := authorizeAction(t, r, test.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Permit == nil || result.Decision.AuthorizationStatus != models.AuthorizationStatusAuthorized {
+				t.Fatalf("deterministic grant did not issue a Permit: %#v", result)
+			}
+			if !result.Decision.DispatchDecision.LegacyCompatibilityOnly || !test.obligation(result.Decision.Obligations) {
+				t.Fatalf("legacy projection or policy obligation missing: %#v", result.Decision)
+			}
+		})
+	}
+}
+
+func trustedAuthorization(t *testing.T, request models.Request) intake.Authorization {
+	t.Helper()
+	authorization, err := intake.NewTrustedAuthorization(request, intake.IdentityContext{
+		Principal: request.EffectivePrincipal(), Agent: request.EffectiveAgent(),
+		DelegatedAuthority: request.EffectiveAuthority(),
+	}, "router-test-trusted-integration", time.Date(2026, 9, 3, 1, 59, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return authorization
+}
+
+func authorizeAction(t *testing.T, r *router.Router, request models.Request) (models.ActionAuthorizationResponse, error) {
+	t.Helper()
+	return r.AuthorizeTrustedAction(trustedAuthorization(t, request))
+}
+
+func authorizeRecord(t *testing.T, r *router.Router, request models.Request) (models.AuditRecord, error) {
+	t.Helper()
+	result, err := authorizeAction(t, r, request)
+	return result.Decision, err
+}
+
+func authorizeSyntheticRecord(t *testing.T, r *router.Router, request models.Request) (models.AuditRecord, error) {
+	t.Helper()
+	result, err := r.AuthorizeSyntheticDemoAction(request, 0)
+	return result.Decision, err
 }
 
 func testRouter(t *testing.T) (*router.Router, *audit.Store, time.Time) {

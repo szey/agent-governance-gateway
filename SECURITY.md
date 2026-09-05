@@ -18,7 +18,7 @@ The core control deterministically authorizes an exact `CanonicalAction`, issues
 
 `AuthorizationEnvelope` continues to carry structured principal, Agent/workload, delegation, tool, capability, resource, operation, and policy context, but an execution credential must also carry a verifiable signature and the same action digest.
 
-HTTP authorization requests must also cross `TrustedAuthorizationIntake`. With no configured intake, authorization fails closed. A trusted integration overwrites caller-asserted principal, Agent/workload, and delegated authority, then records `authorization_context_provenance` in audit. `--allow-development-intake` accepts loopback peers only and still labels identity `development_only`; it is not production authentication.
+HTTP authorization requests must also cross `TrustedAuthorizationIntake`. With no configured intake, authorization fails closed. A trusted integration overwrites caller-asserted principal, Agent/workload, and delegated authority, then records `authorization_context_provenance` in audit. `Router` no longer offers a normal Permit-issuance entry point that accepts a naked `models.Request`; in-process callers must also establish a sealed context through `intake.NewTrustedAuthorization(...)` or an intake implementation. Sharing a process is not authentication. `--allow-development-intake` accepts loopback peers only and still labels identity `development_only`; it is not production authentication.
 
 ## Tokens, keys, and replay
 
@@ -34,6 +34,10 @@ Permit TTL uses whole seconds, defaults to 30 seconds, and is currently capped a
 - an in-process-only Store has restart and multi-replica replay-state gaps; do not claim cluster-wide replay defense before shared persistence and key-lifecycle design exist.
 
 The Permit is consumed before the upstream side effect. Upstream failure or timeout never restores it; a retry requires a fresh authorization and a new Permit. The Store exposes no `unconsume` operation because such semantics would reopen replay and duplicate-side-effect windows.
+
+### Exactly-once boundary
+
+Aegis guarantees that one Execution Permit can be successfully consumed at most once. It prevents authorization-credential replay; it does not guarantee that an arbitrary business side effect executes exactly once. If a payment, order, account change, or message send completes upstream but its response is lost, the original Permit remains `CONSUMED`. A retry requires a new authorization and new Permit and must rely on the upstream system's own business idempotency key or deduplication mechanism. Aegis does not implement a business idempotency engine.
 
 ## Action binding and canonicalization
 
@@ -51,13 +55,13 @@ Protection covers only calls routed through this adapter. Trusted Intake makes i
 
 ## Policy, Risk, and isolation
 
-Policy authorization remains deterministic. Risk may produce advisory metadata or obligations such as `human_approval_required`, `isolation_required`, or `enhanced_audit_required`; it cannot override an explicit denial.
+Policy authorization remains deterministic, and only Policy can decide `AUTHORIZED / DENIED / REQUIRES_APPROVAL`, Permit issuance, and signed obligations. Risk scores and detection findings enter only `advisory_signals`; they cannot override denial, create a grant, issue a Permit, or select an executor. Obligations such as `human_approval_required`, `isolation_required`, or `enhanced_audit_required` require an explicit deterministic Policy/configuration mapping.
 
 Aegis does not implement a sandbox. `isolation_required: true` asks an external executor to supply isolation; the focused MCP proxy fails closed with `EXECUTION_OBLIGATION_UNSATISFIED` instead of forwarding when isolation or human approval is still required. `read_only` and `network_egress_denied` remain signed requirements that an independently trusted executor/control must actually enforce. `SANDBOX` in compatibility output is also a profile hint. Do not claim Docker, gVisor, Firecracker, filesystem, or network isolation.
 
 ## Audit and sensitive data
 
-Normal audit may retain request/decision/permit IDs, `signing_key_id`, normalized identity fields, `authorization_context_provenance`, tool/resource/operation, `action_digest`, policy version, authorization decision, permit state, verification result, timestamp, and evidence source.
+Normal audit is explained in trust-context, action, deterministic-Policy, obligations, Permit, verification, and execution order. It may retain request/decision/permit IDs, `signing_key_id`, normalized identity fields, `authorization_context_provenance`, tool/resource/operation, `action_digest`, policy version, authorization decision, Permit state, verification result, whether upstream was attempted, execution outcome, timestamp, and evidence source. Risk/detection are labeled separately as `advisory_signals`.
 
 The caller must hash delegated credentials before submission. Aegis additionally rehashes the declared 64-hex fingerprint before any Permit/audit persistence, so a digest-shaped input is not retained verbatim; this defense does not turn the authorization API into a credential authenticator.
 

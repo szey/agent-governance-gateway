@@ -18,6 +18,7 @@ import (
 	"agent-governance-gateway/internal/adapters/mcp"
 	"agent-governance-gateway/internal/audit"
 	"agent-governance-gateway/internal/config"
+	"agent-governance-gateway/internal/intake"
 	"agent-governance-gateway/internal/models"
 	"agent-governance-gateway/internal/router"
 )
@@ -39,7 +40,7 @@ func TestValidPermitInvokesMCPUpstreamExactlyOnceAndAuditsReceipt(t *testing.T) 
 
 	r, store, auditPath := testRouter(t)
 	action := coderRequest(`{"task":"read-only-preview","language":"go"}`)
-	authorized, err := r.AuthorizeAction(action)
+	authorized, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +60,7 @@ func TestValidPermitInvokesMCPUpstreamExactlyOnceAndAuditsReceipt(t *testing.T) 
 	if !ok || record.FinalVerdict != "EXECUTED_WITH_VALID_PERMIT" {
 		t.Fatalf("audit record = %#v", record)
 	}
-	if record.ExecutionReceipt == nil || record.ExecutionReceipt.VerificationOutcome != "VERIFIED" {
+	if record.ExecutionReceipt == nil || record.ExecutionReceipt.VerificationOutcome != "VERIFIED" || !record.ExecutionReceipt.UpstreamAttempted {
 		t.Fatalf("execution receipt = %#v", record.ExecutionReceipt)
 	}
 	if len(record.RuntimeObservation.Events) != 1 || record.RuntimeObservation.Events[0].Source != models.RuntimeSourceGatewayEnforced {
@@ -87,7 +88,7 @@ func TestActionMutationNeverInvokesMCPUpstream(t *testing.T) {
 
 	r, store, _ := testRouter(t)
 	action := paymentRequest(`{"amount":100,"currency":"USD","recipient":"merchant-456"}`)
-	authorized, err := r.AuthorizeAction(action)
+	authorized, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,8 +102,8 @@ func TestActionMutationNeverInvokesMCPUpstream(t *testing.T) {
 		t.Fatalf("failed verification invoked upstream %d times", calls.Load())
 	}
 	record, _ := store.Get(authorized.Decision.RequestID)
-	if record.FinalVerdict != "PERMIT_ACTION_MISMATCH" {
-		t.Fatalf("final verdict = %q", record.FinalVerdict)
+	if record.FinalVerdict != "PERMIT_ACTION_MISMATCH" || record.ExecutionReceipt == nil || record.ExecutionReceipt.UpstreamAttempted {
+		t.Fatalf("failed verification audit = %#v", record)
 	}
 }
 
@@ -115,7 +116,7 @@ func TestInvalidSignatureNeverInvokesMCPUpstream(t *testing.T) {
 	defer upstream.Close()
 	r, store, auditPath := testRouter(t)
 	action := coderRequest(`{"task":"preview"}`)
-	authorized, _ := r.AuthorizeAction(action)
+	authorized, _ := authorizeAction(t, r, action)
 	token := authorized.Permit.PermitToken
 	last := "A"
 	if strings.HasSuffix(token, last) {
@@ -170,7 +171,7 @@ func TestAllBoundPermitFailuresNeverInvokeMCPUpstream(t *testing.T) {
 			defer upstream.Close()
 			r, _, _ := testRouter(t)
 			authorizedAction := paymentRequest(`{"amount":100,"currency":"USD","recipient":"merchant-456"}`)
-			authorized, err := r.AuthorizeAction(authorizedAction)
+			authorized, err := authorizeAction(t, r, authorizedAction)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -199,7 +200,7 @@ func TestReplayExpiredAndRevokedPermitsNeverAddAnUpstreamCall(t *testing.T) {
 		defer upstream.Close()
 		r, store, _ := testRouter(t)
 		action := coderRequest(`{"task":"preview"}`)
-		authorized, _ := r.AuthorizeAction(action)
+		authorized, _ := authorizeAction(t, r, action)
 		proxy, _ := mcp.New(r, upstream.URL, nil)
 		if first := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments); first.Code != http.StatusOK {
 			t.Fatalf("first status = %d, body = %s", first.Code, first.Body.String())
@@ -232,7 +233,7 @@ func TestReplayExpiredAndRevokedPermitsNeverAddAnUpstreamCall(t *testing.T) {
 		store, _ := audit.NewStore("")
 		r := router.NewWithClock(cfg, store, func() time.Time { return current })
 		action := coderRequest(`{"task":"preview"}`)
-		authorized, _ := r.AuthorizeAction(action)
+		authorized, _ := authorizeAction(t, r, action)
 		current = authorized.Permit.ExpiresAt
 		proxy, _ := mcp.New(r, upstream.URL, nil)
 		response := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
@@ -250,7 +251,7 @@ func TestReplayExpiredAndRevokedPermitsNeverAddAnUpstreamCall(t *testing.T) {
 		defer upstream.Close()
 		r, _, _ := testRouter(t)
 		action := coderRequest(`{"task":"preview"}`)
-		authorized, _ := r.AuthorizeAction(action)
+		authorized, _ := authorizeAction(t, r, action)
 		if _, err := r.RevokePermit(authorized.Permit.PermitID); err != nil {
 			t.Fatal(err)
 		}
@@ -275,7 +276,7 @@ func TestFailedUpstreamDoesNotRestorePermitAndRetryRequiresNewAuthorization(t *t
 
 	r, store, _ := testRouter(t)
 	action := coderRequest(`{"task":"retry-explicitly"}`)
-	firstAuthorization, err := r.AuthorizeAction(action)
+	firstAuthorization, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +290,7 @@ func TestFailedUpstreamDoesNotRestorePermitAndRetryRequiresNewAuthorization(t *t
 		t.Fatalf("permit after upstream failure = %#v, exists=%v", permitRecord, ok)
 	}
 	auditRecord, _ := store.Get(firstAuthorization.Decision.RequestID)
-	if auditRecord.FinalVerdict != "EXECUTION_FAILED" || auditRecord.ExecutionReceipt.ExecutionOutcome != "failed" {
+	if auditRecord.FinalVerdict != "EXECUTION_FAILED" || auditRecord.ExecutionReceipt.ExecutionOutcome != "failed" || !auditRecord.ExecutionReceipt.UpstreamAttempted {
 		t.Fatalf("failed execution receipt = %#v", auditRecord)
 	}
 
@@ -298,7 +299,7 @@ func TestFailedUpstreamDoesNotRestorePermitAndRetryRequiresNewAuthorization(t *t
 		t.Fatalf("reused failed-attempt permit status=%d calls=%d body=%s", replayed.Code, calls.Load(), replayed.Body.String())
 	}
 
-	secondAuthorization, err := r.AuthorizeAction(action)
+	secondAuthorization, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,9 +323,9 @@ func TestTimedOutUpstreamDoesNotRestoreConsumedPermit(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	r, _, _ := testRouter(t)
+	r, store, _ := testRouter(t)
 	action := coderRequest(`{"task":"timeout"}`)
-	authorized, err := r.AuthorizeAction(action)
+	authorized, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,6 +340,10 @@ func TestTimedOutUpstreamDoesNotRestoreConsumedPermit(t *testing.T) {
 	permitRecord, ok := r.GetPermit(authorized.Permit.PermitID)
 	if !ok || permitRecord.State != "CONSUMED" {
 		t.Fatalf("permit after timeout = %#v, exists=%v", permitRecord, ok)
+	}
+	auditRecord, _ := store.Get(authorized.Decision.RequestID)
+	if auditRecord.ExecutionReceipt == nil || !auditRecord.ExecutionReceipt.UpstreamAttempted || auditRecord.ExecutionReceipt.ExecutionOutcome != "failed" {
+		t.Fatalf("timeout execution receipt = %#v", auditRecord.ExecutionReceipt)
 	}
 	replayed := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
 	if replayed.Code != http.StatusForbidden || !strings.Contains(replayed.Body.String(), "REPLAYED") || calls.Load() != 1 {
@@ -355,7 +360,7 @@ func TestConcurrentMCPReplayInvokesUpstreamExactlyOnce(t *testing.T) {
 	defer upstream.Close()
 	r, store, _ := testRouter(t)
 	action := coderRequest(`{"task":"concurrent-preview"}`)
-	authorized, err := r.AuthorizeAction(action)
+	authorized, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +410,7 @@ func TestUnsupportedIsolationObligationFailsClosedBeforeMCPUpstream(t *testing.T
 	defer upstream.Close()
 	r, store, _ := testRouter(t)
 	action := configReadRequest()
-	authorized, err := r.AuthorizeAction(action)
+	authorized, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +423,7 @@ func TestUnsupportedIsolationObligationFailsClosedBeforeMCPUpstream(t *testing.T
 		t.Fatalf("status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
 	}
 	record, _ := store.Get(authorized.Decision.RequestID)
-	if record.FinalVerdict != "EXECUTION_OBLIGATION_UNSATISFIED" || record.ExecutionReceipt.ExecutionOutcome != "UNSATISFIED_OBLIGATION" {
+	if record.FinalVerdict != "EXECUTION_OBLIGATION_UNSATISFIED" || record.ExecutionReceipt.ExecutionOutcome != "UNSATISFIED_OBLIGATION" || record.ExecutionReceipt.UpstreamAttempted {
 		t.Fatalf("audit receipt = %#v", record)
 	}
 }
@@ -432,7 +437,7 @@ func TestModernMCPHeaderOrBodyAmbiguityNeverInvokesUpstream(t *testing.T) {
 	defer upstream.Close()
 	r, _, _ := testRouter(t)
 	action := coderRequest(`{"task":"preview"}`)
-	authorized, err := r.AuthorizeAction(action)
+	authorized, err := authorizeAction(t, r, action)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,6 +548,18 @@ func setModernHeaders(header http.Header, method, name string) {
 	if name != "" {
 		header.Set(mcp.HeaderName, name)
 	}
+}
+
+func authorizeAction(t *testing.T, r *router.Router, request models.Request) (models.ActionAuthorizationResponse, error) {
+	t.Helper()
+	authorization, err := intake.NewTrustedAuthorization(request, intake.IdentityContext{
+		Principal: request.EffectivePrincipal(), Agent: request.EffectiveAgent(),
+		DelegatedAuthority: request.EffectiveAuthority(),
+	}, "mcp-test-trusted-integration", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r.AuthorizeTrustedAction(authorization)
 }
 
 func testRouter(t *testing.T) (*router.Router, *audit.Store, string) {

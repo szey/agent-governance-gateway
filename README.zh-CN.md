@@ -70,6 +70,10 @@ Permit 生命周期为 `ISSUED → CONSUMED`，也可从 `ISSUED` 进入 `EXPIRE
 
 消费点位于上游副作用之前。上游返回失败或发生 timeout 时，Permit 仍保持 `CONSUMED`，绝不恢复为 `ISSUED`；任何重试都必须重新授权并取得新的 Permit。项目不提供也不计划实现 `unconsume`。
 
+### 单次 Permit 不等于业务副作用恰好执行一次
+
+Aegis 保证同一个 Execution Permit **至多成功消费一次**，提供的是执行授权的 replay protection；它不保证任意上游业务操作恰好执行一次。例如，上游可能已经完成付款，但网络响应丢失，调用方只能看到 timeout。此时原 Permit 仍为 `CONSUMED`，重试必须重新授权并取得新 Permit，同时依赖付款、订单、账户变更、消息发送等上游系统自身的业务幂等键或去重机制。Aegis 不提供业务幂等引擎。
+
 ## 唯一的 MVP Adapter：MCP
 
 聚焦版 MVP 只提供一个生产形态的执行边界：MCP 工具调用。
@@ -105,7 +109,7 @@ go run ./cmd/server --allow-development-intake --mcp-upstream http://127.0.0.1:3
 - `DENIED`；
 - `REQUIRES_APPROVAL`。
 
-Risk 只提供可选的咨询元数据，不能推翻明确拒绝，也不定义产品。隔离、只读、禁止网络出口、人工批准和增强审计属于 decision/permit obligations，例如：
+确定性 Policy 是唯一授权权威，也是 Permit 是否存在的唯一决定者。Risk score 和 detection findings 只写入 `advisory_signals`，不能改变 `AUTHORIZED / DENIED / REQUIRES_APPROVAL`、不能签发 Permit，也不能选择 executor。隔离、只读、禁止网络出口、人工批准和增强审计只能由确定性 Policy/配置映射为 decision/permit obligations，例如：
 
 ```json
 {
@@ -129,7 +133,7 @@ Risk 只提供可选的咨询元数据，不能推翻明确拒绝，也不定义
 - `GET /api/permits`、`GET /api/permits/{id}` — 只返回安全元数据；
 - `GET /api/decisions`、`GET /api/audits` — 查看授权决定和审计回执。
 
-MCP Adapter 直接复用同一 verifier。所有 HTTP 授权入口先经过 `TrustedAuthorizationIntake`：未配置 intake 时默认返回 `trusted_authorization_context_required`，不再直接信任 body/header 的 principal、Agent、workload 或 delegated authority。可信中间件可用 static intake 覆盖这些字段并把来源写入 `authorization_context_provenance`；本地开发必须显式启用 `--allow-development-intake`，且只接受 loopback peer，同时把 assurance 标为 `development_only`。这只是身份来源边界，不是完整 IAM/SSO/RBAC。`POST /api/permits/verify` 适合可信的受控集成，不等同于跨网络身份认证。`/api/authorize`、`/api/runtime-events` 和 `/api/route` 作为兼容入口暂时保留；授权兼容入口同样经过 intake。
+MCP Adapter 直接复用同一 verifier。所有 HTTP 授权入口先经过 `TrustedAuthorizationIntake`：未配置 intake 时默认返回 `trusted_authorization_context_required`，不再直接信任 body/header 的 principal、Agent、workload 或 delegated authority。`Router` 不再暴露接受裸 `models.Request` 的普通授权/Permit 签发方法；进程内集成也必须通过 `intake.NewTrustedAuthorization(...)` 或一个 intake 实现显式创建 sealed `intake.Authorization`。可信中间件可用 static intake 覆盖身份字段并把来源写入 `authorization_context_provenance`；本地开发必须显式启用 `--allow-development-intake`，且只接受 loopback peer，同时把 assurance 标为 `development_only`。同进程本身不构成身份来源。这只是身份来源边界，不是完整 IAM/SSO/RBAC。`POST /api/permits/verify` 适合可信的受控集成，不等同于跨网络身份认证。`/api/authorize`、`/api/runtime-events` 和 `/api/route` 作为兼容入口暂时保留；授权兼容入口同样经过 intake。
 
 ## UI
 
@@ -175,7 +179,7 @@ go run ./cmd/server
 
 ## 审计与证据真相
 
-每次动作形成可解释、脱敏的 receipt：request/decision/permit ID、principal、Agent、工具、资源、操作、动作摘要、策略版本、授权决定、Permit 状态、验证结果、时间和 evidence source。
+每次动作形成可解释、脱敏的 receipt，按 `TRUST CONTEXT → ACTION → POLICY → OBLIGATIONS → PERMIT → VERIFICATION → EXECUTION` 理解；其中 execution 明确记录 upstream 是否尝试以及 completed/failed/terminated。Risk/detection 只位于 `ADVISORY SIGNALS`，不作为授权理由。审计仍不保存 token、原始参数或秘密。
 
 运行时来源继续区分 `gateway_enforced`、`instrumented_adapter`、`agent_self_reported`、`os_sensor`、`network_sensor` 和 `simulated_demo`。运行时证据是辅助证据；未接入覆盖保持 `UNKNOWN / not instrumented`，且 `UNKNOWN != SAFE`、`UNKNOWN != ZERO`。
 

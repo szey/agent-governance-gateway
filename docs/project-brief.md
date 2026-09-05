@@ -52,6 +52,8 @@ Principal, Agent, workload, and delegated authority from an HTTP body/header can
 
 Two narrow implementations exist: a static intake for authenticated middleware/an embedding process to inject trusted context, and an explicitly enabled local-development intake that accepts loopback peers only and is labeled `development_only`. This is not IAM, SSO, RBAC, or bearer-token verification.
 
+`Router.AuthorizeTrustedAction(intake.Authorization)` is the only normal Permit-issuance entry point. `Router` no longer exposes `AuthorizeAction/Authorize/Process` methods that accept a naked `models.Request`; in-process integrations must also call `intake.NewTrustedAuthorization(...)` or cross an intake implementation to create a sealed context. Process locality is not identity provenance. Server-owned fixtures may use only the synthetic entry point whose name and provenance explicitly say `simulated_demo`.
+
 ## CanonicalAction
 
 The canonical action binds principal ID, Agent ID, workload ID, delegated-authority fingerprint, tool, capability, resource, operation, and security-relevant arguments.
@@ -89,6 +91,8 @@ A concurrency-safe PermitStore maintains `ISSUED / CONSUMED / EXPIRED / REVOKED`
 
 Consumption occurs before the upstream side effect and is an irreversible commit point. An upstream failure or timeout leaves the Permit `CONSUMED`; retry requires a new authorization and new Permit. There is no `unconsume`.
 
+This guarantees only that one Permit is successfully consumed at most once; it does not make upstream payments, orders, account changes, message sends, or other business side effects exactly once. If a side effect succeeds but its response is lost, retry still needs a new Permit and must rely on the upstream's own business idempotency key or deduplication mechanism. Aegis does not implement a business idempotency engine.
+
 ## MCP adapter
 
 MCP is the focused MVP's only production-shaped adapter. It normalizes `tools/call` with trusted principal/workload/resource metadata, obtains or receives a Permit, calls the same verifier before forwarding upstream, and records only necessary result metadata such as status and duration.
@@ -99,15 +103,15 @@ For MCP `2026-07-28`, the current adapter validates `MCP-Protocol-Version`, `Mcp
 
 ## Policy, Risk, and obligations
 
-Policy continues to use the structured request context for deterministic authorization. Conceptual outcomes are `AUTHORIZED / DENIED / REQUIRES_APPROVAL`.
+Policy continues to use the structured request context for deterministic authorization. Conceptual outcomes are `AUTHORIZED / DENIED / REQUIRES_APPROVAL`, and only Policy decides status, Permit issuance, and signed obligations.
 
-Risk remains optional advisory metadata and may help produce obligations such as `human_approval_required`, `isolation_required`, or `enhanced_audit_required`. It cannot turn an unauthorized action into an authorized one and need not grow into a large scoring system.
+Risk/detection remain optional advisory metadata under `advisory_signals`; they cannot change authorization status, create a grant, issue a Permit, or select an executor. Obligations such as `human_approval_required`, `isolation_required`, or `enhanced_audit_required` require an explicit deterministic Policy/configuration mapping.
 
 An external executor fulfills `isolation_required: true`. Aegis implements no sandbox backend, and its focused MCP proxy refuses to forward when isolation or human approval remains required. Read-only and network-egress obligations still require a trusted external executor/control to enforce the upstream tool's real behavior. `RESTRICT/SANDBOX` in compatibility fields is only an execution-profile hint.
 
 ## Audit Receipt and Runtime Evidence
 
-Each action produces an explainable receipt with request/decision/permit IDs, principal, Agent, tool, resource, operation, action digest, policy version, authorization decision, Permit state, verification outcome, timestamp, and evidence source.
+Each action produces an explainable receipt in `TRUST CONTEXT → ACTION → POLICY → OBLIGATIONS → PERMIT → VERIFICATION → EXECUTION` order, including upstream attempted and execution outcome. Risk/detection appear only under `ADVISORY SIGNALS`.
 
 Authorization status uses `AUTHORIZED / DENIED / REQUIRES_APPROVAL`. Current execution final verdicts include `EXECUTED_WITH_VALID_PERMIT`, `PERMIT_ACTION_MISMATCH`, `PERMIT_EXPIRED`, `PERMIT_REPLAY`, `PERMIT_INVALID_SIGNATURE`, `PERMIT_REVOKED`, and `EXECUTION_OBLIGATION_UNSATISFIED`, while the receipt also retains the verifier's precise outcome and execution outcome.
 

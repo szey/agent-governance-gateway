@@ -17,9 +17,9 @@ func New(cfg models.PolicyConfig) *Engine {
 	return &Engine{config: cfg, clock: time.Now}
 }
 
-// Evaluate makes only deterministic authorization decisions. Risk scoring and
-// runtime detection may select a stricter dispatch route later, but can never
-// turn a denied request into an authorized one.
+// Evaluate is the sole authorization authority for execution-permit issuance.
+// It uses deterministic policy inputs only; advisory risk or detection output
+// is neither accepted nor consulted here.
 func (e *Engine) Evaluate(req models.Request) models.PolicyDecision {
 	principal := req.EffectivePrincipal()
 	agentIdentity := req.EffectiveAgent()
@@ -112,9 +112,19 @@ func (e *Engine) Evaluate(req models.Request) models.PolicyDecision {
 	if route == "" {
 		route = models.RouteAllow
 	}
+	status := models.AuthorizationStatusAuthorized
+	authorized := true
+	switch route {
+	case models.RouteDeny:
+		status = models.AuthorizationStatusDenied
+		authorized = false
+	case models.RouteEscalate:
+		status = models.AuthorizationStatusRequiresApproval
+		authorized = false
+	}
 	return models.PolicyDecision{
-		Authorized: true,
-		Status:     models.AuthorizationStatusAuthorized,
+		Authorized: authorized,
+		Status:     status,
 		Route:      route,
 		Reasons: []string{
 			"principal, workload, delegated scopes, capability, tool, resource, operation, and constraints match",

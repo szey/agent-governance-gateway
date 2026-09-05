@@ -70,6 +70,10 @@ The lifecycle is `ISSUED → CONSUMED`, or `ISSUED → EXPIRED/REVOKED`.
 
 Consumption is the commit point before the upstream side effect. An upstream failure or timeout leaves the Permit `CONSUMED`; it is never restored to `ISSUED`. Every retry requires a new authorization and a new Permit. There is no `unconsume` operation.
 
+### A single-use Permit is not an exactly-once business side effect
+
+Aegis guarantees that one Execution Permit can be successfully consumed **at most once**. This is execution-authorization replay protection, not a guarantee that an arbitrary upstream business operation executes exactly once. For example, an upstream payment may complete while its network response is lost, leaving the caller with a timeout. The original Permit remains `CONSUMED`; a retry requires a new authorization and new Permit and must rely on the payment, order, account-change, message-sending, or other upstream system's own idempotency key or deduplication mechanism. Aegis does not provide a business idempotency engine.
+
 ## The only MVP adapter: MCP
 
 The focused MVP has exactly one production-shaped execution boundary: MCP tool calls.
@@ -105,7 +109,7 @@ Authorization stays deterministic, with the conceptual outcomes:
 - `DENIED`;
 - `REQUIRES_APPROVAL`.
 
-Risk is optional advisory metadata. It cannot override an explicit denial and does not define the product. Isolation, read-only behavior, denied network egress, human approval, and enhanced audit are decision/permit obligations, for example:
+Deterministic Policy is the sole authorization authority and the only component that decides whether a Permit exists. Risk scores and detection findings are written only under `advisory_signals`; they cannot change `AUTHORIZED / DENIED / REQUIRES_APPROVAL`, issue a Permit, or select an executor. Isolation, read-only behavior, denied network egress, human approval, and enhanced audit become decision/Permit obligations only through deterministic Policy/configuration mappings, for example:
 
 ```json
 {
@@ -129,7 +133,7 @@ Focused APIs:
 - `GET /api/permits` and `GET /api/permits/{id}` — return safe metadata only;
 - `GET /api/decisions` and `GET /api/audits` — read authorization decisions and audit receipts.
 
-The MCP adapter directly reuses the same verifier. Every HTTP authorization endpoint first crosses `TrustedAuthorizationIntake`: with no configured intake, it fails closed with `trusted_authorization_context_required` instead of trusting body/header principal, Agent, workload, or delegated-authority metadata. Trusted middleware can use the static intake to overwrite those fields and record `authorization_context_provenance`. Local development requires explicit `--allow-development-intake`, accepts loopback peers only, and labels assurance `development_only`. This is an identity-provenance boundary, not full IAM/SSO/RBAC. `POST /api/permits/verify` is for trusted, controlled integrations and is not network identity authentication. `/api/authorize`, `/api/runtime-events`, and `/api/route` remain temporarily as compatibility endpoints; compatibility authorization also crosses the intake.
+The MCP adapter directly reuses the same verifier. Every HTTP authorization endpoint first crosses `TrustedAuthorizationIntake`: with no configured intake, it fails closed with `trusted_authorization_context_required` instead of trusting body/header principal, Agent, workload, or delegated-authority metadata. `Router` no longer exposes a normal authorization/Permit-issuance method that accepts a naked `models.Request`; in-process integrations must also explicitly create a sealed `intake.Authorization` through `intake.NewTrustedAuthorization(...)` or an intake implementation. Trusted middleware can use the static intake to overwrite identity fields and record `authorization_context_provenance`. Local development requires explicit `--allow-development-intake`, accepts loopback peers only, and labels assurance `development_only`. Process locality alone is not identity provenance. This is an identity-provenance boundary, not full IAM/SSO/RBAC. `POST /api/permits/verify` is for trusted, controlled integrations and is not network identity authentication. `/api/authorize`, `/api/runtime-events`, and `/api/route` remain temporarily as compatibility endpoints; compatibility authorization also crosses the intake.
 
 ## UI
 
@@ -175,7 +179,7 @@ Open [http://localhost:8080](http://localhost:8080). This runs server-owned Demo
 
 ## Audit and evidence truth
 
-Each action produces an explainable, redacted receipt: request/decision/permit IDs, principal, Agent, tool, resource, operation, action digest, policy version, authorization decision, permit state, verification result, timestamp, and evidence source.
+Each action produces an explainable, redacted receipt read as `TRUST CONTEXT → ACTION → POLICY → OBLIGATIONS → PERMIT → VERIFICATION → EXECUTION`; execution states whether upstream was attempted and whether it completed, failed, or terminated. Risk/detection appear only under `ADVISORY SIGNALS`, not as authorization reasons. Audit still excludes tokens, raw arguments, and secrets.
 
 Runtime sources remain distinct: `gateway_enforced`, `instrumented_adapter`, `agent_self_reported`, `os_sensor`, `network_sensor`, and `simulated_demo`. Runtime evidence is secondary. Uninstrumented coverage remains `UNKNOWN / not instrumented`: `UNKNOWN != SAFE` and `UNKNOWN != ZERO`.
 

@@ -2,7 +2,7 @@
 
 English | [简体中文](research-product-mapping-iteration.zh-CN.md)
 
-Latest product review: 2026-09-04
+Latest product review: 2026-09-05
 
 This is Aegis Router's unified research register. Standards, incidents, media/security-company guidance, community pain points, open-source lessons, dispositions, and product mappings all live here. Chinese is the semantic working source and English must change in the same commit.
 
@@ -40,7 +40,7 @@ This iteration explicitly does not compete on generic Agent permissions, approva
 
 Each proposal receives exactly one of `reject / defer / docs_only / fixture / experiment / implement`, with a reason. An `S4` product decision may change scope; “implemented” still requires `V2`. Exploratory company-endpoint output is not `V3`.
 
-## 3. Focused product decision — 2026-09-04
+## 3. Focused product decision — 2026-09-05
 
 | `research_id` | Falsifiable problem | Disposition | Implementation and boundary |
 |---|---|---|---|
@@ -51,9 +51,11 @@ Each proposal receives exactly one of `reject / defer / docs_only / fixture / ex
 | `FOCUS-005` | Would multiple MVP adapters produce multiple inconsistent security semantics? | `implement` | Implement MCP only; other adapters are `reject` for this milestone |
 | `FOCUS-006` | Should Aegis itself provide isolation? | `reject` | No sandbox backend; express only an `isolation_required` obligation |
 | `FOCUS-007` | Should Discovery/Shadow Agent capability continue expanding? | `reject` (expansion) / `docs_only` (compatibility) | Freeze code, disable by default, hide from normal UI; retain only `--enable-experimental-inventory` and `cmd/discover` |
-| `FOCUS-008` | Should numeric Risk define the product or change authorization? | `docs_only` | Risk is optional advisory/obligation input and cannot override deterministic denial |
+| `FOCUS-008` | Should numeric Risk define the product or change authorization? | `implement` | Risk/detection enter only `advisory_signals`; they no longer decide status, Permit, obligations, or executor |
+| `FOCUS-009` | Can an in-process naked `models.Request` bypass the identity-provenance boundary? | `implement` | Remove normal `AuthorizeAction/Authorize/Process` entry points; Permit issuance requires sealed `intake.Authorization`, while Demo uses only an explicit synthetic entry point |
+| `FOCUS-010` | Could a single-use Permit be misrepresented as exactly-once business execution? | `docs_only` | State that only Permit consumption is at-most-once; failure/timeout never restores it, and business retries rely on upstream idempotency |
 
-These product-owner decisions are `S4`. The corresponding implementation reaches `V2 reproduced` only after canonicalization, signature, expiry/revocation/replay, privacy, and MCP upstream-not-called tests pass.
+These product-owner decisions are `S4`. No external sources were added; this pass uses architectural negative tests for the trusted-intake, deterministic-policy, single-consumption, and upstream-not-called boundaries. The corresponding implementation reaches `V2 reproduced` only after canonicalization, signature, expiry/revocation/replay, privacy, and MCP upstream-not-called tests pass.
 
 ## 4. How prior company-endpoint feedback is retained
 

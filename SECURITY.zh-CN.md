@@ -18,7 +18,7 @@ Aegis 是参考实现，不是经独立评审的生产安全边界。它只保�
 
 `AuthorizationEnvelope` 继续承载结构化 principal、Agent/workload、delegation、tool、capability、resource、operation 和 policy context，但执行凭据还必须包含可验证签名与相同动作摘要。
 
-HTTP 授权请求还必须经过 `TrustedAuthorizationIntake`。未配置 intake 时默认拒绝；可信集成负责覆盖调用方声明的 principal、Agent/workload 与 delegated authority，并在审计中记录 `authorization_context_provenance`。`--allow-development-intake` 仅接受 loopback peer、仍将身份标记为 `development_only`，不构成生产身份认证。
+HTTP 授权请求还必须经过 `TrustedAuthorizationIntake`。未配置 intake 时默认拒绝；可信集成负责覆盖调用方声明的 principal、Agent/workload 与 delegated authority，并在审计中记录 `authorization_context_provenance`。`Router` 不再提供接受裸 `models.Request` 的普通 Permit 签发入口；进程内调用方也必须通过 `intake.NewTrustedAuthorization(...)` 或 intake 实现建立 sealed context。同一进程并不自动等于已认证身份。`--allow-development-intake` 仅接受 loopback peer、仍将身份标记为 `development_only`，不构成生产身份认证。
 
 ## Token、密钥与 replay
 
@@ -34,6 +34,10 @@ Permit TTL 必须是整秒，默认 30 秒，当前最大 15 分钟。
 - 若 Store 仅在单进程内，重启/多副本会形成 replay 状态缺口；在引入共享持久化与密钥生命周期设计前不能声称提供集群级 replay defense。
 
 Permit 在上游副作用前消费。上游失败或 timeout 不会恢复 Permit；重试必须重新授权并获取新 Permit。任何 `unconsume` 语义都会重新打开 replay/双重副作用窗口，因此 Store 接口不提供该操作。
+
+### Exactly-once 边界
+
+Aegis 的保证是：同一个 Execution Permit 至多成功消费一次。它防止授权凭据 replay，但不保证任意业务副作用恰好执行一次。如果付款、订单、账户变更或消息发送已经在上游完成、但响应丢失，原 Permit 仍为 `CONSUMED`。重试必须使用新授权和新 Permit，并依赖上游系统自己的业务幂等键或去重机制。Aegis 不实现业务幂等引擎。
 
 ## 动作绑定与 canonicalization
 
@@ -51,13 +55,13 @@ MCP `2026-07-28` 的 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与 JSON
 
 ## Policy、Risk 与隔离
 
-Policy 授权保持确定性。Risk 只能产生咨询元数据或 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等义务，不能覆盖明确拒绝。
+Policy 授权保持确定性，并且只有 Policy 可以决定 `AUTHORIZED / DENIED / REQUIRES_APPROVAL`、Permit 是否签发以及签名 obligations。Risk score 与 detection findings 只进入 `advisory_signals`，不能覆盖拒绝、创建授权、签发 Permit 或选择 executor。只有显式的确定性 Policy/配置映射才能生成 `human_approval_required`、`isolation_required`、`enhanced_audit_required` 等义务。
 
 Aegis 不实现沙箱。`isolation_required: true` 只要求外部 executor 提供隔离；当仍需要隔离或人工批准时，focused MCP Proxy 会以 `EXECUTION_OBLIGATION_UNSATISFIED` fail closed，而不是转发。`read_only` 与 `network_egress_denied` 仍是已签名要求，必须由另一个独立可信的 executor/control 真正落实。兼容输出中的 `SANDBOX` 也是 profile hint。不要声称 Aegis 提供 Docker、gVisor、Firecracker、文件系统或网络隔离。
 
 ## 审计与敏感数据
 
-正常审计可保存 request/decision/permit ID、`signing_key_id`、规范化身份字段、`authorization_context_provenance`、tool/resource/operation、`action_digest`、policy version、授权决定、Permit 状态、验证结果、时间和 evidence source。
+正常审计按信任上下文、动作、确定性 Policy、obligations、Permit、verification、execution 的顺序解释，并可保存 request/decision/permit ID、`signing_key_id`、规范化身份字段、`authorization_context_provenance`、tool/resource/operation、`action_digest`、policy version、授权决定、Permit 状态、验证结果、upstream 是否尝试、execution outcome、时间和 evidence source。Risk/detection 单独标为 `advisory_signals`。
 
 调用方必须先对委托凭据做哈希再提交。Aegis 会在 Permit/审计持久化前再次哈希所声明的 64 位十六进制 fingerprint，因此即便输入形状像摘要也不会被原样保存；这层防御不会把授权 API 变成凭据认证器。
 

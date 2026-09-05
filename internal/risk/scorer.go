@@ -14,6 +14,9 @@ func New(cfg models.PolicyConfig) *Scorer {
 	return &Scorer{config: cfg}
 }
 
+// Assess produces optional advisory metadata. Its numeric result is not a
+// policy input and must never decide authorization, obligations, Permit
+// issuance, or executor selection.
 func (s *Scorer) Assess(req models.Request) models.RiskAssessment {
 	score := 0
 	var signals []string

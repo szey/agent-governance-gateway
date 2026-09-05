@@ -30,8 +30,10 @@ type eventSummary struct {
 }
 
 type Result struct {
-	Findings         []models.SecurityFinding
-	Context          models.CausalContext
+	Findings []models.SecurityFinding
+	Context  models.CausalContext
+	// RecommendedRoute and RiskDelta are deprecated advisory compatibility
+	// signals. The Permit authorization path must not consume either value.
 	RecommendedRoute models.Route
 	RiskDelta        int
 }

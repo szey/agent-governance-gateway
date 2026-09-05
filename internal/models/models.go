@@ -291,18 +291,20 @@ type ExecutionObligations struct {
 }
 
 type RiskAssessment struct {
-	Score   int      `json:"score"`
-	Level   string   `json:"level"`
-	Signals []string `json:"signals"`
+	Score        int      `json:"score"`
+	Level        string   `json:"level"`
+	Signals      []string `json:"signals"`
+	AdvisoryOnly bool     `json:"advisory_only"`
 }
 
 type DispatchDecision struct {
-	Route            Route    `json:"route"`
-	Reasons          []string `json:"reasons"`
-	Rules            []string `json:"matched_rules"`
-	ExecutorProfile  string   `json:"executor_profile"`
-	IsolationBackend string   `json:"isolation_backend"`
-	ExecutorInvoked  bool     `json:"executor_invoked"`
+	Route                   Route    `json:"route"`
+	Reasons                 []string `json:"reasons"`
+	Rules                   []string `json:"matched_rules"`
+	ExecutorProfile         string   `json:"executor_profile"`
+	IsolationBackend        string   `json:"isolation_backend"`
+	ExecutorInvoked         bool     `json:"executor_invoked"`
+	LegacyCompatibilityOnly bool     `json:"legacy_compatibility_only"`
 }
 
 type AuthorizationEnvelope struct {
@@ -374,6 +376,7 @@ type ExecutionReceipt struct {
 	AuthorizationDecision AuthorizationStatus `json:"authorization_decision"`
 	PermitState           string              `json:"permit_state,omitempty"`
 	VerificationOutcome   string              `json:"verification_outcome,omitempty"`
+	UpstreamAttempted     bool                `json:"upstream_attempted"`
 	ExecutionOutcome      string              `json:"execution_outcome,omitempty"`
 	Timestamp             time.Time           `json:"timestamp"`
 	EvidenceSource        RuntimeEventSource  `json:"evidence_source"`
@@ -478,12 +481,22 @@ type CausalContext struct {
 	PrivacyBudgetRemaining int      `json:"privacy_budget_remaining"`
 }
 
+// AdvisorySignals contains non-authoritative risk and request/session
+// detection output. These values may enrich an audit record, but they never
+// decide policy authorization, Permit issuance, obligations, or execution.
+type AdvisorySignals struct {
+	RiskAssessment    RiskAssessment    `json:"risk_assessment"`
+	DetectionFindings []SecurityFinding `json:"detection_findings"`
+	CausalContext     CausalContext     `json:"causal_context"`
+}
+
 type ExecutionCompletion struct {
-	RequestID       string    `json:"request_id"`
-	PermitID        string    `json:"permit_id"`
-	Status          string    `json:"status"`
-	BoundaryOutcome string    `json:"boundary_outcome,omitempty"`
-	CompletedAt     time.Time `json:"completed_at,omitempty"`
+	RequestID         string    `json:"request_id"`
+	PermitID          string    `json:"permit_id"`
+	Status            string    `json:"status"`
+	BoundaryOutcome   string    `json:"boundary_outcome,omitempty"`
+	UpstreamAttempted bool      `json:"upstream_attempted"`
+	CompletedAt       time.Time `json:"completed_at,omitempty"`
 }
 
 // AuthorizationContextProvenance records how identity was established before
@@ -501,19 +514,24 @@ type AuditRecord struct {
 	AuthorizationStatus   AuthorizationStatus             `json:"authorization_status"`
 	CreatedAt             time.Time                       `json:"created_at"`
 	CompletedAt           *time.Time                      `json:"completed_at,omitempty"`
-	Request               Request                         `json:"request"`
 	AuthorizationContext  *AuthorizationContextProvenance `json:"authorization_context_provenance,omitempty"`
+	Request               Request                         `json:"request"`
 	PolicyDecision        PolicyDecision                  `json:"policy_decision"`
-	RiskAssessment        RiskAssessment                  `json:"risk_assessment"`
-	DispatchDecision      DispatchDecision                `json:"dispatch_decision"`
+	Obligations           ExecutionObligations            `json:"obligations"`
 	AuthorizationEnvelope *AuthorizationEnvelope          `json:"authorization_envelope,omitempty"`
 	ExecutionReceipt      *ExecutionReceipt               `json:"execution_receipt,omitempty"`
-	SelectedExecutor      string                          `json:"selected_executor"`
 	RuntimeObservation    RuntimeObservation              `json:"runtime_observation"`
 	SecurityFindings      []SecurityFinding               `json:"security_findings"`
-	CausalContext         CausalContext                   `json:"causal_context"`
-	FinalVerdict          string                          `json:"final_verdict"`
-	DurationMS            int64                           `json:"duration_ms"`
+	AdvisorySignals       AdvisorySignals                 `json:"advisory_signals"`
+
+	// Deprecated compatibility projections. Permit issuance and MCP
+	// enforcement do not depend on these fields.
+	RiskAssessment   RiskAssessment   `json:"risk_assessment"`
+	DispatchDecision DispatchDecision `json:"dispatch_decision"`
+	SelectedExecutor string           `json:"selected_executor"`
+	CausalContext    CausalContext    `json:"causal_context"`
+	FinalVerdict     string           `json:"final_verdict"`
+	DurationMS       int64            `json:"duration_ms"`
 }
 
 type Scenario struct {
