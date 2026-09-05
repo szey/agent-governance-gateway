@@ -27,7 +27,7 @@ import (
 	"agent-governance-gateway/internal/sessionaudit"
 )
 
-func TestLegacyRouteCannotBypassSemanticToolMapping(t *testing.T) {
+func TestLegacyRouteCannotReachExecutionPermitBoundary(t *testing.T) {
 	handler := testHandler(t)
 	input := models.Request{
 		UserID: "user-01", AgentID: "coder-agent", TokenScopes: []string{"code.read"},
@@ -41,15 +41,11 @@ func TestLegacyRouteCannotBypassSemanticToolMapping(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
-	if recorder.Code != http.StatusOK {
+	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	var record models.AuditRecord
-	if err := json.NewDecoder(recorder.Body).Decode(&record); err != nil {
-		t.Fatal(err)
-	}
-	if record.PolicyDecision.Route != models.RouteDeny || record.AuthorizationEnvelope != nil || !contains(record.PolicyDecision.Reasons, "PAYMENT_TOOL_UNMAPPED") {
-		t.Fatalf("legacy route bypassed semantic mapping: %#v", record)
+	if !strings.Contains(recorder.Body.String(), "execution permit requires structured security context") || strings.Contains(recorder.Body.String(), "permit_token") {
+		t.Fatalf("legacy route did not fail safely: %s", recorder.Body.String())
 	}
 	if got := recorder.Header().Get("Content-Security-Policy"); got == "" {
 		t.Fatal("content security policy header is missing")
@@ -272,6 +268,49 @@ func TestTrustedProxyHTTPFailuresIssueNoPermit(t *testing.T) {
 				t.Fatalf("status=%d body=%s audit records=%d", response.Code, response.Body.String(), len(store.Recent(10)))
 			}
 		})
+	}
+}
+
+func TestTrustedProxyLegacyFlatAuthorizationCannotIssueExecutionPermit(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	provider, err := intake.NewTrustedProxy([]string{"127.0.0.1/32"}, "local-auth-gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, store := trustedProxyMCPTestHandler(t, provider, upstream.URL)
+	legacy := models.Request{
+		UserID: "forged-user", AgentID: "finance-agent", TokenScopes: []string{"payment.transfer"},
+		RequestedCapability: "payment_transfer", TargetResource: "account-123",
+	}
+	body, _ := json.Marshal(legacy)
+	for _, test := range []struct {
+		name              string
+		trustedWorkloadID string
+	}{
+		{"legacy flat identity", "finance-workload-v1"},
+		{"agent-derived workload fallback", "attacker-workload"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/actions/authorize", bytes.NewReader(body))
+			request.RemoteAddr = "127.0.0.1:43210"
+			request.Header.Set("Content-Type", "application/json")
+			setTrustedProxyAuthorizationHeaders(request.Header)
+			request.Header.Set(intake.HeaderWorkloadID, test.trustedWorkloadID)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "execution permit requires structured security context") ||
+				strings.Contains(response.Body.String(), "permit_token") {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+	if upstreamCalls.Load() != 0 || len(store.Recent(10)) != 0 {
+		t.Fatalf("legacy request produced execution evidence: upstream=%d audits=%d", upstreamCalls.Load(), len(store.Recent(10)))
 	}
 }
 
@@ -846,6 +885,37 @@ func trustedProxyTestHandler(t *testing.T, provider *intake.TrustedProxy) (http.
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 	server := httpapi.NewWithOptions(router.New(cfg, store), store, cfg, nil, nil, filepath.Join(t.TempDir(), "session-audit.jsonl"), static, logger, httpapi.Options{
 		AuthorizationIntake: provider,
+	})
+	return server.Handler(), store
+}
+
+func trustedProxyMCPTestHandler(t *testing.T, provider *intake.TrustedProxy, upstreamURL string) (http.Handler, *audit.Store) {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SemanticActions.PaymentSendV1.UpstreamURL = upstreamURL
+	store, err := audit.NewStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := router.New(cfg, store)
+	profile, err := semanticaction.NewPaymentSendV1(cfg.SemanticActions.PaymentSendV1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := mcp.New(r, profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	static, err := fs.Sub(fstest.MapFS{"static/index.html": {Data: []byte("ok")}}, "static")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	server := httpapi.NewWithOptions(r, store, cfg, nil, nil, filepath.Join(t.TempDir(), "session-audit.jsonl"), static, logger, httpapi.Options{
+		MCPHandler: proxy, AuthorizationIntake: provider,
 	})
 	return server.Handler(), store
 }

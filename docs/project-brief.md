@@ -58,6 +58,8 @@ TrustedProxy provenance records `source=trusted_integration`, configured provide
 
 `Router.AuthorizeTrustedAction(intake.Authorization)` is the only normal Permit-issuance entry point. `Router` no longer exposes `AuthorizeAction/Authorize/Process` methods that accept a naked `models.Request`; in-process integrations must also call `intake.NewTrustedAuthorization(...)` or cross an intake implementation to create a sealed context. Process locality is not identity provenance. Server-owned fixtures may use only the synthetic entry point whose name and provenance explicitly say `simulated_demo`.
 
+Sealing alone does not make a deprecated flat request eligible. The execution boundary additionally requires a structured principal, Agent/workload, delegated authority, tool, and action context. A legacy flat projection is rejected before execution-Permit issuance, including for in-process callers. `allow_legacy_flat_requests` preserves compatibility-only Policy interpretation and never permits an executable Permit with an Agent-derived workload or missing delegation fingerprint.
+
 ## CanonicalAction
 
 The canonical action binds principal ID, Agent ID, workload ID, delegated-authority fingerprint, tool, capability, resource, operation, and security-relevant arguments.

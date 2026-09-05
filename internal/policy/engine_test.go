@@ -59,6 +59,17 @@ func TestSafeRequestMatchesExplicitGrant(t *testing.T) {
 	}
 }
 
+func TestLegacyCompatibilityPolicyEvaluationRemainsAvailable(t *testing.T) {
+	request := models.Request{
+		UserID: "user-01", AgentID: "coder-agent", TokenScopes: []string{"code.read"},
+		RequestedCapability: "generate_code", TargetResource: "public_workspace",
+	}
+	decision := evaluate(t, request)
+	if !decision.Authorized || decision.Grant == nil || decision.Grant.WorkloadID != "coder-agent" || decision.Grant.Tool != "coder" {
+		t.Fatalf("legacy compatibility policy decision = %#v", decision)
+	}
+}
+
 func TestClaimedIntentDoesNotGrantAuthority(t *testing.T) {
 	req := safeRequest()
 	req.Action.Capability = "read_finance_data"

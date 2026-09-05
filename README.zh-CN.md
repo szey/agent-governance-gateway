@@ -181,6 +181,8 @@ go run ./cmd/server \
 
 **Aegis 自身不认证用户，也不验证 OAuth Token。** 它消费由另一个可信认证边界已经建立的身份。TrustedProxy 只是窄范围 provenance Adapter，不是 IAM、SSO、OAuth 或 RBAC 平台；传输保护和认证代理的安全运行仍由部署方负责。
 
+Legacy flat request 兼容格式**没有 Execution Permit 资格**。即使 intake 已成功认证并封装请求，`Router.AuthorizeTrustedAction` 仍要求结构化 principal、Agent/workload、delegated authority、tool 与 action context。`allow_legacy_flat_requests` 只保留 Execution Permit 签发之外的废弃 Policy/兼容解释能力；它绝不允许可信身份降级成 `user_id`、`agent_id` 或 `token_scopes` 后签发可执行 Permit。
+
 ## API 方向
 
 聚焦 API：

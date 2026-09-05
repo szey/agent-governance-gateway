@@ -3,6 +3,7 @@ package router
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -22,6 +23,10 @@ import (
 	"agent-governance-gateway/internal/semanticaction"
 	"agent-governance-gateway/internal/verifier"
 )
+
+// ErrStructuredExecutionContextRequired prevents legacy identity projection
+// from becoming eligible for a real execution Permit.
+var ErrStructuredExecutionContextRequired = errors.New("execution permit requires structured security context")
 
 type Router struct {
 	policy         *policy.Engine
@@ -111,11 +116,17 @@ func NewWithClockAndKeyProvider(cfg models.PolicyConfig, store *audit.Store, clo
 // resolved the security identity instead of the Router trusting a naked
 // models.Request. In-process integrations must explicitly construct this
 // value through intake.NewTrustedAuthorization or an intake implementation.
+// Even a sealed value is Permit-eligible only when it retains the full
+// structured security context; deprecated flat projections fail here.
 func (r *Router) AuthorizeTrustedAction(authorization intake.Authorization) (models.ActionAuthorizationResponse, error) {
 	if !authorization.Valid() {
 		return models.ActionAuthorizationResponse{}, intake.ErrTrustedContextRequired
 	}
-	return r.authorizeResolvedAction(authorization.Request(), authorization.Provenance(), permit.ClassExecution, 0)
+	request := authorization.Request()
+	if !request.UsesStructuredContext() {
+		return models.ActionAuthorizationResponse{}, ErrStructuredExecutionContextRequired
+	}
+	return r.authorizeResolvedAction(request, authorization.Provenance(), permit.ClassExecution, 0)
 }
 
 // AuthorizeSyntheticDemoAction is restricted to server-owned fixtures. It

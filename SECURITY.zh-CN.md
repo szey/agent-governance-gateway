@@ -24,6 +24,8 @@ TrustedProxy 只根据 `request.RemoteAddr` 建立发送方信任，永远不使
 
 成功的 Proxy intake 会在 `authorization_context_provenance` 中记录 `source=trusted_integration`、配置的 `provider_id`、`assurance=authenticated_context` 和服务端 `established_at`；失败时永不降级使用 body 身份。`Router` 仍然没有接受裸 `models.Request` 的普通 Permit 签发入口，只消费 sealed `intake.Authorization`。Aegis 自身既不认证用户，也不验证 OAuth Token；它只消费另一个可信认证边界已经建立的身份。这不是完整 IAM、SSO、OAuth 或 RBAC 系统。同一进程或网络本身不等于身份认证；认证代理的安全运行、传输保护与网络拓扑约束仍由部署方负责。
 
+Sealed intake 只是执行签发的必要条件，而不是充分条件：`Router.AuthorizeTrustedAction` 还必须确认请求保留结构化 principal、Agent/workload、delegated authority、tool 和 action 字段。废弃 flat request 会在执行 Permit 的 Policy 授权、审计创建和 Permit 签发前被拒绝。`allow_legacy_flat_requests` 只保留兼容用途的 Policy 解释能力；它不会让 flat request 获得 Execution Permit 资格，也不能让空 delegation fingerprint 或从 Agent ID 推导的 workload 进入签名 claims。
+
 ## Token、密钥与 replay
 
 聚焦 MVP 使用项目自有的 Ed25519 签名紧凑格式，形态为 `base64url(header).base64url(payload).base64url(signature)`，不声明通用 JWT/JWS 互操作性。Header 含 `kid`，只用作 KeyProvider 公钥选择器；签名验证后还必须与 claims 的 `signing_key_id` 一致。

@@ -58,6 +58,8 @@ TrustedProxy provenance 记录 `source=trusted_integration`、配置的 provider
 
 `Router.AuthorizeTrustedAction(intake.Authorization)` 是唯一普通 Permit 签发入口。`Router` 不再暴露接受裸 `models.Request` 的 `AuthorizeAction/Authorize/Process`；进程内集成也必须调用 `intake.NewTrustedAuthorization(...)` 或经过 intake 实现来创建 sealed context。同一进程本身不是身份来源。Server-owned fixtures 只能使用名称和 provenance 都明确为 `simulated_demo` 的 synthetic 入口。
 
+仅有 sealed context 仍不足以让废弃 flat request 获得 Permit 资格。执行边界还要求结构化 principal、Agent/workload、delegated authority、tool 与 action context；legacy flat 投影会在执行 Permit 签发前被拒绝，进程内调用方也不能绕过。`allow_legacy_flat_requests` 只保留兼容用途的 Policy 解释，绝不允许带 Agent 派生 workload 或缺失 delegation fingerprint 的可执行 Permit。
+
 ## CanonicalAction
 
 规范动作绑定：principal ID、Agent ID、workload ID、delegated-authority fingerprint、tool、capability、resource、operation 与安全相关 arguments。

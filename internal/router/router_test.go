@@ -3,6 +3,7 @@ package router_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -444,6 +445,44 @@ func TestRouterRequiresSealedTrustedAuthorization(t *testing.T) {
 	}
 }
 
+func TestTrustedExecutionRejectsSealedLegacyAuthorizationBeforePermitIssuance(t *testing.T) {
+	r, store, _ := testRouter(t)
+	authorization := sealedLegacyAuthorization(t, "finance-workload-v1")
+	result, err := r.AuthorizeTrustedAction(authorization)
+	if !errors.Is(err, router.ErrStructuredExecutionContextRequired) {
+		t.Fatalf("error = %v, want structured-context rejection", err)
+	}
+	if result.Permit != nil || len(r.ListPermits()) != 0 || len(store.Recent(10)) != 0 {
+		t.Fatalf("legacy authorization produced execution evidence: result=%#v permits=%d audits=%d", result, len(r.ListPermits()), len(store.Recent(10)))
+	}
+}
+
+func TestLegacyIntakeCannotExploitAgentDerivedWorkloadFallback(t *testing.T) {
+	r, _, _ := testRouter(t)
+	authorization := sealedLegacyAuthorization(t, "attacker-workload")
+	degraded := authorization.Request()
+	if degraded.UsesStructuredContext() || degraded.EffectiveAgent().WorkloadID != "finance-agent" {
+		t.Fatalf("test did not reproduce legacy workload degradation: %#v", degraded)
+	}
+	result, err := r.AuthorizeTrustedAction(authorization)
+	if !errors.Is(err, router.ErrStructuredExecutionContextRequired) || result.Permit != nil || len(r.ListPermits()) != 0 {
+		t.Fatalf("agent-derived workload fallback reached execution issuance: result=%#v err=%v", result, err)
+	}
+}
+
+func TestLegacyIntakeCannotLoseDelegationFingerprintIntoPermit(t *testing.T) {
+	r, _, _ := testRouter(t)
+	authorization := sealedLegacyAuthorization(t, "finance-workload-v1")
+	degraded := authorization.Request()
+	if degraded.EffectiveAuthority().CredentialFingerprint != "" {
+		t.Fatalf("test did not reproduce legacy fingerprint loss: %#v", degraded.EffectiveAuthority())
+	}
+	result, err := r.AuthorizeTrustedAction(authorization)
+	if !errors.Is(err, router.ErrStructuredExecutionContextRequired) || result.Permit != nil || len(r.ListPermits()) != 0 {
+		t.Fatalf("fingerprint-free legacy context reached execution issuance: result=%#v err=%v", result, err)
+	}
+}
+
 func TestRiskAndDetectionConfigurationCannotChangeAuthorization(t *testing.T) {
 	baseline := loadConfig(t)
 	adversarial := loadConfig(t)
@@ -552,6 +591,25 @@ func trustedAuthorization(t *testing.T, request models.Request) intake.Authoriza
 	authorization, err := intake.NewTrustedAuthorization(request, intake.IdentityContext{
 		Principal: request.EffectivePrincipal(), Agent: request.EffectiveAgent(),
 		DelegatedAuthority: request.EffectiveAuthority(),
+	}, "router-test-trusted-integration", time.Date(2026, 9, 3, 1, 59, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return authorization
+}
+
+func sealedLegacyAuthorization(t *testing.T, trustedWorkload string) intake.Authorization {
+	t.Helper()
+	proposal := models.Request{
+		UserID: "forged-user", AgentID: "finance-agent", TokenScopes: []string{"payment.transfer"},
+		RequestedCapability: "payment_transfer", TargetResource: "account-123",
+	}
+	authorization, err := intake.NewTrustedAuthorization(proposal, intake.IdentityContext{
+		Principal: models.PrincipalContext{PrincipalID: "user-01", PrincipalType: "human"},
+		Agent:     models.AgentIdentity{AgentID: "finance-agent", WorkloadID: trustedWorkload},
+		DelegatedAuthority: models.DelegatedAuthority{
+			CredentialFingerprint: strings.Repeat("b", 64), Scopes: []string{"payment.transfer"}, Subject: "user-01",
+		},
 	}, "router-test-trusted-integration", time.Date(2026, 9, 3, 1, 59, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)

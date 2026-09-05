@@ -181,6 +181,8 @@ Repeat `--trusted-proxy-cidr` to allow additional IPv4 or IPv6 direct peers. CID
 
 **Aegis authenticates neither users nor OAuth tokens itself.** It consumes identity established by a separately trusted authentication boundary. TrustedProxy is a narrow provenance adapter, not an IAM, SSO, OAuth, or RBAC platform; transport protection and authenticated-proxy operation remain deployment responsibilities.
 
+Legacy flat request compatibility is **not execution-Permit eligible**. `Router.AuthorizeTrustedAction` requires structured principal, Agent/workload, delegated authority, tool, and action context even when an intake successfully authenticated and sealed the request. `allow_legacy_flat_requests` only preserves deprecated Policy/compatibility interpretation outside execution-Permit issuance; it never authorizes identity degradation into `user_id`, `agent_id`, or `token_scopes`, and it cannot produce an executable Permit.
+
 ## API direction
 
 Focused APIs:
