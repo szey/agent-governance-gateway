@@ -13,6 +13,7 @@ import (
 	"agent-governance-gateway/internal/config"
 	"agent-governance-gateway/internal/discovery"
 	"agent-governance-gateway/internal/httpapi"
+	"agent-governance-gateway/internal/intake"
 	"agent-governance-gateway/internal/router"
 	"agent-governance-gateway/internal/scenario"
 	"agent-governance-gateway/web"
@@ -28,6 +29,7 @@ func main() {
 	approvalRegistry := flag.String("approval-registry", "data/approved-agents.json", "local approved-Agent registry managed by the control desk")
 	enableExperimentalInventory := flag.Bool("enable-experimental-inventory", false, "enable frozen experimental inventory APIs and UI")
 	mcpUpstream := flag.String("mcp-upstream", "", "optional upstream MCP Streamable HTTP URL; enables permit-gated POST /mcp")
+	allowDevelopmentIntake := flag.Bool("allow-development-intake", false, "accept caller-supplied authorization identity from loopback requests only (development only)")
 	var discoveryRoots stringList
 	flag.Var(&discoveryRoots, "discovery-root", "optional approved inventory root; repeat for multiple roots")
 	flag.Parse()
@@ -58,6 +60,15 @@ func main() {
 	}
 
 	r := router.New(cfg, store)
+	var authorizationIntake intake.TrustedAuthorizationIntake = intake.RejectAll{}
+	if *allowDevelopmentIntake {
+		developmentIntake, intakeErr := intake.NewLoopbackDevelopment("server-loopback-development")
+		if intakeErr != nil {
+			logger.Error("configure development authorization intake", "error", intakeErr)
+			os.Exit(1)
+		}
+		authorizationIntake = developmentIntake
+	}
 	var mcpHandler http.Handler
 	if strings.TrimSpace(*mcpUpstream) != "" {
 		proxy, proxyErr := mcp.New(r, *mcpUpstream, nil)
@@ -70,6 +81,7 @@ func main() {
 	api := httpapi.NewWithOptions(r, store, cfg, scenarios, discoveryManager, *sessionAuditPath, web.Assets(), logger, httpapi.Options{
 		ExperimentalInventory: *enableExperimentalInventory,
 		MCPHandler:            mcpHandler,
+		AuthorizationIntake:   authorizationIntake,
 	})
 	server := &http.Server{
 		Addr:              *addr,
@@ -80,7 +92,7 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	logger.Info("Aegis Router listening", "address", *addr, "mcp_enforcement", mcpHandler != nil, "experimental_inventory", *enableExperimentalInventory)
+	logger.Info("Aegis Router listening", "address", *addr, "mcp_enforcement", mcpHandler != nil, "experimental_inventory", *enableExperimentalInventory, "development_intake", *allowDevelopmentIntake)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)

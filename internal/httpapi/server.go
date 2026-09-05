@@ -16,6 +16,7 @@ import (
 
 	"agent-governance-gateway/internal/audit"
 	"agent-governance-gateway/internal/discovery"
+	"agent-governance-gateway/internal/intake"
 	"agent-governance-gateway/internal/models"
 	"agent-governance-gateway/internal/permit"
 	"agent-governance-gateway/internal/router"
@@ -33,11 +34,13 @@ type Server struct {
 	logger                *slog.Logger
 	experimentalInventory bool
 	mcpHandler            http.Handler
+	authorizationIntake   intake.TrustedAuthorizationIntake
 }
 
 type Options struct {
 	ExperimentalInventory bool
 	MCPHandler            http.Handler
+	AuthorizationIntake   intake.TrustedAuthorizationIntake
 }
 
 func New(r *router.Router, audits *audit.Store, policyConfig models.PolicyConfig, scenarios []models.Scenario, manager *discovery.Manager, sessionAuditPath string, static fs.FS, logger *slog.Logger) *Server {
@@ -45,10 +48,15 @@ func New(r *router.Router, audits *audit.Store, policyConfig models.PolicyConfig
 }
 
 func NewWithOptions(r *router.Router, audits *audit.Store, policyConfig models.PolicyConfig, scenarios []models.Scenario, manager *discovery.Manager, sessionAuditPath string, static fs.FS, logger *slog.Logger, options Options) *Server {
+	authorizationIntake := options.AuthorizationIntake
+	if authorizationIntake == nil {
+		authorizationIntake = intake.RejectAll{}
+	}
 	return &Server{
 		router: r, audits: audits, policy: policyConfig, scenarios: scenarios, discovery: manager,
 		sessionAuditPath: sessionAuditPath, static: static, logger: logger,
 		experimentalInventory: options.ExperimentalInventory && manager != nil, mcpHandler: options.MCPHandler,
+		authorizationIntake: authorizationIntake,
 	}
 }
 
@@ -91,7 +99,9 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok", "service": "aegis-router", "repository": "agent-governance-gateway",
-		"product":  "execution-permits-for-ai-agent-actions",
+		"product": "execution-permits-for-ai-agent-actions",
+		"description": "Framework-agnostic execution permits for AI agent tool calls. " +
+			"Authorize once; execute exactly what was authorized.",
 		"features": map[string]bool{"mcp_enforcement": s.mcpHandler != nil, "experimental_inventory": s.experimentalInventory},
 	})
 }
@@ -140,7 +150,12 @@ func (s *Server) authorizeAction(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_action", err.Error())
 		return
 	}
-	result, err := s.router.AuthorizeAction(input)
+	authorization, err := s.authorizationIntake.Resolve(req, input)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "trusted_authorization_context_required", err.Error())
+		return
+	}
+	result, err := s.router.AuthorizeTrustedAction(authorization)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "authorization_failed", err.Error())
 		return
@@ -151,6 +166,7 @@ func (s *Server) authorizeAction(w http.ResponseWriter, req *http.Request) {
 
 type permitView struct {
 	PermitID           string             `json:"permit_id"`
+	SigningKeyID       string             `json:"signing_key_id"`
 	State              permit.State       `json:"state"`
 	RequestID          string             `json:"request_id"`
 	PrincipalID        string             `json:"principal_id"`
@@ -176,7 +192,7 @@ type permitView struct {
 func viewPermit(record permit.Record) permitView {
 	claims := record.Claims
 	return permitView{
-		PermitID: claims.PermitID, State: record.State, RequestID: claims.RequestID,
+		PermitID: claims.PermitID, SigningKeyID: claims.SigningKeyID, State: record.State, RequestID: claims.RequestID,
 		PrincipalID: claims.PrincipalID, AgentID: claims.AgentID, WorkloadID: claims.WorkloadID,
 		Tool: claims.Tool, Capability: claims.Capability, Resource: claims.Resource, Operation: claims.Operation,
 		ActionDigest: claims.ActionDigest, PolicyVersion: claims.PolicyVersion, Issuer: claims.Issuer,
@@ -411,12 +427,17 @@ func (s *Server) authorize(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	record, err := s.router.Authorize(input)
+	authorization, err := s.authorizationIntake.Resolve(req, input)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "trusted_authorization_context_required", err.Error())
+		return
+	}
+	result, err := s.router.AuthorizeTrustedAction(authorization)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "authorization_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, record)
+	writeJSON(w, http.StatusOK, result.Decision)
 }
 
 func (s *Server) ingestRuntimeEvent(w http.ResponseWriter, req *http.Request) {

@@ -1,7 +1,6 @@
 package router
 
 import (
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -13,6 +12,8 @@ import (
 	"agent-governance-gateway/internal/audit"
 	"agent-governance-gateway/internal/canonicalaction"
 	"agent-governance-gateway/internal/detection"
+	"agent-governance-gateway/internal/intake"
+	"agent-governance-gateway/internal/keyprovider"
 	"agent-governance-gateway/internal/models"
 	"agent-governance-gateway/internal/observer"
 	"agent-governance-gateway/internal/permit"
@@ -43,8 +44,25 @@ func New(cfg models.PolicyConfig, store *audit.Store) *Router {
 }
 
 func NewWithClock(cfg models.PolicyConfig, store *audit.Store, clock func() time.Time) *Router {
+	provider, err := keyprovider.NewEphemeral()
+	if err != nil {
+		panic(fmt.Sprintf("initialize execution-permit signing key: %v", err))
+	}
+	return NewWithClockAndKeyProvider(cfg, store, clock, provider)
+}
+
+// NewWithKeyProvider lets an embedding process supply a persistent local key
+// provider without coupling Aegis permit logic to a key-file or KMS format.
+func NewWithKeyProvider(cfg models.PolicyConfig, store *audit.Store, provider keyprovider.Provider) *Router {
+	return NewWithClockAndKeyProvider(cfg, store, time.Now, provider)
+}
+
+func NewWithClockAndKeyProvider(cfg models.PolicyConfig, store *audit.Store, clock func() time.Time, provider keyprovider.Provider) *Router {
 	if clock == nil {
 		clock = time.Now
+	}
+	if provider == nil {
+		panic("initialize execution-permit signing key: key provider is required")
 	}
 	ttl := time.Duration(cfg.Permits.TTLSeconds) * time.Second
 	if ttl <= 0 {
@@ -61,16 +79,12 @@ func NewWithClock(cfg models.PolicyConfig, store *audit.Store, clock func() time
 	if policyVersion == "" {
 		policyVersion = "policy-v1"
 	}
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		panic(fmt.Sprintf("initialize execution-permit signing key: %v", err))
-	}
 	permitStore := permit.NewMemoryStore()
-	issuer, err := permit.NewIssuer(issuerName, privateKey, permitStore, permit.WithIssuerClock(clock))
+	issuer, err := permit.NewIssuer(issuerName, provider, permitStore, permit.WithIssuerClock(clock))
 	if err != nil {
 		panic(fmt.Sprintf("initialize execution-permit issuer: %v", err))
 	}
-	permitVerifier, err := verifier.New(publicKey, issuerName, permitStore, verifier.WithClock(clock))
+	permitVerifier, err := verifier.New(provider, issuerName, permitStore, verifier.WithClock(clock))
 	if err != nil {
 		panic(fmt.Sprintf("initialize execution-permit verifier: %v", err))
 	}
@@ -101,21 +115,37 @@ func (r *Router) Authorize(req models.Request) (models.AuditRecord, error) {
 // an authorized action, returns a signed short-lived single-use credential.
 // The token exists only in the response and is never placed in AuditRecord.
 func (r *Router) AuthorizeAction(req models.Request) (models.ActionAuthorizationResponse, error) {
-	return r.authorizeAction(req, 0)
+	return r.authorizeAction(req, 0, inProcessProvenance())
+}
+
+// AuthorizeTrustedAction is the HTTP-facing authorization entry point. The
+// sealed intake value proves that a configured boundary resolved the security
+// identity instead of the Router trusting caller metadata directly.
+func (r *Router) AuthorizeTrustedAction(authorization intake.Authorization) (models.ActionAuthorizationResponse, error) {
+	if !authorization.Valid() {
+		return models.ActionAuthorizationResponse{}, intake.ErrTrustedContextRequired
+	}
+	return r.authorizeAction(authorization.Request(), 0, authorization.Provenance())
 }
 
 // AuthorizeSyntheticDemoAction is restricted to server-owned fixtures. It
 // permits a shorter TTL so expiration can be demonstrated without changing
 // the production policy or accepting a client-controlled lifetime.
 func (r *Router) AuthorizeSyntheticDemoAction(req models.Request, ttl time.Duration) (models.ActionAuthorizationResponse, error) {
-	return r.authorizeAction(req, ttl)
+	return r.authorizeAction(req, ttl, models.AuthorizationContextProvenance{
+		Source: "server_owned_fixture", ProviderID: "aegis-demo-lab",
+		Assurance: "simulated_demo",
+	})
 }
 
-func (r *Router) authorizeAction(req models.Request, ttlOverride time.Duration) (models.ActionAuthorizationResponse, error) {
+func (r *Router) authorizeAction(req models.Request, ttlOverride time.Duration, provenance models.AuthorizationContextProvenance) (models.ActionAuthorizationResponse, error) {
 	if err := Validate(req); err != nil {
 		return models.ActionAuthorizationResponse{}, err
 	}
 	started := r.clock().UTC()
+	if provenance.EstablishedAt.IsZero() {
+		provenance.EstablishedAt = started
+	}
 	if req.RequestID == "" {
 		req.RequestID = newIdentifier("req")
 	}
@@ -155,7 +185,7 @@ func (r *Router) authorizeAction(req models.Request, ttlOverride time.Duration) 
 		}
 		envelope = envelopeFor(issued, req.SessionID, policyDecision.Grant.Constraints, dispatch.Route)
 		credential = &models.PermitCredential{
-			PermitID: issued.PermitID, PermitToken: issued.Token(), IssuedAt: issued.Claims.IssuedTime(),
+			PermitID: issued.PermitID, SigningKeyID: issued.Claims.SigningKeyID, PermitToken: issued.Token(), IssuedAt: issued.Claims.IssuedTime(),
 			ExpiresAt: issued.Claims.ExpiresTime(), SingleUse: issued.Claims.SingleUse,
 		}
 		r.mu.Lock()
@@ -167,7 +197,7 @@ func (r *Router) authorizeAction(req models.Request, ttlOverride time.Duration) 
 	receipt := authorizationReceipt(decisionID, req, status, envelope, actionDigest, r.policyVersion, started)
 	record := models.AuditRecord{
 		RequestID: req.RequestID, DecisionID: decisionID, AuthorizationStatus: status,
-		CreatedAt: started, Request: auditRequest,
+		CreatedAt: started, Request: auditRequest, AuthorizationContext: &provenance,
 		PolicyDecision: policyDecision, RiskAssessment: assessment, DispatchDecision: dispatch,
 		AuthorizationEnvelope: envelope, ExecutionReceipt: receipt, SelectedExecutor: dispatch.ExecutorProfile,
 		RuntimeObservation: observation, SecurityFindings: nonNilFindings(detected.Findings),
@@ -184,6 +214,13 @@ func (r *Router) authorizeAction(req models.Request, ttlOverride time.Duration) 
 		return models.ActionAuthorizationResponse{}, err
 	}
 	return models.ActionAuthorizationResponse{Decision: record, Permit: credential}, nil
+}
+
+func inProcessProvenance() models.AuthorizationContextProvenance {
+	return models.AuthorizationContextProvenance{
+		Source: "trusted_in_process", ProviderID: "router-api",
+		Assurance: "process_boundary",
+	}
 }
 
 // VerifyAndConsume is the only authorization method an executor should trust.
@@ -926,7 +963,7 @@ func (r *Router) issuePermit(req models.Request, grant models.MatchedAuthorizati
 func envelopeFor(issued permit.IssuedPermit, sessionID string, constraints models.AuthorizationConstraints, route models.Route) *models.AuthorizationEnvelope {
 	claims := issued.Claims
 	return &models.AuthorizationEnvelope{
-		PermitID: claims.PermitID, RequestID: claims.RequestID, SessionID: sessionID,
+		PermitID: claims.PermitID, SigningKeyID: claims.SigningKeyID, RequestID: claims.RequestID, SessionID: sessionID,
 		PrincipalID: claims.PrincipalID, AgentID: claims.AgentID, WorkloadID: claims.WorkloadID,
 		DelegatedCredentialFingerprint: claims.DelegatedAuthorityFingerprint,
 		AllowedCapability:              claims.Capability, AllowedTool: claims.Tool, AllowedResource: claims.Resource,

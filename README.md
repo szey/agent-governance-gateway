@@ -45,25 +45,30 @@ Arguments use deterministic canonical JSON and a SHA-256 digest. Empty arguments
 The `AuthorizationEnvelope` concept is retained and strengthened into a signed execution credential. A permit binds at least:
 
 ```text
-permit_id / jti      request_id
-principal_id         agent_id / workload_id
+permit_id / jti      signing_key_id / kid
+request_id           principal_id
+agent_id / workload_id
 delegation_digest    tool / capability
 resource / operation action_digest
 policy_version       issued_at / expires_at
 single_use=true
 ```
 
-The focused MVP uses an Ed25519-signed compact token: `base64url(header).base64url(payload).base64url(signature)`. Its header is `alg=EdDSA`, `typ=AEGIS-PERMIT`, and `v=1`. It is a project-specific JWS-shaped format and does not claim general JWT/JWS interoperability.
+The focused MVP uses an Ed25519-signed compact token: `base64url(header).base64url(payload).base64url(signature)`. Its header carries `alg=EdDSA`, `typ=AEGIS-PERMIT`, `v=1`, and `kid=<signing_key_id>`. The unverified header `kid` only selects a public key from the KeyProvider; after signature verification it must also match the signed `signing_key_id` claim. This is a project-specific JWS-shaped format and does not claim general JWT/JWS interoperability.
 
 TTL uses whole seconds, defaults to 30 seconds, and is currently capped at 15 minutes.
 
 `permit_id` is a safe correlation identifier; `permit_token` is the execution credential. An ID alone cannot authorize execution. Signing keys, `permit_token`, raw delegated credentials, and secret arguments must never enter the UI or audit log. Callers submit only a 64-hex SHA-256 credential fingerprint; Aegis hashes that declared fingerprint again into an algorithm-qualified binding before it enters CanonicalAction, Permit claims, or audit. This is defense in depth, not permission to submit a bearer token.
+
+Issuance and verification use a `KeyProvider` abstraction to obtain the current signing key and resolve verification keys by `kid`. The Server currently generates one process-local ephemeral development key; an embedding process may supply a securely loaded persistent local Ed25519 private key through the static provider. The project does not yet define a key-file format, automatic rotation, KMS/HSM integration, or cross-instance keyring operations.
 
 ### Verification and replay defense
 
 The execution boundary validates signature, issuer, expiry, principal/Agent/workload, tool, resource, operation, and action digest, then atomically consumes the permit. Only `VERIFIED` may call the upstream tool. Failure outcomes cover invalid signature, expiry, revocation, wrong binding, action mismatch, and replay. At most one of two concurrent consumption attempts for the same permit may succeed.
 
 The lifecycle is `ISSUED → CONSUMED`, or `ISSUED → EXPIRED/REVOKED`.
+
+Consumption is the commit point before the upstream side effect. An upstream failure or timeout leaves the Permit `CONSUMED`; it is never restored to `ISSUED`. Every retry requires a new authorization and a new Permit. There is no `unconsume` operation.
 
 ## The only MVP adapter: MCP
 
@@ -82,10 +87,10 @@ MCP client
 
 Every verification failure must occur before the upstream `tools/call`. This milestone does not implement HTTP, A2A, database, shell, or cloud-policy adapters.
 
-Configure an upstream on the existing Server to mount permit-gated `POST /mcp`:
+Configure an upstream on the existing Server to mount permit-gated `POST /mcp`. The `--allow-development-intake` flag below accepts body identity from loopback requests only and labels it `development_only`; it is not a production mode:
 
 ```bash
-go run ./cmd/server --mcp-upstream http://127.0.0.1:3001/mcp
+go run ./cmd/server --allow-development-intake --mcp-upstream http://127.0.0.1:3001/mcp
 ```
 
 `tools/call` uses `Authorization: AegisPermit <permit_token>` plus `X-Aegis-Principal-Id`, `X-Aegis-Agent-Id`, `X-Aegis-Workload-Id`, `X-Aegis-Capability`, `X-Aegis-Resource`, and `X-Aegis-Operation`; the delegation-fingerprint header is optional. Tool name and arguments come directly from JSON-RPC `params`, so headers cannot replace them. The Proxy strips the credential, every `X-Aegis-*` header, cookies, content encodings, session context, and arbitrary extension headers. It forwards only normalized JSON content negotiation plus MCP routing headers rebuilt from the validated body. `initialize`, `notifications/initialized`, `ping`, and `tools/list` pass through as compatibility protocol methods; other unsupported methods fail closed.
@@ -124,14 +129,14 @@ Focused APIs:
 - `GET /api/permits` and `GET /api/permits/{id}` — return safe metadata only;
 - `GET /api/decisions` and `GET /api/audits` — read authorization decisions and audit receipts.
 
-The MCP adapter directly reuses the same verifier. `POST /api/actions/authorize` currently evaluates caller-supplied structured identity and delegation metadata; it does not authenticate a human, workload, or bearer credential. Place it behind an authenticated intake boundary before any real deployment. `POST /api/permits/verify` is for trusted, controlled integrations and is not network identity authentication. `/api/authorize`, `/api/runtime-events`, and `/api/route` remain temporarily as compatibility endpoints. They do not treat a `permit_id` as an execution credential or upgrade client-reported events into independent observation.
+The MCP adapter directly reuses the same verifier. Every HTTP authorization endpoint first crosses `TrustedAuthorizationIntake`: with no configured intake, it fails closed with `trusted_authorization_context_required` instead of trusting body/header principal, Agent, workload, or delegated-authority metadata. Trusted middleware can use the static intake to overwrite those fields and record `authorization_context_provenance`. Local development requires explicit `--allow-development-intake`, accepts loopback peers only, and labels assurance `development_only`. This is an identity-provenance boundary, not full IAM/SSO/RBAC. `POST /api/permits/verify` is for trusted, controlled integrations and is not network identity authentication. `/api/authorize`, `/api/runtime-events`, and `/api/route` remain temporarily as compatibility endpoints; compatibility authorization also crosses the intake.
 
 ## UI
 
 Primary navigation is limited to `Decisions / Permits / Audit / Demo`:
 
 - the home view shows `AUTHORIZED`, `DENIED`, `PERMIT VIOLATIONS`, and `REPLAY BLOCKS`;
-- permit details show `permit_id`, state, principal, Agent/workload, tool, capability, resource, operation, `action_digest`, policy version, issued/expires/consumed time, and verification result;
+- permit details show `permit_id`, `signing_key_id`, state, principal, Agent/workload, tool, capability, resource, operation, `action_digest`, policy version, issued/expires/consumed time, and verification result;
 - the UI never shows `permit_token`, raw delegated credentials, secret values, or raw sensitive arguments;
 - Inventory does not appear in normal navigation.
 
@@ -166,7 +171,7 @@ Go 1.26 is required. Node.js is needed only when changing the TypeScript fronten
 go run ./cmd/server
 ```
 
-Open [http://localhost:8080](http://localhost:8080), or run `docker compose up --build`. For MCP enforcement, add `--mcp-upstream <absolute-http(s)-url>` to the same Server and follow the [pilot protocol](docs/experiments/enterprise-agent-pilot.md) with a harmless controlled upstream first. Do not connect production tools or credentials directly.
+Open [http://localhost:8080](http://localhost:8080). This runs server-owned Demos, while HTTP authorization fails closed by default. Add `--allow-development-intake` only for local API/MCP development. You may also run `docker compose up --build`. For MCP enforcement, also add `--mcp-upstream <absolute-http(s)-url>` and follow the [pilot protocol](docs/experiments/enterprise-agent-pilot.md) with a harmless controlled upstream first. Do not connect production tools or credentials directly.
 
 ## Audit and evidence truth
 
@@ -193,6 +198,7 @@ npm run build:web
 go test ./...
 go test -race ./...
 go vet ./...
+docker build .
 ```
 
 The frontend source is `web/src/app.ts`; the generated `web/static/app.js` is committed too. If the environment lacks the race-detector toolchain, report that limitation exactly instead of claiming it passed.
@@ -200,7 +206,7 @@ The frontend source is `web/src/app.ts`; the generated `web/static/app.js` is co
 ## Security boundaries
 
 - Aegis protects only actions that actually cross its verifier/MCP boundary; bypassed calls are not automatically discovered or blocked;
-- an in-process PermitStore, local key management, and local audit are not production-grade high availability, tamper resistance, or cross-instance replay defense;
+- an in-process PermitStore, default ephemeral key, and local audit are not production-grade high availability, tamper resistance, persistent key lifecycle, or cross-instance replay defense;
 - MCP adapter identity, upstream transport, and deployment topology still need a separate threat model and security review;
 - Aegis does not provide real isolation, EDR sensors, full IAM, SSO, RBAC, or multi-tenancy;
 - do not use production credentials, customer data, or uncontrolled Internet targets before independent review and a formally authorized pilot.

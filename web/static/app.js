@@ -72,6 +72,7 @@
       selectPermit: "\u9009\u62E9\u4E00\u5F20\u8BB8\u53EF\u8BC1\u67E5\u770B\u5B89\u5168\u58F0\u660E\u3002",
       state: "\u72B6\u6001",
       permitId: "\u8BB8\u53EF\u8BC1 ID / jti",
+      signingKeyId: "\u7B7E\u540D\u5BC6\u94A5 ID / kid",
       issuer: "\u7B7E\u53D1\u8005",
       issuedAt: "\u7B7E\u53D1\u65F6\u95F4",
       expiresAt: "\u5931\u6548\u65F6\u95F4",
@@ -211,6 +212,7 @@
       selectPermit: "Select a permit to inspect its safe claims.",
       state: "State",
       permitId: "Permit ID / jti",
+      signingKeyId: "Signing key ID / kid",
       issuer: "Issuer",
       issuedAt: "Issued at",
       expiresAt: "Expires at",
@@ -436,6 +438,7 @@
     const operationList = stringList(value, ["allowed_operations", "authorization_envelope.allowed_operations"]);
     return {
       id,
+      signingKeyId: safeText(value, ["signing_key_id", "claims.signing_key_id", "permit.signing_key_id", "authorization_envelope.signing_key_id"]),
       state: permitState,
       requestId: safeText(value, ["request_id", "claims.request_id", "permit.request_id", "execution_permit.request_id", "authorization_envelope.request_id"]),
       principal: safeText(value, ["principal", "principal_id", "claims.principal", "claims.principal_id", "permit.principal", "authorization_envelope.principal_id"]),
@@ -828,6 +831,7 @@
       fact(tr("operation"), permit.operation),
       fact(tr("actionDigest"), permit.actionDigest ? shortID(permit.actionDigest) : "NOT REPORTED", true),
       fact(tr("policyVersion"), permit.policyVersion),
+      fact(tr("signingKeyId"), permit.signingKeyId),
       fact(tr("issuer"), permit.issuer),
       fact(tr("singleUse"), permit.singleUse === null ? "NOT REPORTED" : String(permit.singleUse))
     );

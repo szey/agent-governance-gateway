@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"time"
+
+	"agent-governance-gateway/internal/keyprovider"
 )
 
 const (
@@ -59,27 +61,27 @@ func WithIssuerClock(clock func() time.Time) IssuerOption {
 }
 
 type Issuer struct {
-	name       string
-	privateKey ed25519.PrivateKey
-	store      Store
-	clock      func() time.Time
+	name        string
+	keyProvider keyprovider.Provider
+	store       Store
+	clock       func() time.Time
 }
 
-func NewIssuer(name string, privateKey ed25519.PrivateKey, store Store, options ...IssuerOption) (*Issuer, error) {
+func NewIssuer(name string, provider keyprovider.Provider, store Store, options ...IssuerOption) (*Issuer, error) {
 	if name == "" {
 		return nil, fmt.Errorf("%w: issuer is required", ErrInvalidClaims)
 	}
-	if len(privateKey) != ed25519.PrivateKeySize {
+	if provider == nil {
 		return nil, ErrInvalidKey
+	}
+	if _, err := provider.CurrentSigningKey(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidKey, err)
 	}
 	if store == nil {
 		return nil, fmt.Errorf("%w: permit store is required", ErrInvalidClaims)
 	}
 	issuer := &Issuer{
-		name:       name,
-		privateKey: append(ed25519.PrivateKey(nil), privateKey...),
-		store:      store,
-		clock:      time.Now,
+		name: name, keyProvider: provider, store: store, clock: time.Now,
 	}
 	for _, option := range options {
 		option(issuer)
@@ -88,6 +90,10 @@ func NewIssuer(name string, privateKey ed25519.PrivateKey, store Store, options 
 }
 
 func (i *Issuer) Issue(request IssueRequest) (IssuedPermit, error) {
+	signingKey, err := i.keyProvider.CurrentSigningKey()
+	if err != nil {
+		return IssuedPermit{}, fmt.Errorf("load current signing key: %w", err)
+	}
 	ttl := request.TTL
 	if ttl == 0 {
 		ttl = DefaultTTL
@@ -105,7 +111,7 @@ func (i *Issuer) Issue(request IssueRequest) (IssuedPermit, error) {
 	}
 	now := i.clock().UTC().Truncate(time.Second)
 	claims := Claims{
-		PermitID: permitID, RequestID: request.RequestID,
+		PermitID: permitID, SigningKeyID: signingKey.KeyID, RequestID: request.RequestID,
 		PrincipalID: request.PrincipalID, AgentID: request.AgentID, WorkloadID: request.WorkloadID,
 		DelegatedAuthorityFingerprint: request.DelegatedAuthorityFingerprint,
 		Tool:                          request.Tool, Capability: request.Capability, Resource: request.Resource, Operation: request.Operation,
@@ -115,7 +121,7 @@ func (i *Issuer) Issue(request IssueRequest) (IssuedPermit, error) {
 	if err := claims.Validate(); err != nil {
 		return IssuedPermit{}, err
 	}
-	token, err := SignToken(i.privateKey, claims)
+	token, err := SignToken(signingKey.PrivateKey, signingKey.KeyID, claims)
 	if err != nil {
 		return IssuedPermit{}, err
 	}
@@ -126,8 +132,19 @@ func (i *Issuer) Issue(request IssueRequest) (IssuedPermit, error) {
 }
 
 func (i *Issuer) PublicKey() ed25519.PublicKey {
-	key := i.privateKey.Public().(ed25519.PublicKey)
-	return append(ed25519.PublicKey(nil), key...)
+	key, err := i.keyProvider.CurrentSigningKey()
+	if err != nil {
+		return nil
+	}
+	return key.PublicKey()
+}
+
+func (i *Issuer) KeyID() string {
+	key, err := i.keyProvider.CurrentSigningKey()
+	if err != nil {
+		return ""
+	}
+	return key.KeyID
 }
 
 func newPermitID() (string, error) {

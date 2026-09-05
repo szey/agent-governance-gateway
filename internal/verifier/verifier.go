@@ -4,13 +4,13 @@
 package verifier
 
 import (
-	"crypto/ed25519"
 	"crypto/subtle"
 	"errors"
 	"fmt"
 	"time"
 
 	"agent-governance-gateway/internal/canonicalaction"
+	"agent-governance-gateway/internal/keyprovider"
 	"agent-governance-gateway/internal/permit"
 )
 
@@ -65,15 +65,15 @@ func WithClock(clock func() time.Time) Option {
 }
 
 type Verifier struct {
-	publicKey      ed25519.PublicKey
+	keyProvider    keyprovider.VerificationProvider
 	expectedIssuer string
 	store          permit.Store
 	clock          func() time.Time
 }
 
-func New(publicKey ed25519.PublicKey, expectedIssuer string, store permit.Store, options ...Option) (*Verifier, error) {
-	if len(publicKey) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("%w: Ed25519 public key", ErrInvalidConfiguration)
+func New(provider keyprovider.VerificationProvider, expectedIssuer string, store permit.Store, options ...Option) (*Verifier, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("%w: key provider is required", ErrInvalidConfiguration)
 	}
 	if expectedIssuer == "" {
 		return nil, fmt.Errorf("%w: expected issuer is required", ErrInvalidConfiguration)
@@ -82,7 +82,7 @@ func New(publicKey ed25519.PublicKey, expectedIssuer string, store permit.Store,
 		return nil, fmt.Errorf("%w: permit store is required", ErrInvalidConfiguration)
 	}
 	result := &Verifier{
-		publicKey:      append(ed25519.PublicKey(nil), publicKey...),
+		keyProvider:    provider,
 		expectedIssuer: expectedIssuer,
 		store:          store,
 		clock:          time.Now,
@@ -99,7 +99,15 @@ func New(publicKey ed25519.PublicKey, expectedIssuer string, store permit.Store,
 func (v *Verifier) VerifyAndConsume(permitToken string, action canonicalaction.Action) Result {
 	now := v.clock().UTC()
 	result := Result{Outcome: OutcomeInvalidSignature, VerifiedAt: now}
-	claims, err := permit.VerifyToken(v.publicKey, permitToken)
+	keyID, err := permit.TokenKeyID(permitToken)
+	if err != nil {
+		return result
+	}
+	publicKey, err := v.keyProvider.VerificationKey(keyID)
+	if err != nil {
+		return result
+	}
+	claims, err := permit.VerifyToken(publicKey, permitToken)
 	if err != nil {
 		return result
 	}

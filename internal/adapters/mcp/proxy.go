@@ -167,6 +167,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Tool: params.Name, Capability: req.Header.Get(HeaderCapability), Resource: req.Header.Get(HeaderResource),
 		Operation: req.Header.Get(HeaderOperation), Arguments: arguments,
 	}
+	// Consumption is the commit point and happens before the upstream side
+	// effect. Upstream failure or timeout never restores this permit; a retry
+	// must obtain a newly authorized permit.
 	verification, err := p.gate.VerifyAndConsume(token, action)
 	if err != nil {
 		writeRPCError(w, http.StatusInternalServerError, rpc.ID, -32603, "Aegis could not record permit verification", nil)

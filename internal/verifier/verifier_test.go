@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-governance-gateway/internal/canonicalaction"
+	"agent-governance-gateway/internal/keyprovider"
 	"agent-governance-gateway/internal/permit"
 	"agent-governance-gateway/internal/verifier"
 )
@@ -32,7 +33,7 @@ func TestInvalidSignatureIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forgedToken, err := permit.SignToken(otherPrivateKey, fixture.issued.Claims)
+	forgedToken, err := permit.SignToken(otherPrivateKey, fixture.issued.Claims.SigningKeyID, fixture.issued.Claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestExpiredPermitIsRejected(t *testing.T) {
 func TestPermitThatExpiresDuringVerificationIsRejectedAtConsumeBoundary(t *testing.T) {
 	fixture := newFixture(t, 5*time.Second)
 	var calls atomic.Int32
-	boundaryVerifier, err := verifier.New(fixture.publicKey, "aegis-router", fixture.store, verifier.WithClock(func() time.Time {
+	boundaryVerifier, err := verifier.New(fixture.keyProvider, "aegis-router", fixture.store, verifier.WithClock(func() time.Time {
 		if calls.Add(1) == 1 {
 			return fixture.issued.Claims.IssuedTime()
 		}
@@ -151,7 +152,7 @@ func TestIssuerAndStoreBindingsAreRejected(t *testing.T) {
 	fixture := newFixture(t, time.Minute)
 
 	t.Run("wrong issuer", func(t *testing.T) {
-		other, err := verifier.New(fixture.publicKey, "other-issuer", fixture.store, verifier.WithClock(func() time.Time { return fixture.now }))
+		other, err := verifier.New(fixture.keyProvider, "other-issuer", fixture.store, verifier.WithClock(func() time.Time { return fixture.now }))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -160,7 +161,7 @@ func TestIssuerAndStoreBindingsAreRejected(t *testing.T) {
 
 	t.Run("unknown permit", func(t *testing.T) {
 		emptyStore := permit.NewMemoryStore()
-		other, err := verifier.New(fixture.publicKey, "aegis-router", emptyStore, verifier.WithClock(func() time.Time { return fixture.now }))
+		other, err := verifier.New(fixture.keyProvider, "aegis-router", emptyStore, verifier.WithClock(func() time.Time { return fixture.now }))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -174,7 +175,7 @@ func TestIssuerAndStoreBindingsAreRejected(t *testing.T) {
 		if err := mismatchedStore.Register(claims); err != nil {
 			t.Fatal(err)
 		}
-		other, err := verifier.New(fixture.publicKey, "aegis-router", mismatchedStore, verifier.WithClock(func() time.Time { return fixture.now }))
+		other, err := verifier.New(fixture.keyProvider, "aegis-router", mismatchedStore, verifier.WithClock(func() time.Time { return fixture.now }))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -197,12 +198,12 @@ func TestVerificationResultNeverLeaksTokenOrRawArguments(t *testing.T) {
 }
 
 type fixture struct {
-	now       time.Time
-	publicKey ed25519.PublicKey
-	store     *permit.MemoryStore
-	issued    permit.IssuedPermit
-	action    canonicalaction.Action
-	verifier  *verifier.Verifier
+	now         time.Time
+	keyProvider *keyprovider.Static
+	store       *permit.MemoryStore
+	issued      permit.IssuedPermit
+	action      canonicalaction.Action
+	verifier    *verifier.Verifier
 }
 
 func newFixture(t *testing.T, ttl time.Duration) *fixture {
@@ -223,7 +224,11 @@ func newFixture(t *testing.T, ttl time.Duration) *fixture {
 		t.Fatal(err)
 	}
 	store := permit.NewMemoryStore()
-	issuer, err := permit.NewIssuer("aegis-router", privateKey, store, permit.WithIssuerClock(func() time.Time { return now }))
+	keyProvider, err := keyprovider.NewStatic("test-ed25519-01", privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer, err := permit.NewIssuer("aegis-router", keyProvider, store, permit.WithIssuerClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,8 +242,9 @@ func newFixture(t *testing.T, ttl time.Duration) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture := &fixture{now: now, publicKey: publicKey, store: store, issued: issued, action: action}
-	result, err := verifier.New(publicKey, "aegis-router", store, verifier.WithClock(func() time.Time { return fixture.now }))
+	_ = publicKey
+	fixture := &fixture{now: now, keyProvider: keyProvider, store: store, issued: issued, action: action}
+	result, err := verifier.New(keyProvider, "aegis-router", store, verifier.WithClock(func() time.Time { return fixture.now }))
 	if err != nil {
 		t.Fatal(err)
 	}

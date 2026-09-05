@@ -17,6 +17,7 @@ import (
 	"agent-governance-gateway/internal/config"
 	"agent-governance-gateway/internal/discovery"
 	"agent-governance-gateway/internal/httpapi"
+	"agent-governance-gateway/internal/intake"
 	"agent-governance-gateway/internal/models"
 	"agent-governance-gateway/internal/router"
 	"agent-governance-gateway/internal/scenario"
@@ -49,6 +50,59 @@ func TestRouteEndpoint(t *testing.T) {
 	}
 	if got := recorder.Header().Get("Content-Security-Policy"); got == "" {
 		t.Fatal("content security policy header is missing")
+	}
+}
+
+func TestAuthorizationHTTPFailsClosedWithoutTrustedIntake(t *testing.T) {
+	handler := testHandlerWithServerOptions(t, filepath.Join(t.TempDir(), "session-audit.jsonl"), nil, nil, httpapi.Options{
+		AuthorizationIntake: intake.RejectAll{},
+	})
+	body, _ := json.Marshal(structuredSafeRequest())
+	request := httptest.NewRequest(http.MethodPost, "/api/actions/authorize", bytes.NewReader(body))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "trusted_authorization_context_required") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestTrustedIntakeOverridesForgedHTTPIdentityAndIsAudited(t *testing.T) {
+	identity := intake.IdentityContext{
+		Principal: models.PrincipalContext{PrincipalID: "user-01", PrincipalType: "human", Environment: "test"},
+		Agent:     models.AgentIdentity{AgentID: "coder-agent", WorkloadID: "coder-workload-v1", Environment: "test"},
+		DelegatedAuthority: models.DelegatedAuthority{
+			CredentialFingerprint: strings.Repeat("a", 64), Scopes: []string{"code.read"}, Subject: "user-01",
+		},
+	}
+	trustedIntake, err := intake.NewStatic(identity, "authenticated-test-middleware")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := testHandlerWithServerOptions(t, filepath.Join(t.TempDir(), "session-audit.jsonl"), nil, nil, httpapi.Options{
+		AuthorizationIntake: trustedIntake,
+	})
+	proposal := structuredSafeRequest()
+	proposal.Principal.PrincipalID = "forged-user"
+	proposal.Agent.AgentID = "forged-agent"
+	proposal.Agent.WorkloadID = "forged-workload"
+	proposal.Authority.CredentialFingerprint = strings.Repeat("b", 64)
+	body, _ := json.Marshal(proposal)
+	request := httptest.NewRequest(http.MethodPost, "/api/actions/authorize", bytes.NewReader(body))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result models.ActionAuthorizationResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Permit == nil || result.Decision.Request.Principal.PrincipalID != "user-01" || result.Decision.Request.Agent.AgentID != "coder-agent" {
+		t.Fatalf("trusted identity did not replace caller metadata: %#v", result.Decision.Request)
+	}
+	provenance := result.Decision.AuthorizationContext
+	if provenance == nil || provenance.ProviderID != "authenticated-test-middleware" || provenance.Assurance != intake.AssuranceAuthenticated {
+		t.Fatalf("authorization provenance = %#v", provenance)
 	}
 }
 
@@ -552,6 +606,13 @@ func testHandlerWithOptions(t *testing.T, sessionAuditPath string, scenarios []m
 
 func testHandlerWithServerOptions(t *testing.T, sessionAuditPath string, scenarios []models.Scenario, discoveryRoots []string, options httpapi.Options) http.Handler {
 	t.Helper()
+	if options.AuthorizationIntake == nil {
+		developmentIntake, err := intake.NewLoopbackDevelopment("httpapi-test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		options.AuthorizationIntake = developmentIntake
+	}
 	cfg, err := config.Load(filepath.Join("..", "..", "configs", "policy.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -575,7 +636,11 @@ func testHandlerWithServerOptions(t *testing.T, sessionAuditPath string, scenari
 	if err != nil {
 		t.Fatal(err)
 	}
-	return httpapi.NewWithOptions(router.New(cfg, store), store, cfg, scenarios, manager, sessionAuditPath, static, logger, options).Handler()
+	handler := httpapi.NewWithOptions(router.New(cfg, store), store, cfg, scenarios, manager, sessionAuditPath, static, logger, options).Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		req.RemoteAddr = "127.0.0.1:54321"
+		handler.ServeHTTP(w, req)
+	})
 }
 
 func structuredSafeRequest() models.Request {

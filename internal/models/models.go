@@ -307,6 +307,7 @@ type DispatchDecision struct {
 
 type AuthorizationEnvelope struct {
 	PermitID                       string                   `json:"permit_id"`
+	SigningKeyID                   string                   `json:"signing_key_id"`
 	RequestID                      string                   `json:"request_id"`
 	SessionID                      string                   `json:"session_id,omitempty"`
 	PrincipalID                    string                   `json:"principal_id"`
@@ -333,11 +334,12 @@ type AuthorizationEnvelope struct {
 // PermitCredential is returned only to the caller that requested a new
 // authorization. PermitToken is never embedded in AuditRecord or PermitView.
 type PermitCredential struct {
-	PermitID    string    `json:"permit_id"`
-	PermitToken string    `json:"permit_token"`
-	IssuedAt    time.Time `json:"issued_at"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	SingleUse   bool      `json:"single_use"`
+	PermitID     string    `json:"permit_id"`
+	SigningKeyID string    `json:"signing_key_id"`
+	PermitToken  string    `json:"permit_token"`
+	IssuedAt     time.Time `json:"issued_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	SingleUse    bool      `json:"single_use"`
 }
 
 type ActionAuthorizationResponse struct {
@@ -484,24 +486,34 @@ type ExecutionCompletion struct {
 	CompletedAt     time.Time `json:"completed_at,omitempty"`
 }
 
+// AuthorizationContextProvenance records how identity was established before
+// policy evaluation. It contains no credential or raw identity assertion.
+type AuthorizationContextProvenance struct {
+	Source        string    `json:"source"`
+	ProviderID    string    `json:"provider_id"`
+	Assurance     string    `json:"assurance"`
+	EstablishedAt time.Time `json:"established_at"`
+}
+
 type AuditRecord struct {
-	RequestID             string                 `json:"request_id"`
-	DecisionID            string                 `json:"decision_id"`
-	AuthorizationStatus   AuthorizationStatus    `json:"authorization_status"`
-	CreatedAt             time.Time              `json:"created_at"`
-	CompletedAt           *time.Time             `json:"completed_at,omitempty"`
-	Request               Request                `json:"request"`
-	PolicyDecision        PolicyDecision         `json:"policy_decision"`
-	RiskAssessment        RiskAssessment         `json:"risk_assessment"`
-	DispatchDecision      DispatchDecision       `json:"dispatch_decision"`
-	AuthorizationEnvelope *AuthorizationEnvelope `json:"authorization_envelope,omitempty"`
-	ExecutionReceipt      *ExecutionReceipt      `json:"execution_receipt,omitempty"`
-	SelectedExecutor      string                 `json:"selected_executor"`
-	RuntimeObservation    RuntimeObservation     `json:"runtime_observation"`
-	SecurityFindings      []SecurityFinding      `json:"security_findings"`
-	CausalContext         CausalContext          `json:"causal_context"`
-	FinalVerdict          string                 `json:"final_verdict"`
-	DurationMS            int64                  `json:"duration_ms"`
+	RequestID             string                          `json:"request_id"`
+	DecisionID            string                          `json:"decision_id"`
+	AuthorizationStatus   AuthorizationStatus             `json:"authorization_status"`
+	CreatedAt             time.Time                       `json:"created_at"`
+	CompletedAt           *time.Time                      `json:"completed_at,omitempty"`
+	Request               Request                         `json:"request"`
+	AuthorizationContext  *AuthorizationContextProvenance `json:"authorization_context_provenance,omitempty"`
+	PolicyDecision        PolicyDecision                  `json:"policy_decision"`
+	RiskAssessment        RiskAssessment                  `json:"risk_assessment"`
+	DispatchDecision      DispatchDecision                `json:"dispatch_decision"`
+	AuthorizationEnvelope *AuthorizationEnvelope          `json:"authorization_envelope,omitempty"`
+	ExecutionReceipt      *ExecutionReceipt               `json:"execution_receipt,omitempty"`
+	SelectedExecutor      string                          `json:"selected_executor"`
+	RuntimeObservation    RuntimeObservation              `json:"runtime_observation"`
+	SecurityFindings      []SecurityFinding               `json:"security_findings"`
+	CausalContext         CausalContext                   `json:"causal_context"`
+	FinalVerdict          string                          `json:"final_verdict"`
+	DurationMS            int64                           `json:"duration_ms"`
 }
 
 type Scenario struct {

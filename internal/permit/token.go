@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"agent-governance-gateway/internal/canonicalaction"
+	"agent-governance-gateway/internal/keyprovider"
 )
 
 const (
@@ -22,6 +23,7 @@ type tokenHeader struct {
 	Algorithm string `json:"alg"`
 	Type      string `json:"typ"`
 	Version   int    `json:"v"`
+	KeyID     string `json:"kid"`
 }
 
 var compactHeader = tokenHeader{Algorithm: "EdDSA", Type: tokenType, Version: tokenVersion}
@@ -29,14 +31,19 @@ var compactHeader = tokenHeader{Algorithm: "EdDSA", Type: tokenType, Version: to
 // SignToken creates an Ed25519-signed, JWS-shaped compact token. The wire
 // shape is intentionally small but is not advertised as general JWT/JWS
 // interoperability.
-func SignToken(privateKey ed25519.PrivateKey, claims Claims) (string, error) {
+func SignToken(privateKey ed25519.PrivateKey, keyID string, claims Claims) (string, error) {
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return "", ErrInvalidKey
 	}
 	if err := claims.Validate(); err != nil {
 		return "", err
 	}
-	headerJSON, err := json.Marshal(compactHeader)
+	if keyprovider.ValidateKeyID(keyID) != nil || claims.SigningKeyID != keyID {
+		return "", fmt.Errorf("%w: token kid must match signing_key_id", ErrInvalidClaims)
+	}
+	header := compactHeader
+	header.KeyID = keyID
+	headerJSON, err := json.Marshal(header)
 	if err != nil {
 		return "", err
 	}
@@ -57,12 +64,9 @@ func VerifyToken(publicKey ed25519.PublicKey, token string) (Claims, error) {
 	if len(publicKey) != ed25519.PublicKeySize {
 		return claims, ErrInvalidKey
 	}
-	if token == "" || len(token) > maxCompactBytes {
-		return claims, ErrMalformedToken
-	}
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return claims, ErrMalformedToken
+	parts, err := tokenParts(token)
+	if err != nil {
+		return claims, err
 	}
 	encoding := base64.RawURLEncoding
 	signature, err := encoding.DecodeString(parts[2])
@@ -97,7 +101,8 @@ func VerifyToken(publicKey ed25519.PublicKey, token string) (Claims, error) {
 	if err := strictJSON(headerJSON, &header); err != nil {
 		return claims, fmt.Errorf("%w: invalid header", ErrMalformedToken)
 	}
-	if header != compactHeader {
+	if header.Algorithm != compactHeader.Algorithm || header.Type != compactHeader.Type ||
+		header.Version != compactHeader.Version || keyprovider.ValidateKeyID(header.KeyID) != nil {
 		return claims, ErrUnsupportedToken
 	}
 	if err := strictJSON(payloadJSON, &claims); err != nil {
@@ -106,7 +111,47 @@ func VerifyToken(publicKey ed25519.PublicKey, token string) (Claims, error) {
 	if err := claims.Validate(); err != nil {
 		return Claims{}, err
 	}
+	if claims.SigningKeyID != header.KeyID {
+		return Claims{}, fmt.Errorf("%w: token kid does not match signed claims", ErrInvalidClaims)
+	}
 	return claims, nil
+}
+
+// TokenKeyID returns only the untrusted key selector from a structurally valid
+// compact header. Callers must still verify the token signature before trusting
+// this or any claim.
+func TokenKeyID(token string) (string, error) {
+	parts, err := tokenParts(token)
+	if err != nil {
+		return "", err
+	}
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return "", fmt.Errorf("%w: header encoding", ErrMalformedToken)
+	}
+	if _, err := canonicalaction.CanonicalizeJSON(headerJSON); err != nil {
+		return "", fmt.Errorf("%w: invalid header JSON", ErrMalformedToken)
+	}
+	var header tokenHeader
+	if err := strictJSON(headerJSON, &header); err != nil {
+		return "", fmt.Errorf("%w: invalid header", ErrMalformedToken)
+	}
+	if header.Algorithm != compactHeader.Algorithm || header.Type != compactHeader.Type ||
+		header.Version != compactHeader.Version || keyprovider.ValidateKeyID(header.KeyID) != nil {
+		return "", ErrUnsupportedToken
+	}
+	return header.KeyID, nil
+}
+
+func tokenParts(token string) ([]string, error) {
+	if token == "" || len(token) > maxCompactBytes {
+		return nil, ErrMalformedToken
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return nil, ErrMalformedToken
+	}
+	return parts, nil
 }
 
 func strictJSON(input []byte, destination any) error {

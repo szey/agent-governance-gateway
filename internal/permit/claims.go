@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"agent-governance-gateway/internal/keyprovider"
 )
 
 var (
@@ -38,6 +40,7 @@ type Obligations struct {
 // fields are UTC Unix seconds. The token itself is deliberately absent.
 type Claims struct {
 	PermitID                      string      `json:"jti"`
+	SigningKeyID                  string      `json:"signing_key_id"`
 	RequestID                     string      `json:"request_id"`
 	PrincipalID                   string      `json:"principal"`
 	AgentID                       string      `json:"agent"`
@@ -67,6 +70,7 @@ func (c Claims) Validate() error {
 		limit int
 	}{
 		{"jti", c.PermitID, 160},
+		{"signing_key_id", c.SigningKeyID, 128},
 		{"request_id", c.RequestID, 160},
 		{"principal", c.PrincipalID, 512},
 		{"agent", c.AgentID, 512},
@@ -82,6 +86,9 @@ func (c Claims) Validate() error {
 		if err := validateMetadata(field.name, field.value, field.limit, true); err != nil {
 			return err
 		}
+	}
+	if err := keyprovider.ValidateKeyID(c.SigningKeyID); err != nil {
+		return fmt.Errorf("%w: signing_key_id", ErrInvalidClaims)
 	}
 	if err := validateMetadata("delegated_authority_fingerprint", c.DelegatedAuthorityFingerprint, 512, false); err != nil {
 		return err

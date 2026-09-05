@@ -97,18 +97,20 @@ Discovery 不属于这个 Gate 的验收内容。
 仅当公司 Agent/工具系统支持批准的 MCP client 或 Proxy 配置时进行：
 
 1. 使用一个无害、可计数调用次数的 upstream MCP test server；
-2. 对一次 `tools/call` 生成规范动作并调用授权 API；
-3. 将 `permit_token` 仅放在受控 client→Proxy 执行通道，不写入命令历史或截图；
-4. Proxy 在转发前复用核心 verifier 并原子消费；
-5. 使用 `2026-07-28` 时同时验证 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与正文一致，并只在 `VERIFIED` 后转发；
-6. 保存脱敏 receipt 和 upstream call counter；
-7. 对每种负向结果重复验证 counter 为零。
+2. 由获准的认证中间件通过 Trusted Intake 建立 principal、Agent/workload 与 delegated authority；不要使用 `development_only` body intake 作为公司身份保证；
+3. 对一次 `tools/call` 生成规范动作并调用授权 API，保存脱敏的 `authorization_context_provenance` 与 `signing_key_id`；
+4. 将 `permit_token` 仅放在受控 client→Proxy 执行通道，不写入命令历史或截图；
+5. Proxy 在转发前复用核心 verifier 并原子消费；
+6. 使用 `2026-07-28` 时同时验证 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与正文一致，并只在 `VERIFIED` 后转发；
+7. 保存脱敏 receipt 和 upstream call counter；
+8. 对每种负向结果重复验证 counter 为零；
+9. 让一次已验证调用在 upstream 返回失败或 timeout，确认 Permit 仍为 `CONSUMED`；随后只有重新授权取得新 Permit 才允许重试。
 
 若 WorkBuddy 或其他 Agent 无法配置获准 MCP 边界，本 Gate 不通过。不能通过修改公司 Agent、绕过策略或采集全机行为“补齐”测试。
 
 ## Gate 4：证据复核与退出
 
-审计必须回答 request/decision/permit ID、principal、Agent/workload、tool、resource、operation、action digest、policy version、authorization decision、Permit state、verification outcome、timestamp、evidence source 与 upstream call count；不得含 token 或原始敏感参数。
+审计必须回答 request/decision/permit ID、`signing_key_id`、principal、Agent/workload、authorization-context provenance、tool、resource、operation、action digest、policy version、authorization decision、Permit state、verification outcome、timestamp、evidence source 与 upstream call count；不得含 token 或原始敏感参数。
 
 结束后停止 Aegis、Proxy 和测试 upstream，撤销所有未消费 Permit，删除临时私钥与 synthetic payload，并由公司负责人决定本地审计保留/删除。只有脱敏结论与 synthetic 最小复现可以返回公开仓库。
 

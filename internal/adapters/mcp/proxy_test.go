@@ -262,6 +262,90 @@ func TestReplayExpiredAndRevokedPermitsNeverAddAnUpstreamCall(t *testing.T) {
 	})
 }
 
+func TestFailedUpstreamDoesNotRestorePermitAndRetryRequiresNewAuthorization(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+	}))
+	defer upstream.Close()
+
+	r, store, _ := testRouter(t)
+	action := coderRequest(`{"task":"retry-explicitly"}`)
+	firstAuthorization, err := r.AuthorizeAction(action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, _ := mcp.New(r, upstream.URL, nil)
+	failed := invoke(t, proxy, firstAuthorization.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	if failed.Code != http.StatusServiceUnavailable || calls.Load() != 1 {
+		t.Fatalf("failed attempt status=%d calls=%d body=%s", failed.Code, calls.Load(), failed.Body.String())
+	}
+	permitRecord, ok := r.GetPermit(firstAuthorization.Permit.PermitID)
+	if !ok || permitRecord.State != "CONSUMED" {
+		t.Fatalf("permit after upstream failure = %#v, exists=%v", permitRecord, ok)
+	}
+	auditRecord, _ := store.Get(firstAuthorization.Decision.RequestID)
+	if auditRecord.FinalVerdict != "EXECUTION_FAILED" || auditRecord.ExecutionReceipt.ExecutionOutcome != "failed" {
+		t.Fatalf("failed execution receipt = %#v", auditRecord)
+	}
+
+	replayed := invoke(t, proxy, firstAuthorization.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	if replayed.Code != http.StatusForbidden || !strings.Contains(replayed.Body.String(), "REPLAYED") || calls.Load() != 1 {
+		t.Fatalf("reused failed-attempt permit status=%d calls=%d body=%s", replayed.Code, calls.Load(), replayed.Body.String())
+	}
+
+	secondAuthorization, err := r.AuthorizeAction(action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondAuthorization.Permit.PermitID == firstAuthorization.Permit.PermitID {
+		t.Fatal("retry authorization reused the prior permit id")
+	}
+	succeeded := invoke(t, proxy, secondAuthorization.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	if succeeded.Code != http.StatusOK || calls.Load() != 2 {
+		t.Fatalf("newly authorized retry status=%d calls=%d body=%s", succeeded.Code, calls.Load(), succeeded.Body.String())
+	}
+}
+
+func TestTimedOutUpstreamDoesNotRestoreConsumedPermit(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		calls.Add(1)
+		select {
+		case <-req.Context().Done():
+		case <-time.After(100 * time.Millisecond):
+		}
+	}))
+	defer upstream.Close()
+
+	r, _, _ := testRouter(t)
+	action := coderRequest(`{"task":"timeout"}`)
+	authorized, err := r.AuthorizeAction(action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := mcp.New(r, upstream.URL, &http.Client{Timeout: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	if failed.Code != http.StatusBadGateway || calls.Load() != 1 {
+		t.Fatalf("timeout status=%d calls=%d body=%s", failed.Code, calls.Load(), failed.Body.String())
+	}
+	permitRecord, ok := r.GetPermit(authorized.Permit.PermitID)
+	if !ok || permitRecord.State != "CONSUMED" {
+		t.Fatalf("permit after timeout = %#v, exists=%v", permitRecord, ok)
+	}
+	replayed := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	if replayed.Code != http.StatusForbidden || !strings.Contains(replayed.Body.String(), "REPLAYED") || calls.Load() != 1 {
+		t.Fatalf("timeout replay status=%d calls=%d body=%s", replayed.Code, calls.Load(), replayed.Body.String())
+	}
+}
+
 func TestConcurrentMCPReplayInvokesUpstreamExactlyOnce(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

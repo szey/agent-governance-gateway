@@ -25,11 +25,14 @@ Every pull request must preserve:
 - canonical JSON is deterministic: object key order cannot change the digest, duplicate keys are rejected, and array order is preserved;
 - the digest uses SHA-256 and normal audit does not retain raw sensitive arguments;
 - `permit_id` is correlation only while `permit_token` is the signed execution credential; an ID alone cannot authorize;
+- HTTP authorization identity must come from `TrustedAuthorizationIntake`; an unconfigured intake fails closed, while local body intake is explicit and labeled `development_only`;
+- the Permit header `kid` must resolve exactly through KeyProvider and match the signed `signing_key_id` claim;
 - permits are short-lived, action-bound, and single-use by default; verification and consumption are atomic;
 - any failed signature, issuer, time, Agent/workload, tool, resource, operation, or digest check prevents the upstream tool call;
 - MCP `2026-07-28` version, `Mcp-Method`, and `Mcp-Name` must match the body; duplicate keys, arbitrary headers/session context, unbound tool `_meta`, MRTR, or `Mcp-Param-*` inputs not bound into the canonical action must fail closed or be stripped before upstream;
 - exactly one of two concurrent consumption attempts succeeds and the other receives an explicit replay result;
 - revoked and expired permits cannot execute;
+- a Permit is consumed before upstream; failure/timeout never restores it, retry requires a fresh authorization, and `unconsume` must not be added;
 - `permit_token`, signing private keys, raw bearer/delegated tokens, secret values, and raw sensitive arguments never enter logs, UI, or error messages;
 - authorization stays deterministic; risk is advisory metadata or obligations and cannot override an explicit denial;
 - `isolation_required` is an external execution obligation, not an Aegis sandbox claim; the focused MCP proxy must not forward while isolation or human approval is unsatisfied;
@@ -45,7 +48,7 @@ Every pull request must preserve:
 5. Synchronize APIs, capability boundaries, research register, and bilingual docs.
 6. Report actual test results; do not turn local regression results into a production claim.
 
-Minimum coverage includes a valid permit, invalid signature, expiry, revocation, wrong agent/workload/tool/resource/operation, argument digest mismatch, sequential replay, concurrent replay, token-free audit, and zero MCP upstream calls after every verification failure.
+Minimum coverage includes trusted intake overriding forged HTTP identity, fail-closed missing intake, a valid Permit, `kid`, invalid signature, expiry, revocation, wrong agent/workload/tool/resource/operation, argument digest mismatch, sequential replay, concurrent replay, consumption retained after upstream failure/timeout, token-free audit, and zero MCP upstream calls after every verification failure.
 
 ## API, MCP, and compatibility
 
@@ -70,6 +73,7 @@ go test -race ./...
 go vet ./...
 npm run check:web
 npm run build:web
+docker build .
 ```
 
 If the race-detector toolchain is unavailable, report that limitation exactly instead of claiming an unrun check passed.

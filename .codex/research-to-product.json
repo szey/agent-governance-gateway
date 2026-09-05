@@ -36,9 +36,11 @@
   ],
   "verification_commands": [
     "go test ./...",
+    "go test -race ./...",
     "go vet ./...",
     "npm run check:web",
-    "npm run build:web -- --log-level=warning"
+    "npm run build:web -- --log-level=warning",
+    "docker build ."
   ],
   "framework_baselines": [
     {"name": "OWASP GenAI LLM Top 10", "version": "2026"},

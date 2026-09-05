@@ -46,6 +46,12 @@ Write redacted Audit Receipt
 
 授权和验证必须使用相同的 canonicalizer。事后收到 RuntimeEvent 不能替代执行前检查；如果 Permit 验证失败，上游工具调用次数必须为零。
 
+## Trusted Authorization Intake
+
+HTTP body/header 中的 principal、Agent、workload 与 delegated authority 不能直接成为授权事实。`TrustedAuthorizationIntake` 必须先从已配置的信任边界解析并覆盖这些字段，再把来源、provider、assurance 与建立时间记录到 `authorization_context_provenance`。未配置 intake 时 HTTP 授权默认拒绝。
+
+当前提供两种窄实现：供已认证中间件/嵌入进程注入固定可信上下文的 static intake，以及必须显式启用、仅接受 loopback peer、标记为 `development_only` 的本地开发 intake。这不是 IAM、SSO、RBAC 或 bearer-token 验证。
+
 ## CanonicalAction
 
 规范动作绑定：principal ID、Agent ID、workload ID、delegated-authority fingerprint、tool、capability、resource、operation 与安全相关 arguments。
@@ -60,24 +66,28 @@ Arguments 使用确定性 canonical JSON：空参数变为 `{}`；对象键递�
 
 Permit claims 至少包含：
 
-- `jti/permit_id` 与 `request_id`；
+- `jti/permit_id`、`signing_key_id` 与 `request_id`；
 - `issuer`、`principal_id`、`agent_id`、`workload_id`；
 - delegated authority digest/fingerprint；
 - `tool`、`capability`、`resource`、`operation`；
 - `action_digest` 与 `policy_version`；
 - `issued_at`、`expires_at`、`single_use=true`。
 
-MVP token 是项目自有的 Ed25519 签名紧凑格式：`base64url(header).base64url(payload).base64url(signature)`，Header 为 `alg=EdDSA`、`typ=AEGIS-PERMIT`、`v=1`。它借用 JWS 形态，但不声称通用 JWT/JWS 互操作。
+MVP token 是项目自有的 Ed25519 签名紧凑格式：`base64url(header).base64url(payload).base64url(signature)`，Header 为 `alg=EdDSA`、`typ=AEGIS-PERMIT`、`v=1` 与 `kid`。未验证的 `kid` 仅选择 KeyProvider 公钥，签名验证后必须与 signed claim 的 `signing_key_id` 一致。它借用 JWS 形态，但不声称通用 JWT/JWS 互操作。
 
 TTL 以整秒表示，默认 30 秒，当前最大 15 分钟。
 
 `permit_id` 是审计关联 ID；`permit_token` 是秘密执行凭据。列表、详情、日志和 UI 只能展示前者。
+
+`KeyProvider` 将密钥存储/生命周期从 Permit 逻辑分离：issuer 获取当前签名密钥，verifier 按 `kid` 查找公钥。默认 Server 仍用进程级临时开发密钥；static provider 可接收由嵌入方安全加载的持久本地 Ed25519 密钥。密钥文件格式、自动轮换和 KMS/HSM 不在本里程碑。
 
 ## Verifier 与 PermitStore
 
 Verifier 在副作用前检查签名、issuer、时间、Permit ID、主体、Agent/workload、工具、资源、操作和动作摘要。只接受 `VERIFIED`。
 
 并发安全的 PermitStore 维护 `ISSUED / CONSUMED / EXPIRED / REVOKED`。验证成功与消费是一个原子动作；两个并发请求复用同一 Permit 时，只能一个成功，另一个明确返回 replay。状态仅在单进程内时，不提供跨重启/跨副本 replay 保证。
+
+消费发生在上游副作用前，并且是不可逆 commit point。上游失败或 timeout 后 Permit 仍为 `CONSUMED`；重试必须取得一次新授权和新 Permit。不存在 `unconsume`。
 
 ## MCP Adapter
 
@@ -105,9 +115,9 @@ RuntimeEvent 与来源/信任模型继续保留，但属于执行中/执行后�
 
 ## API 与 UI
 
-主 API 是 `POST /api/actions/authorize`、`POST /api/permits/verify`、Permit revoke/list/detail、`GET /api/decisions` 与 `GET /api/audits`。Verifier 作为可信执行边界库被 MCP Adapter 复用。授权入口目前信任调用方提供的结构化身份/委托元数据，公开 verify 入口只适合受控集成；两者都不提供网络身份认证。旧 `/api/authorize`、`/api/route`、`/api/runtime-events` 暂时兼容并清楚标注。
+主 API 是 `POST /api/actions/authorize`、`POST /api/permits/verify`、Permit revoke/list/detail、`GET /api/decisions` 与 `GET /api/audits`。Verifier 作为可信执行边界库被 MCP Adapter 复用。所有 HTTP 授权入口都经过 Trusted Intake；未配置时 fail closed，loopback body intake 只用于显式开发模式。公开 verify 入口只适合受控集成，不提供网络身份认证。旧 `/api/authorize`、`/api/route`、`/api/runtime-events` 暂时兼容并清楚标注。
 
-UI 只保留 `Decisions / Permits / Audit / Demo` 主导航。Permit 详情显示 `permit_id`、state、principal、Agent/workload、tool、capability、resource、operation、action digest、policy version、issued/expires/consumed time 与最近验证结果，永不显示 token、签名密钥、raw delegated credential 或原始敏感参数。
+UI 只保留 `Decisions / Permits / Audit / Demo` 主导航。Permit 详情显示 `permit_id`、`signing_key_id`、state、principal、Agent/workload、tool、capability、resource、operation、action digest、policy version、issued/expires/consumed time 与最近验证结果，永不显示 token、签名密钥、raw delegated credential 或原始敏感参数。
 
 四个主 Demo 是 valid、action mutation/TOCTOU、replay 与 expired Permit；历史场景降为 advanced regression fixtures，并继续标记 `simulated_demo`。
 
@@ -121,4 +131,4 @@ UI 只保留 `Decisions / Permits / Audit / Demo` 主导航。Permit 详情显�
 
 Focused MVP 完成时必须能重复证明：精确动作被授权并获签名 Permit；MCP 边界在上游调用前验证和消费；任何受绑定字段变化都阻断；消费后不能 replay；全链路审计不泄漏 token 或敏感 payload。
 
-即使全部本地测试通过，这仍是参考实现。单进程 Store、开发密钥、本地审计、未认证的部署边界与未完成的独立评审，均不构成生产保证。
+即使全部本地测试通过，这仍是参考实现。单进程 Store、默认临时开发密钥、本地审计、尚未接入真实认证中间件的部署边界与未完成的独立评审，均不构成生产保证。

@@ -18,17 +18,22 @@ Aegis 是参考实现，不是经独立评审的生产安全边界。它只保�
 
 `AuthorizationEnvelope` 继续承载结构化 principal、Agent/workload、delegation、tool、capability、resource、operation 和 policy context，但执行凭据还必须包含可验证签名与相同动作摘要。
 
+HTTP 授权请求还必须经过 `TrustedAuthorizationIntake`。未配置 intake 时默认拒绝；可信集成负责覆盖调用方声明的 principal、Agent/workload 与 delegated authority，并在审计中记录 `authorization_context_provenance`。`--allow-development-intake` 仅接受 loopback peer、仍将身份标记为 `development_only`，不构成生产身份认证。
+
 ## Token、密钥与 replay
 
-聚焦 MVP 使用项目自有的 Ed25519 签名紧凑格式，形态为 `base64url(header).base64url(payload).base64url(signature)`，不声明通用 JWT/JWS 互操作性。
+聚焦 MVP 使用项目自有的 Ed25519 签名紧凑格式，形态为 `base64url(header).base64url(payload).base64url(signature)`，不声明通用 JWT/JWS 互操作性。Header 含 `kid`，只用作 KeyProvider 公钥选择器；签名验证后还必须与 claims 的 `signing_key_id` 一致。
 
 Permit TTL 必须是整秒，默认 30 秒，当前最大 15 分钟。
 
 - 私钥只能存在于许可签发方的获准边界，不得进入 UI、审计、错误消息或仓库；
-- public key 可以分发给可信 verifier，但 key rotation、HSM/KMS、跨实例信任和灾难恢复尚不属于 MVP；
+- `KeyProvider` 提供当前签名密钥与按 `kid` 查询验证公钥的边界；默认仍是进程级临时密钥，嵌入方可注入已安全加载的持久本地密钥；
+- key 文件格式、自动 rotation、HSM/KMS、跨实例信任和灾难恢复尚不属于 MVP；
 - Permit 默认单次使用，并通过并发安全的 Store 原子消费；
 - 过期、撤销、已消费或未知 Permit 必须 fail closed；
 - 若 Store 仅在单进程内，重启/多副本会形成 replay 状态缺口；在引入共享持久化与密钥生命周期设计前不能声称提供集群级 replay defense。
+
+Permit 在上游副作用前消费。上游失败或 timeout 不会恢复 Permit；重试必须重新授权并获取新 Permit。任何 `unconsume` 语义都会重新打开 replay/双重副作用窗口，因此 Store 接口不提供该操作。
 
 ## 动作绑定与 canonicalization
 
@@ -42,7 +47,7 @@ MCP 是当前唯一的生产形态 Adapter。Adapter 必须在转发上游 `tool
 
 MCP `2026-07-28` 的 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与 JSON-RPC 正文必须一致；Proxy 拒绝重复 JSON key 和未绑定的 Tool `_meta`，剥离任意入站 Header/Session 上下文，并只重建最小传输信息与标准路由 Header。当前 focused subset 不缓存 Tool Schema，因此无法可靠校验 `Mcp-Param-*`，也没有把 MRTR `inputResponses`/`requestState` 纳入动作摘要；这些输入一律在上游前 fail closed。不要把这一子集描述为完整 MCP conformance。
 
-保护只覆盖经过该 Adapter 的调用。当前授权 API 信任调用方提供的结构化身份/委托元数据，本身不是身份认证器。MCP 客户端身份、上游 TLS/认证、transport framing、工具自身副作用、部署绕过和 confused-deputy 风险仍需要独立威胁建模。不要把本地 API 监听或自定义 Header 当作生产身份认证。
+保护只覆盖经过该 Adapter 的调用。Trusted Intake 只让身份来源显式、可拒绝和可审计，并不实现 IAM/SSO/RBAC；真实集成仍必须由已认证的中间件提供上下文。MCP 执行请求里的绑定 Header 只有在与已签名 Permit 完全匹配时才有效，本身不是身份凭据。上游 TLS/认证、transport framing、工具自身副作用、部署绕过和 confused-deputy 风险仍需要独立威胁建模。
 
 ## Policy、Risk 与隔离
 
@@ -52,7 +57,7 @@ Aegis 不实现沙箱。`isolation_required: true` 只要求外部 executor 提�
 
 ## 审计与敏感数据
 
-正常审计可保存 request/decision/permit ID、规范化身份字段、tool/resource/operation、`action_digest`、policy version、授权决定、Permit 状态、验证结果、时间和 evidence source。
+正常审计可保存 request/decision/permit ID、`signing_key_id`、规范化身份字段、`authorization_context_provenance`、tool/resource/operation、`action_digest`、policy version、授权决定、Permit 状态、验证结果、时间和 evidence source。
 
 调用方必须先对委托凭据做哈希再提交。Aegis 会在 Permit/审计持久化前再次哈希所声明的 64 位十六进制 fingerprint，因此即便输入形状像摘要也不会被原样保存；这层防御不会把授权 API 变成凭据认证器。
 

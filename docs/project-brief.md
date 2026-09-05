@@ -46,6 +46,12 @@ Write redacted Audit Receipt
 
 Authorization and verification reuse the same canonicalizer. Receiving a RuntimeEvent after execution cannot replace this pre-execution check. If permit verification fails, the upstream tool-call count must remain zero.
 
+## Trusted Authorization Intake
+
+Principal, Agent, workload, and delegated authority from an HTTP body/header cannot become authorization facts directly. `TrustedAuthorizationIntake` first resolves and overwrites those fields from a configured trust boundary, then records source, provider, assurance, and establishment time in `authorization_context_provenance`. HTTP authorization fails closed when no intake is configured.
+
+Two narrow implementations exist: a static intake for authenticated middleware/an embedding process to inject trusted context, and an explicitly enabled local-development intake that accepts loopback peers only and is labeled `development_only`. This is not IAM, SSO, RBAC, or bearer-token verification.
+
 ## CanonicalAction
 
 The canonical action binds principal ID, Agent ID, workload ID, delegated-authority fingerprint, tool, capability, resource, operation, and security-relevant arguments.
@@ -60,24 +66,28 @@ The structured `AuthorizationEnvelope` is retained. It continues to represent re
 
 Permit claims include at least:
 
-- `jti/permit_id` and `request_id`;
+- `jti/permit_id`, `signing_key_id`, and `request_id`;
 - `issuer`, `principal_id`, `agent_id`, and `workload_id`;
 - delegated-authority digest/fingerprint;
 - `tool`, `capability`, `resource`, and `operation`;
 - `action_digest` and `policy_version`;
 - `issued_at`, `expires_at`, and `single_use=true`.
 
-The MVP token is a project-specific Ed25519-signed compact format: `base64url(header).base64url(payload).base64url(signature)`, with `alg=EdDSA`, `typ=AEGIS-PERMIT`, and `v=1` in its header. It borrows the JWS shape but does not claim general JWT/JWS interoperability.
+The MVP token is a project-specific Ed25519-signed compact format: `base64url(header).base64url(payload).base64url(signature)`, with `alg=EdDSA`, `typ=AEGIS-PERMIT`, `v=1`, and `kid` in its header. The unverified `kid` only selects a KeyProvider public key; after signature verification it must match the signed `signing_key_id` claim. The format borrows the JWS shape but does not claim general JWT/JWS interoperability.
 
 TTL uses whole seconds, defaults to 30 seconds, and is currently capped at 15 minutes.
 
 `permit_id` is an audit correlation ID; `permit_token` is the secret execution credential. Lists, details, logs, and UI show only the former.
+
+`KeyProvider` separates key storage/lifecycle from Permit logic: the issuer requests the current signing key and the verifier resolves a public key by `kid`. The default Server still uses a process-local ephemeral development key; the static provider accepts a persistent local Ed25519 key securely loaded by an embedding process. Key-file format, automatic rotation, and KMS/HSM are outside this milestone.
 
 ## Verifier and PermitStore
 
 The verifier checks signature, issuer, time, Permit ID, principal, Agent/workload, tool, resource, operation, and action digest before the side effect. It accepts only `VERIFIED`.
 
 A concurrency-safe PermitStore maintains `ISSUED / CONSUMED / EXPIRED / REVOKED`. Successful verification and consumption are atomic. If two requests concurrently reuse the same Permit, exactly one succeeds and the other receives an explicit replay outcome. An in-process-only state store cannot provide restart- or replica-wide replay guarantees.
+
+Consumption occurs before the upstream side effect and is an irreversible commit point. An upstream failure or timeout leaves the Permit `CONSUMED`; retry requires a new authorization and new Permit. There is no `unconsume`.
 
 ## MCP adapter
 
@@ -105,9 +115,9 @@ RuntimeEvent and its source/trust model remain, but only as during- or post-exec
 
 ## API and UI
 
-Primary APIs are `POST /api/actions/authorize`, `POST /api/permits/verify`, Permit revoke/list/detail, `GET /api/decisions`, and `GET /api/audits`. The MCP adapter reuses the verifier as a trusted execution-boundary library. Authorization currently trusts structured caller-supplied identity/delegation metadata, while the public verify endpoint is for controlled integration; neither provides network identity authentication. Legacy `/api/authorize`, `/api/route`, and `/api/runtime-events` remain temporarily and are labeled clearly.
+Primary APIs are `POST /api/actions/authorize`, `POST /api/permits/verify`, Permit revoke/list/detail, `GET /api/decisions`, and `GET /api/audits`. The MCP adapter reuses the verifier as a trusted execution-boundary library. Every HTTP authorization endpoint crosses Trusted Intake; it fails closed when unconfigured, and the loopback body intake is explicit development mode only. The public verify endpoint is for controlled integration and does not provide network identity authentication. Legacy `/api/authorize`, `/api/route`, and `/api/runtime-events` remain temporarily and are labeled clearly.
 
-The UI has only `Decisions / Permits / Audit / Demo` as primary navigation. Permit detail shows `permit_id`, state, principal, Agent/workload, tool, capability, resource, operation, action digest, policy version, issued/expires/consumed time, and the latest verification result—never the token, signing key, raw delegated credential, or raw sensitive arguments.
+The UI has only `Decisions / Permits / Audit / Demo` as primary navigation. Permit detail shows `permit_id`, `signing_key_id`, state, principal, Agent/workload, tool, capability, resource, operation, action digest, policy version, issued/expires/consumed time, and the latest verification result—never the token, signing key, raw delegated credential, or raw sensitive arguments.
 
 Four primary demos cover valid, action mutation/TOCTOU, replay, and expired Permits. Historical scenarios move to advanced regression fixtures and remain labeled `simulated_demo`.
 
@@ -121,4 +131,4 @@ No process, OAuth, CI/CD, cloud, or central enterprise Inventory expansion is pl
 
 The focused MVP is complete only when it repeatedly proves that an exact action is authorized and receives a signed Permit; the MCP boundary verifies and consumes it before the upstream call; any bound-field change blocks execution; a consumed Permit cannot replay; and the full audit chain leaks neither the token nor sensitive payload.
 
-Even when every local test passes, this remains a reference implementation. An in-process Store, development keys, local audit, unauthenticated deployment boundaries, and incomplete independent review are not production guarantees.
+Even when every local test passes, this remains a reference implementation. An in-process Store, default ephemeral development key, local audit, a deployment boundary not yet connected to real authenticated middleware, and incomplete independent review are not production guarantees.

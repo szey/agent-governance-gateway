@@ -18,17 +18,22 @@ The core control deterministically authorizes an exact `CanonicalAction`, issues
 
 `AuthorizationEnvelope` continues to carry structured principal, Agent/workload, delegation, tool, capability, resource, operation, and policy context, but an execution credential must also carry a verifiable signature and the same action digest.
 
+HTTP authorization requests must also cross `TrustedAuthorizationIntake`. With no configured intake, authorization fails closed. A trusted integration overwrites caller-asserted principal, Agent/workload, and delegated authority, then records `authorization_context_provenance` in audit. `--allow-development-intake` accepts loopback peers only and still labels identity `development_only`; it is not production authentication.
+
 ## Tokens, keys, and replay
 
-The focused MVP uses a project-specific Ed25519-signed compact format shaped as `base64url(header).base64url(payload).base64url(signature)`. It does not claim general JWT/JWS interoperability.
+The focused MVP uses a project-specific Ed25519-signed compact format shaped as `base64url(header).base64url(payload).base64url(signature)`. It does not claim general JWT/JWS interoperability. The header carries `kid` only as a KeyProvider public-key selector; after signature verification it must match the signed `signing_key_id` claim.
 
 Permit TTL uses whole seconds, defaults to 30 seconds, and is currently capped at 15 minutes.
 
 - the private key stays inside the permit issuer's approved boundary and never enters UI, audit, errors, or the repository;
-- a public key may be distributed to trusted verifiers, but key rotation, HSM/KMS, cross-instance trust, and disaster recovery are outside this MVP;
+- `KeyProvider` supplies the current signing key and resolves verification keys by `kid`; the default remains process-local and ephemeral, while an embedding process may inject a securely loaded persistent local key;
+- key-file format, automatic rotation, HSM/KMS, cross-instance trust, and disaster recovery are outside this MVP;
 - permits are single-use by default and use a concurrency-safe Store for atomic consumption;
 - expired, revoked, consumed, or unknown permits fail closed;
 - an in-process-only Store has restart and multi-replica replay-state gaps; do not claim cluster-wide replay defense before shared persistence and key-lifecycle design exist.
+
+The Permit is consumed before the upstream side effect. Upstream failure or timeout never restores it; a retry requires a fresh authorization and a new Permit. The Store exposes no `unconsume` operation because such semantics would reopen replay and duplicate-side-effect windows.
 
 ## Action binding and canonicalization
 
@@ -42,7 +47,7 @@ MCP is the only production-shaped adapter in the current milestone. The adapter 
 
 For MCP `2026-07-28`, `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` must agree with the JSON-RPC body. The Proxy rejects duplicate JSON keys and unbound tool `_meta`, strips arbitrary inbound headers/session context, and rebuilds only minimal transport and standard routing headers. The focused subset does not cache tool schemas, so it cannot safely validate `Mcp-Param-*`, and it has not bound MRTR `inputResponses`/`requestState` into the action digest; those inputs fail closed before upstream. Do not describe this subset as full MCP conformance.
 
-Protection covers only calls routed through this adapter. The authorization API currently trusts structured identity/delegation metadata supplied by its caller; it is not an authenticator. MCP client identity, upstream TLS/authentication, transport framing, tool-side effects, deployment bypass, and confused-deputy risks still need a separate threat model. Do not treat a local API listener or custom header as production identity authentication.
+Protection covers only calls routed through this adapter. Trusted Intake makes identity provenance explicit, rejectable, and auditable; it does not implement IAM/SSO/RBAC, and a real integration must still supply context from authenticated middleware. Binding headers on an MCP execution request matter only when they exactly match a signed Permit; they are not identity credentials. Upstream TLS/authentication, transport framing, tool-side effects, deployment bypass, and confused-deputy risks still need a separate threat model.
 
 ## Policy, Risk, and isolation
 
@@ -52,7 +57,7 @@ Aegis does not implement a sandbox. `isolation_required: true` asks an external 
 
 ## Audit and sensitive data
 
-Normal audit may retain request/decision/permit IDs, normalized identity fields, tool/resource/operation, `action_digest`, policy version, authorization decision, permit state, verification result, timestamp, and evidence source.
+Normal audit may retain request/decision/permit IDs, `signing_key_id`, normalized identity fields, `authorization_context_provenance`, tool/resource/operation, `action_digest`, policy version, authorization decision, permit state, verification result, timestamp, and evidence source.
 
 The caller must hash delegated credentials before submission. Aegis additionally rehashes the declared 64-hex fingerprint before any Permit/audit persistence, so a digest-shaped input is not retained verbatim; this defense does not turn the authorization API into a credential authenticator.
 

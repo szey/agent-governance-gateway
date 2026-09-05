@@ -97,18 +97,20 @@ These Server fixtures are `simulated_demo` and prove only the local deterministi
 Proceed only if the company Agent/tool system supports an approved MCP client or Proxy configuration:
 
 1. Use one harmless upstream MCP test server with a call counter.
-2. Derive a canonical action for one `tools/call` and call the authorization API.
-3. Put `permit_token` only in the controlled client-to-Proxy execution channel, never command history or screenshots.
-4. The Proxy reuses the core verifier and atomically consumes before forwarding.
-5. On `2026-07-28`, also verify that `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` match the body, and forward only after `VERIFIED`.
-6. Retain a redacted receipt and upstream call counter.
-7. Repeat each negative outcome and confirm the counter remains zero.
+2. Have approved authenticated middleware establish principal, Agent/workload, and delegated authority through Trusted Intake; do not use the `development_only` body intake as company identity assurance.
+3. Derive a canonical action for one `tools/call`, call the authorization API, and retain redacted `authorization_context_provenance` and `signing_key_id`.
+4. Put `permit_token` only in the controlled client-to-Proxy execution channel, never command history or screenshots.
+5. The Proxy reuses the core verifier and atomically consumes before forwarding.
+6. On `2026-07-28`, also verify that `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` match the body, and forward only after `VERIFIED`.
+7. Retain a redacted receipt and upstream call counter.
+8. Repeat each negative outcome and confirm the counter remains zero.
+9. Make one verified call fail or time out upstream, confirm its Permit remains `CONSUMED`, and allow retry only after a fresh authorization produces a new Permit.
 
 If WorkBuddy or another Agent cannot configure an approved MCP boundary, this Gate does not pass. Do not modify the company Agent, bypass policy, or collect whole-machine behavior to “complete” the test.
 
 ## Gate 4: evidence review and exit
 
-Audit must answer request/decision/permit ID, principal, Agent/workload, tool, resource, operation, action digest, policy version, authorization decision, Permit state, verification outcome, timestamp, evidence source, and upstream call count. It contains no token or raw sensitive arguments.
+Audit must answer request/decision/permit ID, `signing_key_id`, principal, Agent/workload, authorization-context provenance, tool, resource, operation, action digest, policy version, authorization decision, Permit state, verification outcome, timestamp, evidence source, and upstream call count. It contains no token or raw sensitive arguments.
 
 At exit, stop Aegis, the Proxy, and test upstream; revoke every unconsumed Permit; remove temporary private keys and synthetic payloads; and let the company owner decide local audit retention/deletion. Only redacted conclusions and a synthetic minimal reproduction may return to the public repository.
 

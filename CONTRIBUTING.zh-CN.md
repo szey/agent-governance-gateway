@@ -25,11 +25,14 @@ CanonicalAction → deterministic authorization → signed Permit
 - canonical JSON 必须确定性生成；对象键顺序不得改变摘要，重复键必须拒绝，数组顺序必须保留；
 - 摘要为 SHA-256，原始敏感参数不得进入正常审计；
 - `permit_id` 只用于关联，`permit_token` 才是签名执行凭据；ID 本身不能授权；
+- HTTP 授权身份必须来自 `TrustedAuthorizationIntake`；未配置时 fail closed，本地 body intake 必须显式开启并标为 `development_only`；
+- Permit Header 的 `kid` 必须由 KeyProvider 精确解析，并与签名 claims 中的 `signing_key_id` 一致；
 - Permit 必须短时、动作绑定且默认单次使用；验证与消费必须原子完成；
 - 验证签名、issuer、时效、Agent/workload、工具、资源、操作或摘要任一失败时，上游工具不得调用；
 - MCP `2026-07-28` 的版本、`Mcp-Method`、`Mcp-Name` 与正文必须一致；重复 key、任意 Header/Session 上下文、未绑定 Tool `_meta`、MRTR/`Mcp-Param-*` 输入必须在上游前 fail closed 或被剥离；
 - 两个并发消费尝试必须恰好一个成功，另一个明确返回 replay；
 - 已撤销或已过期 Permit 不得执行；
+- Permit 在上游前消费；上游失败/timeout 不得恢复，重试必须重新授权，禁止增加 `unconsume`；
 - `permit_token`、签名私钥、raw bearer/delegated token、秘密值和原始敏感参数不得进入日志、UI 或错误消息；
 - authorization 保持确定性；risk 只提供咨询元数据或 obligations，不能覆盖明确拒绝；
 - `isolation_required` 是外部执行义务，不是 Aegis 已实现沙箱；隔离或人工批准尚未满足时，focused MCP Proxy 不得转发；
@@ -45,7 +48,7 @@ CanonicalAction → deterministic authorization → signed Permit
 5. 同步 API、能力边界、调研登记和中英文文档；
 6. 报告真实测试结果，不把本地回归写成生产保证。
 
-至少覆盖：有效 Permit、无效签名、过期、撤销、wrong agent/workload/tool/resource/operation、argument digest mismatch、单次 replay、并发 replay、审计不含 token，以及任何验证失败后 MCP upstream 调用次数为零。
+至少覆盖：可信 intake 覆盖伪造 HTTP 身份、无 intake 默认拒绝、有效 Permit、`kid`、无效签名、过期、撤销、wrong agent/workload/tool/resource/operation、argument digest mismatch、单次 replay、并发 replay、上游失败/timeout 后仍已消费、审计不含 token，以及任何验证失败后 MCP upstream 调用次数为零。
 
 ## API、MCP 与兼容性
 
@@ -70,6 +73,7 @@ go test -race ./...
 go vet ./...
 npm run check:web
 npm run build:web
+docker build .
 ```
 
 若环境缺少 race detector 所需工具链，应原样报告限制，不能把未运行写成通过。

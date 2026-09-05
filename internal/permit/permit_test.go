@@ -10,14 +10,18 @@ import (
 	"testing"
 	"time"
 
+	"agent-governance-gateway/internal/keyprovider"
 	"agent-governance-gateway/internal/permit"
 )
+
+const testKeyID = "test-ed25519-01"
 
 func TestIssuerCreatesVerifiableActionBoundPermit(t *testing.T) {
 	now := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
 	publicKey, privateKey := keyPair(t)
+	provider := staticProvider(t, privateKey)
 	store := permit.NewMemoryStore()
-	issuer, err := permit.NewIssuer("aegis-router", privateKey, store, permit.WithIssuerClock(func() time.Time { return now }))
+	issuer, err := permit.NewIssuer("aegis-router", provider, store, permit.WithIssuerClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +39,11 @@ func TestIssuerCreatesVerifiableActionBoundPermit(t *testing.T) {
 	if claims != issued.Claims {
 		t.Fatalf("verified claims = %#v, want %#v", claims, issued.Claims)
 	}
-	if !claims.SingleUse || claims.Issuer != "aegis-router" || claims.ExpiresTime().Sub(claims.IssuedTime()) != 30*time.Second {
+	keyID, err := permit.TokenKeyID(issued.Token())
+	if err != nil || keyID != testKeyID || issuer.KeyID() != testKeyID {
+		t.Fatalf("token/issuer kid = %q/%q, err=%v", keyID, issuer.KeyID(), err)
+	}
+	if !claims.SingleUse || claims.SigningKeyID != testKeyID || claims.Issuer != "aegis-router" || claims.ExpiresTime().Sub(claims.IssuedTime()) != 30*time.Second {
 		t.Fatalf("unexpected lifecycle claims: %#v", claims)
 	}
 	if !claims.Obligations.IsolationRequired || !claims.Obligations.EnhancedAuditRequired {
@@ -50,7 +58,7 @@ func TestVerifyTokenRejectsTamperingAndWrongKey(t *testing.T) {
 	_, privateKey := keyPair(t)
 	publicKey, _ := keyPair(t)
 	claims := claimsForStore("p_test")
-	token, err := permit.SignToken(privateKey, claims)
+	token, err := permit.SignToken(privateKey, claims.SigningKeyID, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +84,7 @@ func TestIssuedPermitJSONNeverContainsToken(t *testing.T) {
 	now := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
 	_, privateKey := keyPair(t)
 	store := permit.NewMemoryStore()
-	issuer, err := permit.NewIssuer("aegis-router", privateKey, store, permit.WithIssuerClock(func() time.Time { return now }))
+	issuer, err := permit.NewIssuer("aegis-router", staticProvider(t, privateKey), store, permit.WithIssuerClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +112,7 @@ func TestIssuedPermitJSONNeverContainsToken(t *testing.T) {
 func TestIssuerRejectsRawDelegatedCredential(t *testing.T) {
 	now := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
 	_, privateKey := keyPair(t)
-	issuer, err := permit.NewIssuer("aegis-router", privateKey, permit.NewMemoryStore(), permit.WithIssuerClock(func() time.Time { return now }))
+	issuer, err := permit.NewIssuer("aegis-router", staticProvider(t, privateKey), permit.NewMemoryStore(), permit.WithIssuerClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,6 +199,15 @@ func keyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	return publicKey, privateKey
 }
 
+func staticProvider(t *testing.T, privateKey ed25519.PrivateKey) *keyprovider.Static {
+	t.Helper()
+	provider, err := keyprovider.NewStatic(testKeyID, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return provider
+}
+
 func issueRequest(permitID string, ttl time.Duration) permit.IssueRequest {
 	return permit.IssueRequest{
 		PermitID: permitID, RequestID: "request-01", PrincipalID: "user-01",
@@ -207,7 +224,7 @@ func claimsForStore(permitID string) permit.Claims {
 	issuedAt := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
 	request := issueRequest(permitID, time.Minute)
 	return permit.Claims{
-		PermitID: permitID, RequestID: request.RequestID,
+		PermitID: permitID, SigningKeyID: testKeyID, RequestID: request.RequestID,
 		PrincipalID: request.PrincipalID, AgentID: request.AgentID, WorkloadID: request.WorkloadID,
 		DelegatedAuthorityFingerprint: request.DelegatedAuthorityFingerprint,
 		Tool:                          request.Tool, Capability: request.Capability, Resource: request.Resource, Operation: request.Operation,
