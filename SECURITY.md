@@ -47,7 +47,9 @@ Any change to principal, Agent/workload, delegation fingerprint, tool, capabilit
 
 ## MCP execution boundary
 
-MCP is the only production-shaped adapter in the current milestone. The adapter verifies and consumes a permit before forwarding an upstream `tools/call`. Invalid signature, expiry, revocation, replay, wrong agent/workload/tool/resource/operation, or action mismatch must never call the upstream.
+MCP is the only production-shaped adapter in the current milestone. The adapter accepts only signed `permit_class=execution` permits and verifies and consumes one before forwarding an upstream `tools/call`. Server-owned Demo issuance creates only `permit_class=simulation`, which is accepted only by a separate non-forwarding simulation verifier. Missing, unknown, mismatched, or tampered classes fail before consumption and must never call the upstream. Invalid signature, expiry, revocation, replay, wrong agent/workload/tool/resource/operation, or action mismatch likewise never calls the upstream.
+
+Tokens issued before `permit_class` existed are intentionally invalid and require fresh authorization and issuance. Never infer `execution` from a missing claim.
 
 For MCP `2026-07-28`, `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` must agree with the JSON-RPC body. The Proxy rejects duplicate JSON keys and unbound tool `_meta`, strips arbitrary inbound headers/session context, and rebuilds only minimal transport and standard routing headers. The focused subset does not cache tool schemas, so it cannot safely validate `Mcp-Param-*`, and it has not bound MRTR `inputResponses`/`requestState` into the action digest; those inputs fail closed before upstream. Do not describe this subset as full MCP conformance.
 
@@ -61,7 +63,7 @@ Aegis does not implement a sandbox. `isolation_required: true` asks an external 
 
 ## Audit and sensitive data
 
-Normal audit is explained in trust-context, action, deterministic-Policy, obligations, Permit, verification, and execution order. It may retain request/decision/permit IDs, `signing_key_id`, normalized identity fields, `authorization_context_provenance`, tool/resource/operation, `action_digest`, policy version, authorization decision, Permit state, verification result, whether upstream was attempted, execution outcome, timestamp, and evidence source. Risk/detection are labeled separately as `advisory_signals`.
+Normal audit is explained in trust-context, action, deterministic-Policy, obligations, Permit, verification, and execution order. It may retain request/decision/permit IDs, `signing_key_id`, `permit_class`, normalized identity fields, `authorization_context_provenance`, tool/resource/operation, `action_digest`, policy version, authorization decision, Permit state, verification result/rejection reason, whether upstream was attempted, execution outcome, timestamp, and evidence source. Risk/detection are labeled separately as `advisory_signals`.
 
 The caller must hash delegated credentials before submission. Aegis additionally rehashes the declared 64-hex fingerprint before any Permit/audit persistence, so a digest-shaped input is not retained verbatim; this defense does not turn the authorization API into a credential authenticator.
 

@@ -47,7 +47,9 @@ Principal、Agent/workload、delegation fingerprint、tool、capability、resour
 
 ## MCP 执行边界
 
-MCP 是当前唯一的生产形态 Adapter。Adapter 必须在转发上游 `tools/call` 之前验证并消费 Permit；错误签名、过期、撤销、replay、wrong agent/workload/tool/resource/operation 或 action mismatch 均不得调用上游。
+MCP 是当前唯一的生产形态 Adapter。Adapter 只接受签名绑定 `permit_class=execution` 的 Permit，并且必须在转发上游 `tools/call` 之前验证和消费。Server-owned Demo 只能签发 `permit_class=simulation`，且只有不具备上游转发能力的独立模拟 verifier 可以接受。用途缺失、未知、不匹配或被篡改时，必须在消费前拒绝且不得调用上游；错误签名、过期、撤销、replay、wrong agent/workload/tool/resource/operation 或 action mismatch 同样不得调用上游。
+
+在 `permit_class` 引入之前签发的 Token 会被刻意视为无效，必须重新授权和签发；不得从缺失 claim 推断为 `execution`。
 
 MCP `2026-07-28` 的 `MCP-Protocol-Version`、`Mcp-Method`、`Mcp-Name` 与 JSON-RPC 正文必须一致；Proxy 拒绝重复 JSON key 和未绑定的 Tool `_meta`，剥离任意入站 Header/Session 上下文，并只重建最小传输信息与标准路由 Header。当前 focused subset 不缓存 Tool Schema，因此无法可靠校验 `Mcp-Param-*`，也没有把 MRTR `inputResponses`/`requestState` 纳入动作摘要；这些输入一律在上游前 fail closed。不要把这一子集描述为完整 MCP conformance。
 
@@ -61,7 +63,7 @@ Aegis 不实现沙箱。`isolation_required: true` 只要求外部 executor 提�
 
 ## 审计与敏感数据
 
-正常审计按信任上下文、动作、确定性 Policy、obligations、Permit、verification、execution 的顺序解释，并可保存 request/decision/permit ID、`signing_key_id`、规范化身份字段、`authorization_context_provenance`、tool/resource/operation、`action_digest`、policy version、授权决定、Permit 状态、验证结果、upstream 是否尝试、execution outcome、时间和 evidence source。Risk/detection 单独标为 `advisory_signals`。
+正常审计按信任上下文、动作、确定性 Policy、obligations、Permit、verification、execution 的顺序解释，并可保存 request/decision/permit ID、`signing_key_id`、`permit_class`、规范化身份字段、`authorization_context_provenance`、tool/resource/operation、`action_digest`、policy version、授权决定、Permit 状态、验证结果/拒绝原因、upstream 是否尝试、execution outcome、时间和 evidence source。Risk/detection 单独标为 `advisory_signals`。
 
 调用方必须先对委托凭据做哈希再提交。Aegis 会在 Permit/审计持久化前再次哈希所声明的 64 位十六进制 fingerprint，因此即便输入形状像摘要也不会被原样保存；这层防御不会把授权 API 变成凭据认证器。
 

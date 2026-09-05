@@ -36,6 +36,7 @@ const (
 	OutcomeInvalidPermit    Outcome = "INVALID_PERMIT"
 	OutcomeInvalidAction    Outcome = "INVALID_ACTION"
 	OutcomeNotYetValid      Outcome = "NOT_YET_VALID"
+	OutcomeWrongPermitClass Outcome = "WRONG_PERMIT_CLASS"
 )
 
 var ErrInvalidConfiguration = errors.New("invalid verifier configuration")
@@ -97,6 +98,16 @@ func New(provider keyprovider.VerificationProvider, expectedIssuer string, store
 // binding, and atomically consumes the permit. Binding failures do not consume
 // an otherwise active permit. A second valid use returns REPLAYED.
 func (v *Verifier) VerifyAndConsume(permitToken string, action canonicalaction.Action) Result {
+	return v.verifyAndConsume(permitToken, action, permit.ClassExecution)
+}
+
+// VerifySimulationAndConsume is the isolated verification path for
+// server-owned demos. Its result must never authorize a real upstream call.
+func (v *Verifier) VerifySimulationAndConsume(permitToken string, action canonicalaction.Action) Result {
+	return v.verifyAndConsume(permitToken, action, permit.ClassSimulation)
+}
+
+func (v *Verifier) verifyAndConsume(permitToken string, action canonicalaction.Action, expectedClass permit.Class) Result {
 	now := v.clock().UTC()
 	result := Result{Outcome: OutcomeInvalidSignature, VerifiedAt: now}
 	keyID, err := permit.TokenKeyID(permitToken)
@@ -109,11 +120,18 @@ func (v *Verifier) VerifyAndConsume(permitToken string, action canonicalaction.A
 	}
 	claims, err := permit.VerifyToken(publicKey, permitToken)
 	if err != nil {
+		if errors.Is(err, permit.ErrInvalidClaims) || errors.Is(err, permit.ErrMalformedToken) || errors.Is(err, permit.ErrUnsupportedToken) {
+			result.Outcome = OutcomeInvalidPermit
+		}
 		return result
 	}
 	result.PermitID = claims.PermitID
 	result.RequestID = claims.RequestID
 	result.Claims = copyClaims(claims)
+	if claims.PermitClass != expectedClass {
+		result.Outcome = OutcomeWrongPermitClass
+		return result
+	}
 
 	if claims.Issuer != v.expectedIssuer {
 		result.Outcome = OutcomeInvalidIssuer

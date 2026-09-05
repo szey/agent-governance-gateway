@@ -17,6 +17,7 @@ const (
 
 type IssueRequest struct {
 	PermitID                      string
+	PermitClass                   Class
 	RequestID                     string
 	PrincipalID                   string
 	AgentID                       string
@@ -111,7 +112,7 @@ func (i *Issuer) Issue(request IssueRequest) (IssuedPermit, error) {
 	}
 	now := i.clock().UTC().Truncate(time.Second)
 	claims := Claims{
-		PermitID: permitID, SigningKeyID: signingKey.KeyID, RequestID: request.RequestID,
+		PermitID: permitID, SigningKeyID: signingKey.KeyID, PermitClass: request.PermitClass, RequestID: request.RequestID,
 		PrincipalID: request.PrincipalID, AgentID: request.AgentID, WorkloadID: request.WorkloadID,
 		DelegatedAuthorityFingerprint: request.DelegatedAuthorityFingerprint,
 		Tool:                          request.Tool, Capability: request.Capability, Resource: request.Resource, Operation: request.Operation,

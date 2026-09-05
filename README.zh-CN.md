@@ -46,6 +46,7 @@ Arguments 使用确定性 canonical JSON 表示并以 SHA-256 摘要。空参数
 
 ```text
 permit_id / jti      signing_key_id / kid
+permit_class         execution | simulation
 request_id           principal_id
 agent_id / workload_id
 delegation_digest    tool / capability
@@ -64,7 +65,9 @@ TTL 必须是整秒，默认 30 秒，当前最大 15 分钟。
 
 ### Verification 与 replay defense
 
-执行边界验证签名、签发方、有效期、主体/Agent/workload、工具、资源、操作和动作摘要，并原子消费许可。只有 `VERIFIED` 可以继续调用上游工具。失败结果包括无效签名、过期、撤销、错绑、动作不匹配和重放；同一许可的两个并发消费尝试最多只能有一个成功。
+执行边界验证签名、签发方、有效期、`permit_class`、主体/Agent/workload、工具、资源、操作和动作摘要，并原子消费许可。正常 `VerifyAndConsume` 与 MCP 只接受 `execution`；Server-owned Demo verifier 只接受 `simulation`，而且没有转发上游的能力。缺失、未知或不匹配的用途都会在消费前 fail closed。只有返回 `VERIFIED` 的 `execution` Permit 可以继续调用上游工具。失败结果包括无效签名、无效或错误用途、过期、撤销、错绑、动作不匹配和重放；同一许可的两个并发消费尝试最多只能有一个成功。
+
+`permit_class` 由服务端入口决定并受签名保护，请求调用方不能指定或覆盖。引入该 claim 之前签发的旧 Token 会被视为无效，必须重新授权、重新签发；系统不会通过兼容分支把缺失用途默认解释为 `execution`。
 
 Permit 生命周期为 `ISSUED → CONSUMED`，也可从 `ISSUED` 进入 `EXPIRED` 或 `REVOKED`。
 
@@ -89,7 +92,7 @@ MCP client
   → audit result metadata
 ```
 
-任何验证失败都必须发生在上游 `tools/call` 之前。此里程碑不实现 HTTP、A2A、数据库、Shell 或云策略 Adapter。
+任何验证失败都必须发生在上游 `tools/call` 之前。即使动作字段完全匹配，`simulation` Token 也会在消费和上游调用之前被拒绝。此里程碑不实现 HTTP、A2A、数据库、Shell 或云策略 Adapter。
 
 在现有 Server 上配置上游即可挂载 permit-gated `POST /mcp`。下面的 `--allow-development-intake` 只允许 loopback 请求将 body 身份作为 `development_only` 上下文，不能用于生产：
 

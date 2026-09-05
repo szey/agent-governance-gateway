@@ -46,6 +46,7 @@ The `AuthorizationEnvelope` concept is retained and strengthened into a signed e
 
 ```text
 permit_id / jti      signing_key_id / kid
+permit_class         execution | simulation
 request_id           principal_id
 agent_id / workload_id
 delegation_digest    tool / capability
@@ -64,7 +65,9 @@ Issuance and verification use a `KeyProvider` abstraction to obtain the current 
 
 ### Verification and replay defense
 
-The execution boundary validates signature, issuer, expiry, principal/Agent/workload, tool, resource, operation, and action digest, then atomically consumes the permit. Only `VERIFIED` may call the upstream tool. Failure outcomes cover invalid signature, expiry, revocation, wrong binding, action mismatch, and replay. At most one of two concurrent consumption attempts for the same permit may succeed.
+The execution boundary validates signature, issuer, expiry, `permit_class`, principal/Agent/workload, tool, resource, operation, and action digest, then atomically consumes the permit. Normal `VerifyAndConsume` and MCP accept only `execution`; the server-owned Demo verifier accepts only `simulation` and has no upstream-forwarding capability. Missing, unknown, or mismatched classes fail closed before consumption. Only an `execution` permit that returns `VERIFIED` may call the upstream tool. Failure outcomes cover invalid signature, invalid or wrong class, expiry, revocation, wrong binding, action mismatch, and replay. At most one of two concurrent consumption attempts for the same permit may succeed.
+
+`permit_class` is selected by the server entry point and covered by the signature; request callers cannot set or override it. Tokens issued before this claim was introduced are rejected as invalid and must be re-authorized and reissued. There is no compatibility branch that treats a missing class as `execution`.
 
 The lifecycle is `ISSUED → CONSUMED`, or `ISSUED → EXPIRED/REVOKED`.
 
@@ -89,7 +92,7 @@ MCP client
   → audit result metadata
 ```
 
-Every verification failure must occur before the upstream `tools/call`. This milestone does not implement HTTP, A2A, database, shell, or cloud-policy adapters.
+Every verification failure must occur before the upstream `tools/call`. A `simulation` token is rejected before consumption and before any upstream call, even when every action field otherwise matches. This milestone does not implement HTTP, A2A, database, shell, or cloud-policy adapters.
 
 Configure an upstream on the existing Server to mount permit-gated `POST /mcp`. The `--allow-development-intake` flag below accepts body identity from loopback requests only and labels it `development_only`; it is not a production mode:
 

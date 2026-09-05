@@ -220,7 +220,7 @@ func staticProvider(t *testing.T, privateKey ed25519.PrivateKey) *keyprovider.St
 
 func issueRequest(permitID string, ttl time.Duration) permit.IssueRequest {
 	return permit.IssueRequest{
-		PermitID: permitID, RequestID: "request-01", PrincipalID: "user-01",
+		PermitID: permitID, PermitClass: permit.ClassExecution, RequestID: "request-01", PrincipalID: "user-01",
 		AgentID: "finance-agent", WorkloadID: "finance-agent-v3",
 		DelegatedAuthorityFingerprint: "sha256:" + strings.Repeat("a", 64),
 		Tool:                          "payment.send", Capability: "payment.transfer", Resource: "account-123", Operation: "transfer",
@@ -234,7 +234,7 @@ func claimsForStore(permitID string) permit.Claims {
 	issuedAt := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
 	request := issueRequest(permitID, time.Minute)
 	return permit.Claims{
-		PermitID: permitID, SigningKeyID: testKeyID, RequestID: request.RequestID,
+		PermitID: permitID, SigningKeyID: testKeyID, PermitClass: request.PermitClass, RequestID: request.RequestID,
 		PrincipalID: request.PrincipalID, AgentID: request.AgentID, WorkloadID: request.WorkloadID,
 		DelegatedAuthorityFingerprint: request.DelegatedAuthorityFingerprint,
 		Tool:                          request.Tool, Capability: request.Capability, Resource: request.Resource, Operation: request.Operation,

@@ -310,6 +310,7 @@ type DispatchDecision struct {
 type AuthorizationEnvelope struct {
 	PermitID                       string                   `json:"permit_id"`
 	SigningKeyID                   string                   `json:"signing_key_id"`
+	PermitClass                    string                   `json:"permit_class"`
 	RequestID                      string                   `json:"request_id"`
 	SessionID                      string                   `json:"session_id,omitempty"`
 	PrincipalID                    string                   `json:"principal_id"`
@@ -338,6 +339,7 @@ type AuthorizationEnvelope struct {
 type PermitCredential struct {
 	PermitID     string    `json:"permit_id"`
 	SigningKeyID string    `json:"signing_key_id"`
+	PermitClass  string    `json:"permit_class"`
 	PermitToken  string    `json:"permit_token"`
 	IssuedAt     time.Time `json:"issued_at"`
 	ExpiresAt    time.Time `json:"expires_at"`
@@ -352,6 +354,7 @@ type ActionAuthorizationResponse struct {
 type PermitVerification struct {
 	PermitID       string               `json:"permit_id,omitempty"`
 	RequestID      string               `json:"request_id,omitempty"`
+	PermitClass    string               `json:"permit_class,omitempty"`
 	Outcome        string               `json:"verification_result"`
 	Verified       bool                 `json:"verified"`
 	State          string               `json:"permit_state,omitempty"`
@@ -364,6 +367,7 @@ type ExecutionReceipt struct {
 	RequestID             string              `json:"request_id"`
 	DecisionID            string              `json:"decision_id"`
 	PermitID              string              `json:"permit_id,omitempty"`
+	PermitClass           string              `json:"permit_class,omitempty"`
 	PrincipalID           string              `json:"principal_id"`
 	AgentID               string              `json:"agent_id"`
 	WorkloadID            string              `json:"workload_id"`

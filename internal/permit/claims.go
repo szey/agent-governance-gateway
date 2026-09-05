@@ -26,6 +26,20 @@ var (
 	fingerprintPattern  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
+// Class binds a permit to either a real execution boundary or an isolated
+// server-owned simulation. It is signed and never inferred from a missing
+// claim.
+type Class string
+
+const (
+	ClassExecution  Class = "execution"
+	ClassSimulation Class = "simulation"
+)
+
+func (c Class) Valid() bool {
+	return c == ClassExecution || c == ClassSimulation
+}
+
 // Obligations are requirements imposed on the executor. Aegis signs these
 // requirements but does not claim to provide an isolation or sandbox backend.
 type Obligations struct {
@@ -41,6 +55,7 @@ type Obligations struct {
 type Claims struct {
 	PermitID                      string      `json:"jti"`
 	SigningKeyID                  string      `json:"signing_key_id"`
+	PermitClass                   Class       `json:"permit_class"`
 	RequestID                     string      `json:"request_id"`
 	PrincipalID                   string      `json:"principal"`
 	AgentID                       string      `json:"agent"`
@@ -64,6 +79,9 @@ func (c Claims) ExpiresTime() time.Time { return time.Unix(c.ExpiresAt, 0).UTC()
 
 // Validate verifies required claims without accepting raw payloads.
 func (c Claims) Validate() error {
+	if !c.PermitClass.Valid() {
+		return fmt.Errorf("%w: permit_class must be execution or simulation", ErrInvalidClaims)
+	}
 	fields := []struct {
 		name  string
 		value string

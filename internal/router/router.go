@@ -105,7 +105,7 @@ func (r *Router) AuthorizeTrustedAction(authorization intake.Authorization) (mod
 	if !authorization.Valid() {
 		return models.ActionAuthorizationResponse{}, intake.ErrTrustedContextRequired
 	}
-	return r.authorizeResolvedAction(authorization.Request(), authorization.Provenance(), 0)
+	return r.authorizeResolvedAction(authorization.Request(), authorization.Provenance(), permit.ClassExecution, 0)
 }
 
 // AuthorizeSyntheticDemoAction is restricted to server-owned fixtures. It
@@ -115,10 +115,10 @@ func (r *Router) AuthorizeSyntheticDemoAction(req models.Request, ttl time.Durat
 	return r.authorizeResolvedAction(req, models.AuthorizationContextProvenance{
 		Source: "server_owned_fixture", ProviderID: "aegis-demo-lab",
 		Assurance: "simulated_demo",
-	}, ttl)
+	}, permit.ClassSimulation, ttl)
 }
 
-func (r *Router) authorizeResolvedAction(req models.Request, provenance models.AuthorizationContextProvenance, ttlOverride time.Duration) (models.ActionAuthorizationResponse, error) {
+func (r *Router) authorizeResolvedAction(req models.Request, provenance models.AuthorizationContextProvenance, permitClass permit.Class, ttlOverride time.Duration) (models.ActionAuthorizationResponse, error) {
 	if err := Validate(req); err != nil {
 		return models.ActionAuthorizationResponse{}, err
 	}
@@ -159,13 +159,13 @@ func (r *Router) authorizeResolvedAction(req models.Request, provenance models.A
 		}
 	}
 	if status == models.AuthorizationStatusAuthorized && policyDecision.Authorized && policyDecision.Grant != nil {
-		issued, issueErr := r.issuePermit(req, *policyDecision.Grant, obligations, actionDigest, started, ttlOverride)
+		issued, issueErr := r.issuePermit(req, *policyDecision.Grant, obligations, actionDigest, started, permitClass, ttlOverride)
 		if issueErr != nil {
 			return models.ActionAuthorizationResponse{}, issueErr
 		}
 		envelope = envelopeFor(issued, req.SessionID, policyDecision.Grant.Constraints, dispatch.Route)
 		credential = &models.PermitCredential{
-			PermitID: issued.PermitID, SigningKeyID: issued.Claims.SigningKeyID, PermitToken: issued.Token(), IssuedAt: issued.Claims.IssuedTime(),
+			PermitID: issued.PermitID, SigningKeyID: issued.Claims.SigningKeyID, PermitClass: string(issued.Claims.PermitClass), PermitToken: issued.Token(), IssuedAt: issued.Claims.IssuedTime(),
 			ExpiresAt: issued.Claims.ExpiresTime(), SingleUse: issued.Claims.SingleUse,
 		}
 		r.mu.Lock()
@@ -227,21 +227,27 @@ func (r *Router) evaluateAdvisorySignals(req models.Request) models.AdvisorySign
 // VerifyAndConsume is the only authorization method an executor should trust.
 // A permit identifier alone is never accepted as an execution credential.
 func (r *Router) VerifyAndConsume(permitToken string, action canonicalaction.Action) (models.PermitVerification, error) {
-	return r.verifyAndConsume(permitToken, action, models.RuntimeSourceGatewayEnforced)
+	return r.verifyAndConsume(permitToken, action, permit.ClassExecution, models.RuntimeSourceGatewayEnforced)
 }
 
 func (r *Router) VerifySyntheticDemo(permitToken string, action canonicalaction.Action) (models.PermitVerification, error) {
-	return r.verifyAndConsume(permitToken, action, models.RuntimeSourceSimulatedDemo)
+	return r.verifyAndConsume(permitToken, action, permit.ClassSimulation, models.RuntimeSourceSimulatedDemo)
 }
 
-func (r *Router) verifyAndConsume(permitToken string, action canonicalaction.Action, source models.RuntimeEventSource) (models.PermitVerification, error) {
-	result := r.permitVerifier.VerifyAndConsume(permitToken, action)
+func (r *Router) verifyAndConsume(permitToken string, action canonicalaction.Action, expectedClass permit.Class, source models.RuntimeEventSource) (models.PermitVerification, error) {
+	var result verifier.Result
+	if expectedClass == permit.ClassSimulation {
+		result = r.permitVerifier.VerifySimulationAndConsume(permitToken, action)
+	} else {
+		result = r.permitVerifier.VerifyAndConsume(permitToken, action)
+	}
 	verification := models.PermitVerification{
 		PermitID: result.PermitID, RequestID: result.RequestID, Outcome: string(result.Outcome),
 		Verified: result.Allowed(), State: string(result.State), VerifiedAt: result.VerifiedAt,
 		EvidenceSource: string(source),
 	}
 	if result.Claims != nil {
+		verification.PermitClass = string(result.Claims.PermitClass)
 		verification.Obligations = models.ExecutionObligations{
 			IsolationRequired:     result.Claims.Obligations.IsolationRequired,
 			NetworkEgressDenied:   result.Claims.Obligations.NetworkEgressDenied,
@@ -388,16 +394,17 @@ func authorizationReceipt(decisionID string, req models.Request, status models.A
 	agent := req.EffectiveAgent()
 	tool := req.EffectiveTool().Name
 	action := req.EffectiveAction()
-	permitID, permitState := "", ""
+	permitID, permitState, permitClass := "", "", ""
 	if envelope != nil {
 		permitID, permitState = envelope.PermitID, envelope.State
+		permitClass = envelope.PermitClass
 		tool = envelope.AllowedTool
 		action.Capability = envelope.AllowedCapability
 		action.TargetResource = envelope.AllowedResource
 		action.Operation = envelope.AllowedOperation
 	}
 	return &models.ExecutionReceipt{
-		RequestID: req.RequestID, DecisionID: decisionID, PermitID: permitID,
+		RequestID: req.RequestID, DecisionID: decisionID, PermitID: permitID, PermitClass: permitClass,
 		PrincipalID: principal.PrincipalID, AgentID: agent.AgentID, WorkloadID: agent.WorkloadID,
 		Tool: tool, Capability: action.Capability, Resource: action.TargetResource, Operation: action.Operation,
 		ActionDigest: digest, PolicyVersion: policyVersion, AuthorizationDecision: status,
@@ -421,6 +428,8 @@ func permitVerdict(outcome verifier.Outcome) string {
 		return "PERMIT_REVOKED"
 	case verifier.OutcomeInvalidSignature:
 		return "PERMIT_INVALID_SIGNATURE"
+	case verifier.OutcomeWrongPermitClass:
+		return "PERMIT_CLASS_MISMATCH"
 	default:
 		return "PERMIT_REJECTED"
 	}
@@ -920,7 +929,7 @@ func executionAction(req models.Request) canonicalaction.Action {
 	}
 }
 
-func (r *Router) issuePermit(req models.Request, grant models.MatchedAuthorizationGrant, obligations models.ExecutionObligations, actionDigest string, issuedAt time.Time, ttlOverride time.Duration) (permit.IssuedPermit, error) {
+func (r *Router) issuePermit(req models.Request, grant models.MatchedAuthorizationGrant, obligations models.ExecutionObligations, actionDigest string, issuedAt time.Time, permitClass permit.Class, ttlOverride time.Duration) (permit.IssuedPermit, error) {
 	action := canonicalAction(req, grant)
 	ttl := r.permitTTL
 	if ttlOverride > 0 && ttlOverride < ttl {
@@ -943,7 +952,7 @@ func (r *Router) issuePermit(req models.Request, grant models.MatchedAuthorizati
 		return permit.IssuedPermit{}, fmt.Errorf("execution permit lifetime is shorter than one second")
 	}
 	issued, err := r.permitIssuer.Issue(permit.IssueRequest{
-		RequestID: req.RequestID, PrincipalID: action.PrincipalID, AgentID: action.AgentID,
+		RequestID: req.RequestID, PermitClass: permitClass, PrincipalID: action.PrincipalID, AgentID: action.AgentID,
 		WorkloadID: action.WorkloadID, DelegatedAuthorityFingerprint: action.DelegatedAuthorityFingerprint,
 		Tool: action.Tool, Capability: action.Capability, Resource: action.Resource, Operation: action.Operation,
 		ActionDigest: actionDigest, PolicyVersion: r.policyVersion, TTL: ttl,
@@ -962,7 +971,7 @@ func (r *Router) issuePermit(req models.Request, grant models.MatchedAuthorizati
 func envelopeFor(issued permit.IssuedPermit, sessionID string, constraints models.AuthorizationConstraints, route models.Route) *models.AuthorizationEnvelope {
 	claims := issued.Claims
 	return &models.AuthorizationEnvelope{
-		PermitID: claims.PermitID, SigningKeyID: claims.SigningKeyID, RequestID: claims.RequestID, SessionID: sessionID,
+		PermitID: claims.PermitID, SigningKeyID: claims.SigningKeyID, PermitClass: string(claims.PermitClass), RequestID: claims.RequestID, SessionID: sessionID,
 		PrincipalID: claims.PrincipalID, AgentID: claims.AgentID, WorkloadID: claims.WorkloadID,
 		DelegatedCredentialFingerprint: claims.DelegatedAuthorityFingerprint,
 		AllowedCapability:              claims.Capability, AllowedTool: claims.Tool, AllowedResource: claims.Resource,

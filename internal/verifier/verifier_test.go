@@ -3,6 +3,7 @@ package verifier_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -40,6 +41,47 @@ func TestInvalidSignatureIsRejected(t *testing.T) {
 	result := fixture.verifier.VerifyAndConsume(forgedToken, fixture.action)
 	assertOutcome(t, result, verifier.OutcomeInvalidSignature)
 	assertIssued(t, fixture)
+}
+
+func TestPermitClassBoundariesRejectWithoutConsumption(t *testing.T) {
+	t.Run("simulation cannot execute", func(t *testing.T) {
+		fixture := newFixtureWithClass(t, time.Minute, permit.ClassSimulation)
+		assertOutcome(t, fixture.verifier.VerifyAndConsume(fixture.issued.Token(), fixture.action), verifier.OutcomeWrongPermitClass)
+		assertIssued(t, fixture)
+		assertOutcome(t, fixture.verifier.VerifySimulationAndConsume(fixture.issued.Token(), fixture.action), verifier.OutcomeVerified)
+	})
+
+	t.Run("execution cannot simulate", func(t *testing.T) {
+		fixture := newFixture(t, time.Minute)
+		assertOutcome(t, fixture.verifier.VerifySimulationAndConsume(fixture.issued.Token(), fixture.action), verifier.OutcomeWrongPermitClass)
+		assertIssued(t, fixture)
+		assertOutcome(t, fixture.verifier.VerifyAndConsume(fixture.issued.Token(), fixture.action), verifier.OutcomeVerified)
+	})
+}
+
+func TestPermitClassTamperingAndInvalidValuesAreRejected(t *testing.T) {
+	t.Run("tampered class breaks signature", func(t *testing.T) {
+		fixture := newFixture(t, time.Minute)
+		value := string(permit.ClassSimulation)
+		token := rewritePermitClass(t, fixture.issued.Token(), fixture.privateKey, &value, false)
+		assertOutcome(t, fixture.verifier.VerifyAndConsume(token, fixture.action), verifier.OutcomeInvalidSignature)
+		assertIssued(t, fixture)
+	})
+
+	for _, test := range []struct {
+		name  string
+		value *string
+	}{
+		{name: "missing"},
+		{name: "unknown", value: stringPointer("diagnostic")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture(t, time.Minute)
+			token := rewritePermitClass(t, fixture.issued.Token(), fixture.privateKey, test.value, true)
+			assertOutcome(t, fixture.verifier.VerifyAndConsume(token, fixture.action), verifier.OutcomeInvalidPermit)
+			assertIssued(t, fixture)
+		})
+	}
 }
 
 func TestExpiredPermitIsRejected(t *testing.T) {
@@ -199,6 +241,7 @@ func TestVerificationResultNeverLeaksTokenOrRawArguments(t *testing.T) {
 
 type fixture struct {
 	now         time.Time
+	privateKey  ed25519.PrivateKey
 	keyProvider *keyprovider.Static
 	store       *permit.MemoryStore
 	issued      permit.IssuedPermit
@@ -207,6 +250,10 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T, ttl time.Duration) *fixture {
+	return newFixtureWithClass(t, ttl, permit.ClassExecution)
+}
+
+func newFixtureWithClass(t *testing.T, ttl time.Duration, permitClass permit.Class) *fixture {
 	t.Helper()
 	now := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -233,7 +280,7 @@ func newFixture(t *testing.T, ttl time.Duration) *fixture {
 		t.Fatal(err)
 	}
 	issued, err := issuer.Issue(permit.IssueRequest{
-		PermitID: "p_fixture", RequestID: "request-01", PrincipalID: action.PrincipalID,
+		PermitID: "p_fixture", PermitClass: permitClass, RequestID: "request-01", PrincipalID: action.PrincipalID,
 		AgentID: action.AgentID, WorkloadID: action.WorkloadID,
 		DelegatedAuthorityFingerprint: action.DelegatedAuthorityFingerprint,
 		Tool:                          action.Tool, Capability: action.Capability, Resource: action.Resource, Operation: action.Operation,
@@ -243,7 +290,7 @@ func newFixture(t *testing.T, ttl time.Duration) *fixture {
 		t.Fatal(err)
 	}
 	_ = publicKey
-	fixture := &fixture{now: now, keyProvider: keyProvider, store: store, issued: issued, action: action}
+	fixture := &fixture{now: now, privateKey: privateKey, keyProvider: keyProvider, store: store, issued: issued, action: action}
 	result, err := verifier.New(keyProvider, "aegis-router", store, verifier.WithClock(func() time.Time { return fixture.now }))
 	if err != nil {
 		t.Fatal(err)
@@ -251,6 +298,39 @@ func newFixture(t *testing.T, ttl time.Duration) *fixture {
 	fixture.verifier = result
 	return fixture
 }
+
+func rewritePermitClass(t *testing.T, token string, privateKey ed25519.PrivateKey, permitClass *string, resign bool) string {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("unexpected token shape")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if permitClass == nil {
+		delete(claims, "permit_class")
+	} else {
+		claims["permit_class"] = *permitClass
+	}
+	payload, err = json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts[1] = base64.RawURLEncoding.EncodeToString(payload)
+	if resign {
+		signingInput := parts[0] + "." + parts[1]
+		parts[2] = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(signingInput)))
+	}
+	return strings.Join(parts, ".")
+}
+
+func stringPointer(value string) *string { return &value }
 
 func assertOutcome(t *testing.T, result verifier.Result, want verifier.Outcome) {
 	t.Helper()

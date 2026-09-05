@@ -15,6 +15,7 @@ import (
 	"agent-governance-gateway/internal/config"
 	"agent-governance-gateway/internal/intake"
 	"agent-governance-gateway/internal/models"
+	"agent-governance-gateway/internal/permit"
 	"agent-governance-gateway/internal/router"
 	"agent-governance-gateway/internal/scenario"
 )
@@ -574,6 +575,37 @@ func authorizeSyntheticRecord(t *testing.T, r *router.Router, request models.Req
 	t.Helper()
 	result, err := r.AuthorizeSyntheticDemoAction(request, 0)
 	return result.Decision, err
+}
+
+func TestSyntheticDemoPermitCannotReachExecutionVerifier(t *testing.T) {
+	r, _, _ := testRouter(t)
+	request := safeRequest()
+	authorized, err := r.AuthorizeSyntheticDemoAction(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorized.Permit == nil {
+		t.Fatal("synthetic demo authorization did not issue a permit")
+	}
+
+	verification, err := r.VerifyRequestAndConsume(authorized.Permit.PermitToken, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verification.Verified {
+		t.Fatalf("synthetic demo permit crossed the normal execution boundary: %#v", verification)
+	}
+	if verification.Outcome != "WRONG_PERMIT_CLASS" || verification.PermitClass != "simulation" {
+		t.Fatalf("synthetic demo rejection did not identify its purpose: %#v", verification)
+	}
+	record, ok := r.GetPermit(authorized.Permit.PermitID)
+	if !ok || record.State != permit.StateIssued {
+		t.Fatalf("wrong-purpose attempt consumed permit: %#v", record)
+	}
+	accepted, err := r.VerifySyntheticDemoRequest(authorized.Permit.PermitToken, request)
+	if err != nil || !accepted.Verified {
+		t.Fatalf("simulation permit was not reusable at its intended boundary: result=%#v err=%v", accepted, err)
+	}
 }
 
 func testRouter(t *testing.T) (*router.Router, *audit.Store, time.Time) {

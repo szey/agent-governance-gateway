@@ -144,6 +144,37 @@ func TestInvalidSignatureNeverInvokesMCPUpstream(t *testing.T) {
 	}
 }
 
+func TestSimulationPermitNeverInvokesMCPUpstream(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	r, store, _ := testRouter(t)
+	action := coderRequest(`{"task":"simulation-only"}`)
+	authorized, err := r.AuthorizeSyntheticDemoAction(action, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, _ := mcp.New(r, upstream.URL, nil)
+	response := invoke(t, proxy, authorized.Permit.PermitToken, action, "coder", action.Action.Arguments)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "WRONG_PERMIT_CLASS") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("simulation permit invoked upstream %d times", calls.Load())
+	}
+	record, _ := store.Get(authorized.Decision.RequestID)
+	if record.ExecutionReceipt == nil || record.ExecutionReceipt.PermitClass != "simulation" || record.ExecutionReceipt.VerificationOutcome != "WRONG_PERMIT_CLASS" || record.FinalVerdict != "PERMIT_CLASS_MISMATCH" {
+		t.Fatalf("purpose rejection was not safely audited: %#v", record)
+	}
+	permitRecord, _ := r.GetPermit(authorized.Permit.PermitID)
+	if permitRecord.State != "ISSUED" {
+		t.Fatalf("wrong-purpose MCP attempt consumed permit: %#v", permitRecord)
+	}
+}
+
 func TestAllBoundPermitFailuresNeverInvokeMCPUpstream(t *testing.T) {
 	tests := []struct {
 		name    string
